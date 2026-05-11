@@ -1,13 +1,19 @@
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
+from email.message import EmailMessage
+import hashlib
+import secrets
+import smtplib
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, object_session
 
+from app.core.config import get_settings
 from app.core.database import get_db
-from app.core.security import decode_token, hash_password
+from app.core.security import decode_token, hash_password, verify_password
 from app.models.models import (
     Alert,
     Appointment,
@@ -17,6 +23,7 @@ from app.models.models import (
     Patient,
     PatientDuplicate,
     PatientPackage,
+    PasswordResetToken,
     Payment,
     Region,
     Role,
@@ -32,10 +39,76 @@ from app.models.models import (
 from app.services.user_service import AuthService, UserService
 
 router = APIRouter(prefix="/api/v1/ui", tags=["ui"])
+settings = get_settings()
 
 
 def _now() -> datetime:
     return datetime.utcnow()
+
+
+def _client_ip(request: Request) -> Optional[str]:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else None
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _password_reset_url(token: str) -> str:
+    base_url = settings.FRONTEND_URL.rstrip("/")
+    return f"{base_url}/reset-password?{urlencode({'token': token})}"
+
+
+def _write_audit_log(
+    db: Session,
+    *,
+    user_id: Optional[int],
+    entity_type: str,
+    entity_id: int,
+    action: str,
+    old_values: Optional[dict] = None,
+    new_values: Optional[dict] = None,
+    request: Optional[Request] = None,
+) -> None:
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            action=action,
+            old_values=old_values,
+            new_values=new_values,
+            ip_address=_client_ip(request) if request else None,
+            user_agent=request.headers.get("user-agent") if request else None,
+        )
+    )
+
+
+def _send_password_reset_email(email: str, reset_url: str) -> bool:
+    if not settings.SMTP_HOST:
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = "Reset your Sushiksha password"
+    message["From"] = settings.SMTP_FROM_EMAIL
+    message["To"] = email
+    message.set_content(
+        "We received a request to reset your Sushiksha password.\n\n"
+        f"Use this link within {settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES} minutes:\n"
+        f"{reset_url}\n\n"
+        "If you did not request this, you can ignore this email."
+    )
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
+        if settings.SMTP_USE_TLS:
+            smtp.starttls()
+        if settings.SMTP_USERNAME:
+            smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+        smtp.send_message(message)
+    return True
 
 
 def _iso(value: Any) -> Any:
@@ -102,27 +175,13 @@ def _role(db: Session, name: str) -> Role:
 
 
 def _user_shape(user: User, db: Session) -> dict:
-    roles = (
-        db.query(Role)
-        .join(UserRole, UserRole.role_id == Role.id)
-        .filter(UserRole.user_id == user.id, UserRole.deleted_at.is_(None), Role.deleted_at.is_(None))
-        .all()
-    )
     return {
         "id": user.id,
-        "auth_user_id": str(user.id),
         "username": user.username,
         "full_name": _full_name(user),
         "email": user.email,
         "phone": user.phone,
-        "avatar_url": None,
-        "is_active": user.is_active,
-        "created_at": _iso(user.created_at),
-        "updated_at": _iso(user.updated_at),
-        "deleted_at": _iso(user.deleted_at),
-        "created_by": None,
-        "updated_by": None,
-        "user_roles": [{"roles": {"name": r.name}, "role_id": r.id} for r in roles],
+        "region_id": user.region_id,
     }
 
 
@@ -131,14 +190,11 @@ def _user_shape_from_model(user: User) -> dict:
     if not db:
         return {
             "id": user.id,
-            "auth_user_id": str(user.id),
+            "username": user.username,
             "full_name": _full_name(user),
             "email": user.email,
             "phone": user.phone,
-            "is_active": user.is_active,
-            "created_at": _iso(user.created_at),
-            "updated_at": _iso(user.updated_at),
-            "deleted_at": _iso(user.deleted_at),
+            "region_id": user.region_id,
         }
     return _user_shape(user, db)
 
@@ -809,6 +865,143 @@ async def register(payload: dict, db: Session = Depends(get_db)):
 async def me(request: Request, db: Session = Depends(get_db)):
     user = _require_user(request, db)
     return {"data": {"user": _user_shape(user, db)}}
+
+
+@router.post("/auth/change-password")
+async def change_password(payload: dict, request: Request, db: Session = Depends(get_db)):
+    user = _require_user(request, db)
+    old_password = payload.get("old_password")
+    new_password = payload.get("new_password")
+
+    if not old_password or not new_password:
+        raise HTTPException(status_code=400, detail="Old password and new password are required")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if old_password == new_password:
+        raise HTTPException(status_code=400, detail="New password must be different from old password")
+    if not verify_password(old_password, user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Old password is incorrect")
+
+    user.hashed_password = hash_password(new_password)
+    user.updated_at = _now()
+    _write_audit_log(
+        db,
+        user_id=user.id,
+        entity_type="users",
+        entity_id=user.id,
+        action="PASSWORD_CHANGE",
+        old_values={"password": "previous_hash"},
+        new_values={"password": "updated_hash"},
+        request=request,
+    )
+    db.commit()
+    return {"data": {"message": "Password changed successfully"}}
+
+
+@router.post("/auth/forgot-password")
+async def forgot_password(payload: dict, request: Request, db: Session = Depends(get_db)):
+    email = payload.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    user = UserService.get_user_by_email(db, email)
+    reset_url = None
+    email_sent = False
+
+    if user and user.is_active:
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.is_active.is_(True),
+        ).update({"is_active": False})
+
+        raw_token = secrets.token_urlsafe(32)
+        reset_url = _password_reset_url(raw_token)
+        reset_token = PasswordResetToken(
+            user_id=user.id,
+            token_hash=_token_hash(raw_token),
+            is_active=True,
+            expires_at=_now() + timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES),
+            ip_address=_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+        db.add(reset_token)
+        db.flush()
+        _write_audit_log(
+            db,
+            user_id=user.id,
+            entity_type="users",
+            entity_id=user.id,
+            action="PASSWORD_RESET_REQUEST",
+            new_values={"expires_in_minutes": settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES},
+            request=request,
+        )
+
+        try:
+            email_sent = _send_password_reset_email(user.email, reset_url)
+        except Exception:
+            email_sent = False
+
+    db.commit()
+
+    response = {"message": "If the email exists, a password reset link has been generated"}
+    if reset_url and not email_sent:
+        response["reset_url"] = reset_url
+        response["email_sent"] = False
+    elif reset_url:
+        response["email_sent"] = True
+
+    return {"data": response}
+
+
+@router.post("/auth/reset-password")
+async def reset_password(payload: dict, request: Request, db: Session = Depends(get_db)):
+    token = payload.get("token")
+    new_password = payload.get("new_password")
+
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Token and new password are required")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    reset_token = (
+        db.query(PasswordResetToken)
+        .filter(
+            PasswordResetToken.token_hash == _token_hash(token),
+            PasswordResetToken.is_active.is_(True),
+            PasswordResetToken.expires_at > _now(),
+        )
+        .first()
+    )
+    if not reset_token:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = db.query(User).filter(User.id == reset_token.user_id, User.deleted_at.is_(None)).first()
+    if not user or not user.is_active:
+        reset_token.is_active = False
+        db.commit()
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user.hashed_password = hash_password(new_password)
+    user.updated_at = _now()
+    reset_token.is_active = False
+    reset_token.used_at = _now()
+    db.query(PasswordResetToken).filter(
+        PasswordResetToken.user_id == user.id,
+        PasswordResetToken.id != reset_token.id,
+        PasswordResetToken.is_active.is_(True),
+    ).update({"is_active": False})
+    _write_audit_log(
+        db,
+        user_id=user.id,
+        entity_type="users",
+        entity_id=user.id,
+        action="PASSWORD_RESET",
+        old_values={"password": "previous_hash"},
+        new_values={"password": "updated_hash", "reset_token_id": reset_token.id},
+        request=request,
+    )
+    db.commit()
+    return {"data": {"message": "Password reset successfully"}}
 
 
 def _month_key(value: date | datetime) -> str:
