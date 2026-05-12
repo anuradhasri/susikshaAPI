@@ -31,12 +31,52 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
     # Email
+    MAIL_USERNAME: str = ""
+    MAIL_PASSWORD: str = ""
+    MAIL_FROM: str = "Sushiksha <no-reply@sushiksha.com>"
+    MAIL_PORT: int = 465
+    MAIL_SERVER: str = ""
+    MAIL_USE_SSL: bool = True
+    MAIL_USE_TLS: bool = False
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
-    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "no-reply@sushiksha.com")
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "")
+    SMTP_USE_SSL: bool = os.getenv("SMTP_USE_SSL", "").lower() == "true"
     SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+
+    @property
+    def email_host(self) -> str:
+        return self.SMTP_HOST or self.MAIL_SERVER
+
+    @property
+    def email_port(self) -> int:
+        return self.SMTP_PORT if self.SMTP_HOST else self.MAIL_PORT
+
+    @property
+    def email_username(self) -> str:
+        return self.SMTP_USERNAME or self.MAIL_USERNAME
+
+    @property
+    def email_password(self) -> str:
+        return self.SMTP_PASSWORD or self.MAIL_PASSWORD
+
+    @property
+    def email_from(self) -> str:
+        return self.SMTP_FROM_EMAIL or self.MAIL_FROM
+
+    @property
+    def email_use_ssl(self) -> bool:
+        if self.SMTP_HOST:
+            return self.SMTP_USE_SSL or self.SMTP_PORT == 465
+        return self.MAIL_USE_SSL or self.MAIL_PORT == 465
+
+    @property
+    def email_use_tls(self) -> bool:
+        if self.email_use_ssl:
+            return False
+        return self.SMTP_USE_TLS if self.SMTP_HOST else self.MAIL_USE_TLS
     
     # CORS
     CORS_ORIGINS: list = [

@@ -1,6 +1,5 @@
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
-from email.message import EmailMessage
 import hashlib
 import secrets
 import smtplib
@@ -14,6 +13,7 @@ from sqlalchemy.orm import Session, joinedload, object_session
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_token, hash_password, verify_password
+from app.email_templates.password_reset import build_password_reset_email
 from app.models.models import (
     Alert,
     Appointment,
@@ -33,6 +33,7 @@ from app.models.models import (
     Therapist,
     TherapistAvailability,
     User,
+    UserRegionMapping,
     UserRole,
     WaitlistEntry,
 )
@@ -62,6 +63,18 @@ def _password_reset_url(token: str) -> str:
     return f"{base_url}/reset-password?{urlencode({'token': token})}"
 
 
+def _password_policy_error(password: str) -> Optional[str]:
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    if not any(char.isupper() for char in password):
+        return "Password must include at least one uppercase letter"
+    if not any(char.isdigit() for char in password):
+        return "Password must include at least one number"
+    if not any(not char.isalnum() for char in password):
+        return "Password must include at least one special character"
+    return None
+
+
 def _write_audit_log(
     db: Session,
     *,
@@ -88,25 +101,22 @@ def _write_audit_log(
 
 
 def _send_password_reset_email(email: str, reset_url: str) -> bool:
-    if not settings.SMTP_HOST:
+    if not settings.email_host:
         return False
 
-    message = EmailMessage()
-    message["Subject"] = "Reset your Sushiksha password"
-    message["From"] = settings.SMTP_FROM_EMAIL
-    message["To"] = email
-    message.set_content(
-        "We received a request to reset your Sushiksha password.\n\n"
-        f"Use this link within {settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES} minutes:\n"
-        f"{reset_url}\n\n"
-        "If you did not request this, you can ignore this email."
+    message = build_password_reset_email(
+        to_email=email,
+        from_email=settings.email_from,
+        reset_url=reset_url,
+        expires_in_minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES,
     )
 
-    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
-        if settings.SMTP_USE_TLS:
+    smtp_class = smtplib.SMTP_SSL if settings.email_use_ssl else smtplib.SMTP
+    with smtp_class(settings.email_host, settings.email_port, timeout=15) as smtp:
+        if settings.email_use_tls:
             smtp.starttls()
-        if settings.SMTP_USERNAME:
-            smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+        if settings.email_username:
+            smtp.login(settings.email_username, settings.email_password)
         smtp.send_message(message)
     return True
 
@@ -121,6 +131,24 @@ def _full_name(user: Optional[User]) -> str:
     if not user:
         return "Unknown"
     return f"{user.first_name} {user.last_name}".strip()
+
+
+def _user_region_ids(db: Session, user: Optional[User]) -> list[int]:
+    if not user:
+        return []
+    return [
+        region_id
+        for (region_id,) in (
+            db.query(UserRegionMapping.regionid)
+            .filter(UserRegionMapping.userid == user.id)
+            .all()
+        )
+    ]
+
+
+def _primary_region_id(db: Session, user: Optional[User]) -> Optional[int]:
+    region_ids = _user_region_ids(db, user)
+    return region_ids[0] if region_ids else None
 
 
 def _split_name(full_name: str) -> tuple[str, str]:
@@ -175,13 +203,15 @@ def _role(db: Session, name: str) -> Role:
 
 
 def _user_shape(user: User, db: Session) -> dict:
+    region_ids = _user_region_ids(db, user)
     return {
         "id": user.id,
         "username": user.username,
         "full_name": _full_name(user),
         "email": user.email,
         "phone": user.phone,
-        "region_id": user.region_id,
+        "region_id": region_ids[0] if region_ids else None,
+        "region_ids": region_ids,
     }
 
 
@@ -194,7 +224,8 @@ def _user_shape_from_model(user: User) -> dict:
             "full_name": _full_name(user),
             "email": user.email,
             "phone": user.phone,
-            "region_id": user.region_id,
+            "region_id": None,
+            "region_ids": [],
         }
     return _user_shape(user, db)
 
@@ -225,13 +256,7 @@ def _user_roles(db: Session, user: Optional[User]) -> set[str]:
 
 
 def _current_therapist(db: Session, user: Optional[User]) -> Optional[Therapist]:
-    if not user:
-        return None
-    return (
-        db.query(Therapist)
-        .filter(Therapist.user_id == user.id, Therapist.deleted_at.is_(None))
-        .first()
-    )
+    return None
 
 
 def _user_role_shape(user_role: UserRole) -> dict:
@@ -256,43 +281,41 @@ def _patient_shape(patient: Patient) -> dict:
         "phone": patient.phone,
         "email": patient.email,
         "address": patient.address,
-        "emergency_contact": patient.emergency_contact,
+        "emergency_contact": patient.alternate_contact,
         "emergency_phone": None,
         "diagnosis": patient.diagnosis,
-        "notes": patient.medical_history,
-        "is_active": patient.deleted_at is None,
+        "notes": patient.notes,
+        "is_active": True,
         "duplicate_of_id": None,
         "created_at": _iso(patient.created_at),
         "updated_at": _iso(patient.updated_at),
-        "deleted_at": _iso(patient.deleted_at),
-        "created_by": None,
-        "updated_by": None,
+        "deleted_at": None,
+        "created_by": patient.created_by,
+        "updated_by": patient.updated_by,
     }
 
 
 def _therapist_shape(therapist: Therapist) -> dict:
-    user = therapist.user
-    db = object_session(therapist)
     return {
         "id": therapist.id,
-        "user_id": therapist.user_id,
-        "specialization": therapist.specialization,
-        "license_number": therapist.license_number,
+        "user_id": None,
+        "specialization": therapist.qualification,
+        "license_number": None,
         "bio": therapist.qualification,
         "max_patients": 30,
-        "is_active": therapist.is_available and therapist.deleted_at is None,
-        "is_available": therapist.is_available,
+        "is_active": True,
+        "is_available": True,
         "created_at": _iso(therapist.created_at),
         "updated_at": _iso(therapist.updated_at),
-        "deleted_at": _iso(therapist.deleted_at),
-        "created_by": None,
-        "updated_by": None,
+        "deleted_at": None,
+        "created_by": therapist.created_by,
+        "updated_by": therapist.updated_by,
         "users": {
-            "full_name": _full_name(user),
-            "email": user.email if user else None,
-            "phone": user.phone if user else None,
+            "full_name": therapist.name,
+            "email": None,
+            "phone": None,
         },
-        "user": _user_shape(user, db) if user and db else None,
+        "user": None,
     }
 
 
@@ -390,7 +413,7 @@ def _package_session_stats(patient_package: PatientPackage) -> dict:
         package_sessions = (
             db.query(TherapySession)
             .join(SessionAssignment, SessionAssignment.session_id == TherapySession.id)
-            .options(joinedload(TherapySession.therapist).joinedload(Therapist.user))
+            .options(joinedload(TherapySession.therapist))
             .filter(
                 TherapySession.patient_id == patient_package.patient_id,
                 TherapySession.deleted_at.is_(None),
@@ -465,7 +488,7 @@ def _payment_shape(payment: Payment) -> dict:
     return {
         "id": payment.id,
         "invoice_id": payment.invoice_id,
-        "patient_id": payment.invoice.patient_id if payment.invoice else None,
+        "patient_id": payment.patient_id,
         "amount": payment.amount,
         "payment_method": payment.payment_method,
         "payment_date": _iso(payment.payment_date or payment.created_at),
@@ -509,7 +532,7 @@ def _waitlist_shape(entry: WaitlistEntry) -> dict:
         "patientName": f"{patient.first_name} {patient.last_name}".strip() if patient else "Unknown",
         "patientCode": f"PT-{entry.patient_id:04d}",
         "requestedService": entry.requested_service,
-        "preferredTherapist": _full_name(therapist.user) if therapist and therapist.user else None,
+        "preferredTherapist": therapist.name if therapist else None,
         "priority": entry.priority,
         "preferredDays": entry.preferred_days or [],
         "preferredTime": entry.preferred_time,
@@ -630,13 +653,13 @@ def _parse_time(value: Optional[str]) -> Optional[time]:
 
 
 def _base_query(table: str, db: Session, user: Optional[User]):
-    region_id = user.region_id if user else None
+    region_ids = _user_region_ids(db, user)
     roles = _user_roles(db, user)
     current_therapist = _current_therapist(db, user) if "therapist" in roles else None
     if table == "patients":
-        query = db.query(Patient).filter(Patient.deleted_at.is_(None))
-        if region_id:
-            query = query.filter(Patient.region_id == region_id)
+        query = db.query(Patient)
+        if region_ids:
+            query = query.filter(Patient.region_id.in_(region_ids))
         if current_therapist:
             patient_ids = db.query(TherapySession.patient_id).filter(
                 TherapySession.therapist_id == current_therapist.id,
@@ -646,39 +669,44 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return query
     if table == "users":
         query = db.query(User).filter(User.deleted_at.is_(None))
-        if region_id:
-            query = query.filter(User.region_id == region_id)
+        if region_ids:
+            mapped_user_ids = db.query(UserRegionMapping.userid).filter(UserRegionMapping.regionid.in_(region_ids))
+            query = query.filter(User.id.in_(mapped_user_ids))
         return query
     if table == "roles":
         return db.query(Role).filter(Role.deleted_at.is_(None))
     if table == "user_roles":
         return db.query(UserRole).filter(UserRole.deleted_at.is_(None))
     if table == "therapists":
-        query = db.query(Therapist).options(joinedload(Therapist.user)).filter(Therapist.deleted_at.is_(None))
-        if region_id:
-            query = query.filter(Therapist.region_id == region_id)
+        query = db.query(Therapist)
+        if region_ids:
+            query = query.filter(Therapist.region_id.in_(region_ids))
         return query
     if table == "therapist_availability":
-        query = db.query(TherapistAvailability).options(joinedload(TherapistAvailability.therapist).joinedload(Therapist.user)).filter(TherapistAvailability.deleted_at.is_(None))
+        query = db.query(TherapistAvailability).options(joinedload(TherapistAvailability.therapist)).filter(TherapistAvailability.deleted_at.is_(None))
         if current_therapist:
             query = query.filter(TherapistAvailability.therapist_id == current_therapist.id)
-        elif region_id:
-            query = query.join(Therapist, Therapist.id == TherapistAvailability.therapist_id).filter(Therapist.region_id == region_id, Therapist.deleted_at.is_(None))
+        elif region_ids:
+            query = query.join(Therapist, Therapist.id == TherapistAvailability.therapist_id).filter(Therapist.region_id.in_(region_ids))
         return query
     if table == "appointments":
-        query = db.query(Appointment).options(joinedload(Appointment.patient), joinedload(Appointment.therapist).joinedload(Therapist.user)).filter(Appointment.deleted_at.is_(None))
-        if region_id:
-            query = query.filter(Appointment.region_id == region_id)
+        query = db.query(Appointment).options(joinedload(Appointment.patient), joinedload(Appointment.therapist)).filter(Appointment.deleted_at.is_(None))
+        if region_ids:
+            query = query.filter(Appointment.region_id.in_(region_ids))
         if current_therapist:
             query = query.filter(Appointment.therapist_id == current_therapist.id)
         return query
     if table == "sessions":
-        query = db.query(TherapySession).options(joinedload(TherapySession.patient), joinedload(TherapySession.therapist).joinedload(Therapist.user)).filter(TherapySession.deleted_at.is_(None))
+        query = db.query(TherapySession).options(joinedload(TherapySession.patient), joinedload(TherapySession.therapist)).filter(TherapySession.deleted_at.is_(None))
+        if region_ids:
+            query = query.join(Patient, Patient.id == TherapySession.patient_id).filter(Patient.region_id.in_(region_ids))
         if current_therapist:
             query = query.filter(TherapySession.therapist_id == current_therapist.id)
         return query
     if table == "patient_packages":
         query = db.query(PatientPackage).options(joinedload(PatientPackage.package)).filter(PatientPackage.deleted_at.is_(None))
+        if region_ids:
+            query = query.join(Patient, Patient.id == PatientPackage.patient_id).filter(Patient.region_id.in_(region_ids))
         if current_therapist:
             patient_ids = db.query(TherapySession.patient_id).filter(
                 TherapySession.therapist_id == current_therapist.id,
@@ -688,8 +716,8 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return query
     if table == "invoices":
         query = db.query(Invoice).options(joinedload(Invoice.patient)).filter(Invoice.deleted_at.is_(None))
-        if region_id:
-            query = query.filter(Invoice.region_id == region_id)
+        if region_ids:
+            query = query.filter(Invoice.region_id.in_(region_ids))
         if current_therapist:
             patient_ids = db.query(TherapySession.patient_id).filter(
                 TherapySession.therapist_id == current_therapist.id,
@@ -698,17 +726,20 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.filter(Invoice.patient_id.in_(patient_ids))
         return query
     if table == "payments":
-        query = db.query(Payment).options(joinedload(Payment.invoice)).filter(Payment.deleted_at.is_(None))
+        query = db.query(Payment).options(joinedload(Payment.patient))
+        if region_ids:
+            query = query.join(Patient, Patient.id == Payment.patient_id).filter(Patient.region_id.in_(region_ids))
         if current_therapist:
             patient_ids = db.query(TherapySession.patient_id).filter(
                 TherapySession.therapist_id == current_therapist.id,
                 TherapySession.deleted_at.is_(None),
             )
-            invoice_ids = db.query(Invoice.id).filter(Invoice.patient_id.in_(patient_ids), Invoice.deleted_at.is_(None))
-            query = query.filter(Payment.invoice_id.in_(invoice_ids))
+            query = query.filter(Payment.patient_id.in_(patient_ids))
         return query
     if table == "alerts":
         query = db.query(Alert).filter(Alert.deleted_at.is_(None))
+        if region_ids:
+            query = query.outerjoin(Patient, Patient.id == Alert.patient_id).filter((Alert.patient_id.is_(None)) | (Patient.region_id.in_(region_ids)))
         if current_therapist:
             patient_ids = db.query(TherapySession.patient_id).filter(
                 TherapySession.therapist_id == current_therapist.id,
@@ -717,7 +748,9 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.filter(Alert.patient_id.in_(patient_ids))
         return query
     if table == "waitlist_entries":
-        query = db.query(WaitlistEntry).options(joinedload(WaitlistEntry.patient), joinedload(WaitlistEntry.preferred_therapist).joinedload(Therapist.user)).filter(WaitlistEntry.deleted_at.is_(None))
+        query = db.query(WaitlistEntry).options(joinedload(WaitlistEntry.patient), joinedload(WaitlistEntry.preferred_therapist)).filter(WaitlistEntry.deleted_at.is_(None))
+        if region_ids:
+            query = query.join(Patient, Patient.id == WaitlistEntry.patient_id).filter(Patient.region_id.in_(region_ids))
         if current_therapist:
             patient_ids = db.query(TherapySession.patient_id).filter(
                 TherapySession.therapist_id == current_therapist.id,
@@ -726,13 +759,16 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.filter(WaitlistEntry.patient_id.in_(patient_ids))
         return query
     if table == "documents":
-        return db.query(Document).options(joinedload(Document.patient)).filter(Document.deleted_at.is_(None))
+        query = db.query(Document).options(joinedload(Document.patient)).filter(Document.deleted_at.is_(None))
+        if region_ids:
+            query = query.join(Patient, Patient.id == Document.patient_id).filter(Patient.region_id.in_(region_ids))
+        return query
     if table == "audit_logs":
         return db.query(AuditLog)
     if table == "session_notes":
-        return db.query(SessionNote).options(joinedload(SessionNote.session).joinedload(TherapySession.therapist).joinedload(Therapist.user)).filter(SessionNote.deleted_at.is_(None))
+        return db.query(SessionNote).options(joinedload(SessionNote.session).joinedload(TherapySession.therapist)).filter(SessionNote.deleted_at.is_(None))
     if table == "session_assignments":
-        return db.query(SessionAssignment).options(joinedload(SessionAssignment.session).joinedload(TherapySession.therapist).joinedload(Therapist.user))
+        return db.query(SessionAssignment).options(joinedload(SessionAssignment.session).joinedload(TherapySession.therapist))
     raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
 
 
@@ -785,8 +821,7 @@ def _apply_filters(query, table: str, filters: list[dict]):
             elif op == "eq":
                 query = query.filter(expression == value)
         elif field == "is_active" and table == "therapists":
-            if op == "eq":
-                query = query.filter(Therapist.is_available == (str(value).lower() == "true"))
+            continue
         elif field == "is_resolved" and table == "alerts":
             if op == "eq":
                 query = query.filter(Alert.is_active == (str(value).lower() == "false"))
@@ -855,7 +890,6 @@ async def register(payload: dict, db: Session = Depends(get_db)):
     )
     db.add(user)
     db.flush()
-    db.add(UserRole(user_id=user.id, role_id=_role(db, "admin").id))
     db.commit()
     db.refresh(user)
     return {"data": {"user": _user_shape(user, db)}}
@@ -875,8 +909,9 @@ async def change_password(payload: dict, request: Request, db: Session = Depends
 
     if not old_password or not new_password:
         raise HTTPException(status_code=400, detail="Old password and new password are required")
-    if len(new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    password_error = _password_policy_error(new_password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
     if old_password == new_password:
         raise HTTPException(status_code=400, detail="New password must be different from old password")
     if not verify_password(old_password, user.hashed_password):
@@ -960,8 +995,9 @@ async def reset_password(payload: dict, request: Request, db: Session = Depends(
 
     if not token or not new_password:
         raise HTTPException(status_code=400, detail="Token and new password are required")
-    if len(new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    password_error = _password_policy_error(new_password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
 
     reset_token = (
         db.query(PasswordResetToken)
@@ -1279,7 +1315,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
         total = len(therapist_sessions)
         utilization.append({
             "id": therapist.id,
-            "name": _full_name(therapist.user),
+            "name": therapist.name,
             "completedSessions": completed,
             "scheduledSessions": scheduled,
             "totalSessions": total,
@@ -1318,7 +1354,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
             "id": session.id,
             "patientName": f"{session.patient.first_name} {session.patient.last_name}".strip() if session.patient else "Unknown",
             "patientCode": f"PT-{session.patient_id:04d}",
-            "therapistName": _full_name(session.therapist.user) if session.therapist else "Unknown",
+            "therapistName": session.therapist.name if session.therapist else "Unknown",
             "sessionDate": _iso(session.session_date),
             "amount": round(amount, 2),
         })
@@ -1349,7 +1385,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
             "scheduledSlots": scheduled,
             "remainingSlots": remaining,
             "progressPercent": round((completed / total_slots) * 100) if total_slots else 0,
-            "currentTherapist": _full_name(current_session.therapist.user) if current_session and current_session.therapist else None,
+            "currentTherapist": current_session.therapist.name if current_session and current_session.therapist else None,
             "currentStatus": _status_value(current_session.status) if current_session else None,
             "nextSessionDate": _iso(current_session.session_date) if current_session else None,
         })
@@ -1464,6 +1500,7 @@ async def update_rows(table: str, request: Request, payload: dict = Body(...), f
 def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
     region = _default_region(db)
     user_id = user.id if user else None
+    region_id = item.get("region_id") or _primary_region_id(db, user) or region.id
     if table == "patients":
         first, last = _split_name(item.get("full_name", ""))
         row = Patient(
@@ -1475,9 +1512,9 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             phone=item.get("phone"),
             address=item.get("address"),
             diagnosis=item.get("diagnosis"),
-            medical_history=item.get("notes"),
-            emergency_contact=item.get("emergency_contact"),
-            region_id=user.region_id if user else region.id,
+            notes=item.get("notes"),
+            alternate_contact=item.get("emergency_contact"),
+            region_id=region_id,
         )
     elif table == "appointments":
         start = _parse_dt(item["scheduled_at"])
@@ -1488,7 +1525,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             end_time=start + timedelta(minutes=int(item.get("duration_minutes") or 60)),
             status=item.get("status") or "scheduled",
             notes=item.get("notes"),
-            region_id=user.region_id if user else region.id,
+            region_id=region_id,
         )
     elif table == "sessions":
         row = TherapySession(
@@ -1513,12 +1550,11 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         return None
     elif table == "therapists":
         row = Therapist(
-            user_id=item["user_id"],
-            license_number=item.get("license_number") or f"LIC-{int(datetime.utcnow().timestamp())}",
-            specialization=item.get("specialization"),
+            name=item.get("full_name") or item.get("name") or f"Therapist {int(datetime.utcnow().timestamp())}",
             qualification=item.get("bio"),
-            is_available=True,
-            region_id=user.region_id if user else region.id,
+            region_id=region_id,
+            created_by=user_id,
+            updated_by=user_id,
         )
     elif table == "therapist_availability":
         therapist_id = item.get("therapist_id")
@@ -1546,7 +1582,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             first_name=first,
             last_name=last,
             phone=item.get("phone"),
-            region_id=user.region_id if user else region.id,
+            region_id=region_id,
             is_active=True,
             is_verified=True,
         )
@@ -1558,7 +1594,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         row = Invoice(
             invoice_number=item.get("invoice_number") or f"INV-{int(datetime.utcnow().timestamp())}",
             patient_id=item["patient_id"],
-            region_id=user.region_id if user else region.id,
+            region_id=region_id,
             issue_date=date.today(),
             due_date=_parse_date(item.get("due_date")) or date.today(),
             total_amount=total,
@@ -1567,14 +1603,21 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             description=item.get("notes") or item.get("description"),
         )
     elif table == "payments":
+        patient_id = item.get("patient_id")
+        if not patient_id and item.get("invoice_id"):
+            invoice = db.query(Invoice).filter(Invoice.id == item["invoice_id"]).first()
+            patient_id = invoice.patient_id if invoice else None
+        if not patient_id:
+            raise HTTPException(status_code=400, detail="patient_id is required")
         row = Payment(
-            invoice_id=item["invoice_id"],
-            amount=item["amount"],
-            payment_method=item.get("payment_method") or "cash",
-            transaction_id=item.get("reference_number"),
-            status=item.get("status") or "completed",
+            patient_id=patient_id,
+            payment_amount=item["amount"],
+            payment_mode=item.get("payment_method") or "cash",
+            payment_status=item.get("status") or "completed",
             payment_date=_parse_dt(item.get("payment_date")) if item.get("payment_date") else _now(),
-            notes=item.get("notes"),
+            remark=item.get("notes") or item.get("reference_number"),
+            created_by=user_id,
+            updated_by=user_id,
         )
     elif table == "alerts":
         row = Alert(
@@ -1619,7 +1662,7 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
     if table == "patients":
         if "full_name" in item:
             row.first_name, row.last_name = _split_name(item["full_name"])
-        for key, attr in {"phone": "phone", "email": "email", "address": "address", "diagnosis": "diagnosis", "notes": "medical_history", "emergency_contact": "emergency_contact"}.items():
+        for key, attr in {"phone": "phone", "email": "email", "address": "address", "diagnosis": "diagnosis", "notes": "notes", "emergency_contact": "alternate_contact"}.items():
             if key in item:
                 setattr(row, attr, item[key])
         if "date_of_birth" in item:
@@ -1641,7 +1684,9 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
         if "therapist_id" in item:
             row.therapist_id = item["therapist_id"]
     elif table == "therapists":
-        for key, attr in {"specialization": "specialization", "license_number": "license_number", "bio": "qualification", "is_active": "is_available"}.items():
+        if "full_name" in item:
+            row.name = item["full_name"]
+        for key, attr in {"specialization": "qualification", "bio": "qualification"}.items():
             if key in item:
                 setattr(row, attr, item[key])
     elif table == "therapist_availability":
