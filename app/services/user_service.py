@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from datetime import datetime, timedelta
-from app.models.models import User, UserRole, Role
+from app.models.models import User, UserRole, Role, UserRegionMapping
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token
 from app.schemas.schemas import UserCreate, UserUpdate
 from app.utils.query_utils import soft_delete, filter_by_region
@@ -127,11 +127,20 @@ class AuthService:
     def create_tokens(user: User, db: Session) -> dict:
         """Create access and refresh tokens for user"""
         roles = UserService.get_user_roles(db, user.id)
+        region_ids = [
+            region_id
+            for (region_id,) in (
+                db.query(UserRegionMapping.regionid)
+                .filter(UserRegionMapping.userid == user.id)
+                .all()
+            )
+        ]
         
         token_data = {
             "user_id": user.id,
             "username": user.username,
-            "region_id": user.region_id,
+            "region_id": region_ids[0] if region_ids else None,
+            "region_ids": region_ids,
             "roles": roles,
             "email": user.email
         }

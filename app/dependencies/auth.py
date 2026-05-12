@@ -4,11 +4,22 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from app.core.database import get_db
 from app.core.security import decode_token, TokenData
-from app.models.models import User, UserRole, Role
+from app.models.models import User, UserRole, Role, UserRegionMapping
 from app.core.config import get_settings
 
 settings = get_settings()
 security = HTTPBearer()
+
+
+def _user_region_ids(db: Session, user_id: int) -> list[int]:
+    return [
+        region_id
+        for (region_id,) in (
+            db.query(UserRegionMapping.regionid)
+            .filter(UserRegionMapping.userid == user_id)
+            .all()
+        )
+    ]
 
 
 async def get_current_user(
@@ -27,7 +38,6 @@ async def get_current_user(
     
     user_id: int = payload.get("user_id")
     username: str = payload.get("username")
-    region_id: int = payload.get("region_id")
     
     if not user_id or not username:
         raise HTTPException(
@@ -95,6 +105,7 @@ async def get_user_roles(
 
 async def check_region_access(
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
     target_region_id: Optional[int] = None
 ) -> bool:
     """Check if user can access target region"""
@@ -105,7 +116,8 @@ async def check_region_access(
         return True
     
     # Non-admin users can only access their own region
-    if target_region_id and current_user.region_id != target_region_id:
+    region_ids = _user_region_ids(db, current_user.id)
+    if target_region_id and target_region_id not in region_ids:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You don't have access to this region",
@@ -126,10 +138,11 @@ def get_token_data(
     ).all()
     
     roles = [role.name for role in user_roles]
+    region_ids = _user_region_ids(db, current_user.id)
     
     return TokenData(
         user_id=current_user.id,
         username=current_user.username,
-        region_id=current_user.region_id,
+        region_id=region_ids[0] if region_ids else None,
         roles=roles
     )

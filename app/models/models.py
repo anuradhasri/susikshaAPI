@@ -90,7 +90,6 @@ class User(Base):
 
     region = relationship("Region", back_populates="users")
     user_roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
-    therapist_profile = relationship("Therapist", back_populates="user", uselist=False)
 
     __table_args__ = (
         Index("idx_user_region_id", "region_id"),
@@ -140,6 +139,18 @@ class PasswordResetToken(Base):
     )
 
 
+class UserRegionMapping(Base):
+    __tablename__ = "user_region_mapping"
+
+    id = Column(Integer, primary_key=True, index=True)
+    userid = Column(Integer, nullable=False, index=True)
+    regionid = Column(Integer, nullable=False, index=True)
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 # ============== REGIONS ==============
 
 class Region(Base):
@@ -173,13 +184,19 @@ class Patient(Base):
     email = Column(String(255), nullable=True)
     phone = Column(String(20), nullable=True)
     address = Column(Text, nullable=True)
+    father_name = Column(String(255), nullable=True)
+    mother_name = Column(String(255), nullable=True)
     diagnosis = Column(String(255), nullable=True)
-    medical_history = Column(Text, nullable=True)
-    emergency_contact = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    alternate_contact = Column(String(255), nullable=True)
+    clinical_observation = Column(Text, nullable=True)
+    status = Column(String(50), nullable=True)
+    is_available = Column(Boolean, default=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
 
     region = relationship("Region", back_populates="patients")
     appointments = relationship("Appointment", back_populates="patient")
@@ -202,17 +219,14 @@ class Therapist(Base):
     __tablename__ = "therapists"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
-    license_number = Column(String(100), unique=True, nullable=False)
-    specialization = Column(String(255), nullable=True)
+    name = Column(String(255), nullable=False)
     qualification = Column(Text, nullable=True)
-    is_available = Column(Boolean, default=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    user = relationship("User", back_populates="therapist_profile")
     region = relationship("Region", back_populates="therapists")
     appointments = relationship("Appointment", back_populates="therapist")
     sessions = relationship("Session", back_populates="therapist")
@@ -220,8 +234,23 @@ class Therapist(Base):
 
     __table_args__ = (
         Index("idx_therapist_region_id", "region_id"),
-        Index("idx_therapist_user_id", "user_id"),
     )
+
+    @property
+    def user_id(self):
+        return None
+
+    @property
+    def license_number(self):
+        return None
+
+    @property
+    def specialization(self):
+        return self.qualification
+
+    @property
+    def is_available(self):
+        return True
 
 
 class TherapistAvailability(Base):
@@ -419,7 +448,6 @@ class Invoice(Base):
     patient = relationship("Patient", back_populates="invoices")
     region = relationship("Region", back_populates="invoices")
     invoice_items = relationship("InvoiceItem", back_populates="invoice")
-    payments = relationship("Payment", back_populates="invoice")
 
     __table_args__ = (
         Index("idx_invoice_patient_id", "patient_id"),
@@ -453,23 +481,63 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(Integer, primary_key=True, index=True)
-    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
-    amount = Column(Float, nullable=False)
-    payment_method = Column(String(50), nullable=False)
-    transaction_id = Column(String(100), nullable=True)
-    status = Column(Enum(PaymentStatusEnum), default=PaymentStatusEnum.PENDING)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    payment_amount = Column(Float, nullable=False)
+    payment_status = Column(String(50), nullable=False)
+    payment_mode = Column(String(50), nullable=False)
+    remark = Column(Text, nullable=True)
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
     payment_date = Column(DateTime(timezone=True), nullable=True)
-    notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    invoice = relationship("Invoice", back_populates="payments")
+    patient = relationship("Patient")
 
     __table_args__ = (
-        Index("idx_payment_invoice_id", "invoice_id"),
-        Index("idx_payment_status", "status"),
+        Index("idx_payment_patient_id", "patient_id"),
+        Index("idx_payment_status", "payment_status"),
     )
+
+    @property
+    def invoice_id(self):
+        return None
+
+    @property
+    def amount(self):
+        return self.payment_amount
+
+    @amount.setter
+    def amount(self, value):
+        self.payment_amount = value
+
+    @property
+    def payment_method(self):
+        return self.payment_mode
+
+    @payment_method.setter
+    def payment_method(self, value):
+        self.payment_mode = value
+
+    @property
+    def transaction_id(self):
+        return None
+
+    @property
+    def status(self):
+        return self.payment_status
+
+    @status.setter
+    def status(self, value):
+        self.payment_status = value
+
+    @property
+    def notes(self):
+        return self.remark
+
+    @notes.setter
+    def notes(self, value):
+        self.remark = value
 
 
 # ============== NOTIFICATIONS & ALERTS ==============
