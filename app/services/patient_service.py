@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from app.models.models import Patient, PatientPackage, PatientDuplicate
+from app.repositories.patient_repository import PatientRepository
 from app.schemas.schemas import PatientCreate, PatientUpdate
 from app.utils.query_utils import soft_delete, filter_by_region, detect_duplicate_patients, check_exact_duplicates
 
@@ -11,23 +12,12 @@ class PatientService:
     @staticmethod
     def create_patient(db: Session, patient_create: PatientCreate) -> Patient:
         """Create a new patient"""
-        db_patient = Patient(**patient_create.dict())
-        
-        db.add(db_patient)
-        db.commit()
-        db.refresh(db_patient)
+        db_patient = PatientRepository.create(db, patient_create)
         
         # Check for duplicates
         duplicates = detect_duplicate_patients(db, db_patient.id, db_patient.region_id)
         for dup_id, similarity, matched_fields in duplicates:
-            dup_record = PatientDuplicate(
-                patient_id_1=db_patient.id,
-                patient_id_2=dup_id,
-                similarity_score=similarity,
-                matched_fields=matched_fields,
-                status="pending"
-            )
-            db.add(dup_record)
+            PatientRepository.add_duplicate(db, db_patient.id, dup_id, similarity, matched_fields)
         
         db.commit()
         return db_patient
@@ -35,15 +25,7 @@ class PatientService:
     @staticmethod
     def get_patient_by_id(db: Session, patient_id: int, region_id: int = None) -> Patient:
         """Get patient by ID with region filtering"""
-        query = db.query(Patient).filter(
-            Patient.id == patient_id,
-            Patient.deleted_at.is_(None)
-        )
-        
-        if region_id:
-            query = filter_by_region(query, region_id, Patient)
-        
-        return query.first()
+        return PatientRepository.get_by_id(db, patient_id, region_id)
     
     @staticmethod
     def update_patient(db: Session, patient_id: int, patient_update: PatientUpdate, region_id: int = None) -> Patient:
@@ -52,9 +34,7 @@ class PatientService:
         if not patient:
             return None
         
-        for field, value in patient_update.dict(exclude_unset=True).items():
-            setattr(patient, field, value)
-        
+        PatientRepository.update(db, patient, patient_update)
         db.commit()
         db.refresh(patient)
         return patient
@@ -62,31 +42,17 @@ class PatientService:
     @staticmethod
     def delete_patient(db: Session, patient_id: int) -> bool:
         """Soft delete patient"""
-        patient = soft_delete(db, Patient, patient_id)
-        return patient is not None
+        return PatientRepository.delete(db, patient_id)
     
     @staticmethod
     def list_patients(db: Session, region_id: int = None, skip: int = 0, limit: int = 100) -> tuple:
         """List patients with optional region filtering"""
-        query = db.query(Patient).filter(Patient.deleted_at.is_(None))
-        
-        if region_id:
-            query = filter_by_region(query, region_id, Patient)
-        
-        total = query.count()
-        patients = query.offset(skip).limit(limit).all()
-        
-        return patients, total
+        return PatientRepository.list(db, region_id, skip, limit)
     
     @staticmethod
     def get_patient_packages(db: Session, patient_id: int, region_id: int = None) -> list:
         """Get packages for a patient"""
-        query = db.query(PatientPackage).filter(
-            PatientPackage.patient_id == patient_id,
-            PatientPackage.deleted_at.is_(None)
-        )
-        
-        return query.all()
+        return PatientRepository.list_packages(db, patient_id)
     
     @staticmethod
     def check_package_availability(db: Session, patient_id: int) -> dict:

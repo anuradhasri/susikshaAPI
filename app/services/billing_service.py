@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from decimal import Decimal
 from datetime import date, datetime
 from app.models.models import Invoice, InvoiceItem, Patient, Payment, PaymentModeMaster, Therapist, UserRegionMapping
+from app.repositories.payment_repository import PaymentRepository
 from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, PaymentCreate, PaymentListRequest
 from app.utils.query_utils import soft_delete, filter_by_region
 
@@ -114,32 +115,15 @@ class PaymentService:
     @staticmethod
     def record_payment(db: Session, payment_create: PaymentCreate) -> Payment:
         """Record a payment"""
-        payment = Payment(**payment_create.dict())
-        payment.status = "pending"
-        
-        db.add(payment)
+        payment = PaymentService.add_payment(db, payment_create)
         db.commit()
         db.refresh(payment)
-        
-        # Update invoice paid amount
-        invoice = db.query(Invoice).filter(Invoice.id == payment.invoice_id).first()
-        if invoice:
-            invoice.paid_amount += payment.amount
-            
-            if invoice.paid_amount >= invoice.total_amount:
-                invoice.status = "paid"
-            
-            db.commit()
-        
         return payment
     
     @staticmethod
     def get_payment_by_id(db: Session, payment_id: int) -> Payment:
         """Get payment by ID"""
-        return db.query(Payment).filter(
-            Payment.id == payment_id,
-            Payment.deleted_at.is_(None)
-        ).first()
+        return PaymentRepository.get_by_id(db, payment_id)
     
     @staticmethod
     def update_payment_status(db: Session, payment_id: int, status: str) -> Payment:
@@ -262,10 +246,8 @@ class PaymentService:
                     detail="Amount must be greater than zero"
                 )
 
-            payment_status = (
-                "PAID"
-                if payment_create.payment_mode is not None
-                else "PENDING"
+            payment_status = payment_create.payment_status or (
+                "PAID" if payment_create.payment_mode is not None else "PENDING"
             )
 
             saved_payment_date = (

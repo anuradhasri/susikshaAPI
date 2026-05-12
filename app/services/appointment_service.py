@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from datetime import datetime, date
 from app.models.models import Appointment, Session as DBSession, SessionNote, Therapist, PatientPackage
+from app.repositories.appointment_repository import AppointmentRepository
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate
 from app.utils.query_utils import soft_delete, filter_by_region
 from app.services.patient_service import PatientService
@@ -14,10 +15,7 @@ class AppointmentService:
     def create_appointment(db: Session, appointment_create: AppointmentCreate) -> Appointment:
         """Create a new appointment"""
         # Check therapist availability
-        therapist = db.query(Therapist).filter(
-            Therapist.id == appointment_create.therapist_id,
-            Therapist.deleted_at.is_(None)
-        ).first()
+        therapist = AppointmentRepository.get_therapist(db, appointment_create.therapist_id)
         
         if not therapist or not therapist.is_available:
             raise ValueError("Therapist is not available")
@@ -27,8 +25,15 @@ class AppointmentService:
         if not package_check["has_available_sessions"]:
             raise ValueError("Patient has no available sessions in any package")
         
-        db_appointment = Appointment(**appointment_create.dict())
-        db.add(db_appointment)
+        if AppointmentRepository.has_conflict(
+            db,
+            appointment_create.therapist_id,
+            appointment_create.start_time,
+            appointment_create.end_time,
+        ):
+            raise ValueError("Therapist already has an appointment in this time slot")
+
+        db_appointment = AppointmentRepository.create(db, appointment_create)
         db.commit()
         db.refresh(db_appointment)
         return db_appointment
@@ -36,15 +41,7 @@ class AppointmentService:
     @staticmethod
     def get_appointment_by_id(db: Session, appointment_id: int, region_id: int = None) -> Appointment:
         """Get appointment by ID with region filtering"""
-        query = db.query(Appointment).filter(
-            Appointment.id == appointment_id,
-            Appointment.deleted_at.is_(None)
-        )
-        
-        if region_id:
-            query = filter_by_region(query, region_id, Appointment)
-        
-        return query.first()
+        return AppointmentRepository.get_by_id(db, appointment_id, region_id)
     
     @staticmethod
     def update_appointment(db: Session, appointment_id: int, appointment_update: AppointmentUpdate, region_id: int = None) -> Appointment:
@@ -53,9 +50,7 @@ class AppointmentService:
         if not appointment:
             return None
         
-        for field, value in appointment_update.dict(exclude_unset=True).items():
-            setattr(appointment, field, value)
-        
+        AppointmentRepository.update(db, appointment, appointment_update)
         db.commit()
         db.refresh(appointment)
         return appointment
@@ -63,8 +58,7 @@ class AppointmentService:
     @staticmethod
     def delete_appointment(db: Session, appointment_id: int) -> bool:
         """Soft delete appointment"""
-        appointment = soft_delete(db, Appointment, appointment_id)
-        return appointment is not None
+        return AppointmentRepository.delete(db, appointment_id)
     
     @staticmethod
     def list_appointments(
@@ -78,41 +72,21 @@ class AppointmentService:
         limit: int = 100
     ) -> tuple:
         """List appointments with filtering"""
-        query = db.query(Appointment).filter(Appointment.deleted_at.is_(None))
-        
-        if region_id:
-            query = filter_by_region(query, region_id, Appointment)
-        
-        if therapist_id:
-            query = query.filter(Appointment.therapist_id == therapist_id)
-        
-        if patient_id:
-            query = query.filter(Appointment.patient_id == patient_id)
-        
-        if start_date:
-            query = query.filter(Appointment.start_time >= start_date)
-        
-        if end_date:
-            query = query.filter(Appointment.end_time <= end_date)
-        
-        total = query.count()
-        appointments = query.offset(skip).limit(limit).all()
-        
-        return appointments, total
+        return AppointmentRepository.list(
+            db,
+            region_id=region_id,
+            therapist_id=therapist_id,
+            patient_id=patient_id,
+            start_date=start_date,
+            end_date=end_date,
+            skip=skip,
+            limit=limit,
+        )
     
     @staticmethod
     def check_therapist_availability(db: Session, therapist_id: int, start_time: datetime, end_time: datetime) -> bool:
         """Check if therapist is available for given time slot"""
-        conflict = db.query(Appointment).filter(
-            Appointment.therapist_id == therapist_id,
-            Appointment.status != "cancelled",
-            or_(
-                and_(Appointment.start_time < end_time, Appointment.end_time > start_time)
-            ),
-            Appointment.deleted_at.is_(None)
-        ).first()
-        
-        return conflict is None
+        return not AppointmentRepository.has_conflict(db, therapist_id, start_time, end_time)
 
 
 class SessionService:

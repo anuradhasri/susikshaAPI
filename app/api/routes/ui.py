@@ -25,6 +25,7 @@ from app.models.models import (
     PatientPackage,
     PasswordResetToken,
     Payment,
+    PaymentModeMaster,
     Region,
     Role,
     Session as TherapySession,
@@ -501,6 +502,25 @@ def _payment_shape(payment: Payment) -> dict:
     }
 
 
+def _payment_mode_id(db: Session, value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+
+    mode_name = str(value).strip()
+    mode = db.query(PaymentModeMaster).filter(PaymentModeMaster.mode_name == mode_name).first()
+    if mode:
+        return mode.id
+
+    mode = PaymentModeMaster(mode_name=mode_name)
+    db.add(mode)
+    db.flush()
+    return mode.id
+
+
 def _alert_shape(alert: Alert) -> dict:
     severity = {"low": "info", "medium": "warning", "high": "warning"}.get(alert.severity, alert.severity)
     return {
@@ -636,6 +656,20 @@ SHAPERS = {
 }
 
 
+ALLOWED_UI_TABLES = {
+    "patients",
+    "therapists",
+    "therapist_availability",
+    "appointments",
+    "sessions",
+    "patient_packages",
+    "invoices",
+    "payments",
+    "session_notes",
+    "session_assignments",
+}
+
+
 def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
 
@@ -653,6 +687,9 @@ def _parse_time(value: Optional[str]) -> Optional[time]:
 
 
 def _base_query(table: str, db: Session, user: Optional[User]):
+    if table not in ALLOWED_UI_TABLES:
+        raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
+
     region_ids = _user_region_ids(db, user)
     roles = _user_roles(db, user)
     current_therapist = _current_therapist(db, user) if "therapist" in roles else None
@@ -790,9 +827,6 @@ def _column_for(table: str, field: str):
         return FIELD_MAP[field]
     model_map = {
         "patients": Patient,
-        "users": User,
-        "roles": Role,
-        "user_roles": UserRole,
         "therapists": Therapist,
         "therapist_availability": TherapistAvailability,
         "appointments": Appointment,
@@ -800,13 +834,11 @@ def _column_for(table: str, field: str):
         "patient_packages": PatientPackage,
         "invoices": Invoice,
         "payments": Payment,
-        "alerts": Alert,
-        "waitlist_entries": WaitlistEntry,
-        "documents": Document,
-        "audit_logs": AuditLog,
         "session_notes": SessionNote,
         "session_assignments": SessionAssignment,
     }
+    if table not in model_map:
+        raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
     return getattr(model_map[table], field, None)
 
 
@@ -867,6 +899,25 @@ async def login(payload: dict, db: Session = Depends(get_db)):
     return {"data": {"session": tokens, "user": _user_shape(user, db)}}
 
 
+@router.post("/auth/refresh")
+async def refresh_session(payload: dict, db: Session = Depends(get_db)):
+    refresh_token = payload.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=400, detail="Refresh token is required")
+
+    token_payload = decode_token(refresh_token)
+    if not token_payload or token_payload.get("type") != "refresh":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    user_id = token_payload.get("user_id")
+    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    tokens = AuthService.create_tokens(user, db)
+    return {"data": {"session": tokens, "user": _user_shape(user, db)}}
+
+
 @router.post("/auth/register")
 async def register(payload: dict, db: Session = Depends(get_db)):
     email = payload.get("email")
@@ -878,18 +929,20 @@ async def register(payload: dict, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
     first_name, last_name = _split_name(full_name)
     region = _default_region(db)
+    region_id = payload.get("region_id") or region.id
     user = User(
         username=email,
         email=email,
         hashed_password=hash_password(password),
         first_name=first_name,
         last_name=last_name,
-        region_id=region.id,
+        region_id=region_id,
         is_active=True,
         is_verified=True,
     )
     db.add(user)
     db.flush()
+    db.add(UserRegionMapping(userid=user.id, regionid=region_id, created_by=user.id, updated_by=user.id))
     db.commit()
     db.refresh(user)
     return {"data": {"user": _user_shape(user, db)}}
@@ -1498,6 +1551,9 @@ async def update_rows(table: str, request: Request, payload: dict = Body(...), f
 
 
 def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
+    if table not in ALLOWED_UI_TABLES:
+        raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
+
     region = _default_region(db)
     user_id = user.id if user else None
     region_id = item.get("region_id") or _primary_region_id(db, user) or region.id
@@ -1612,7 +1668,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         row = Payment(
             patient_id=patient_id,
             payment_amount=item["amount"],
-            payment_mode=item.get("payment_method") or "cash",
+            payment_mode=_payment_mode_id(db, item.get("payment_method")),
             payment_status=item.get("status") or "completed",
             payment_date=_parse_dt(item.get("payment_date")) if item.get("payment_date") else _now(),
             remark=item.get("notes") or item.get("reference_number"),
@@ -1659,6 +1715,9 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
 
 
 def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[User]):
+    if table not in ALLOWED_UI_TABLES:
+        raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
+
     if table == "patients":
         if "full_name" in item:
             row.first_name, row.last_name = _split_name(item["full_name"])

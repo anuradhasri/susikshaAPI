@@ -23,7 +23,7 @@ async def create_invoice(
 ):
     """Create a new invoice"""
     # Check region access
-    await check_region_access(current_user, invoice_create.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=invoice_create.region_id)
     
     try:
         invoice = BillingService.create_invoice(db, invoice_create)
@@ -60,7 +60,7 @@ async def get_invoice(
         )
     
     # Check region access
-    await check_region_access(current_user, invoice.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=invoice.region_id)
     
     return invoice
 
@@ -82,7 +82,7 @@ async def update_invoice(
         )
     
     # Check region access
-    await check_region_access(current_user, invoice.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=invoice.region_id)
     
     try:
         updated_invoice = BillingService.update_invoice(db, invoice_id, invoice_update, current_user.region_id)
@@ -115,7 +115,7 @@ async def delete_invoice(
         )
     
     # Check region access
-    await check_region_access(current_user, invoice.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=invoice.region_id)
     
     try:
         BillingService.delete_invoice(db, invoice_id)
@@ -174,7 +174,7 @@ async def issue_invoice(
         )
     
     # Check region access
-    await check_region_access(current_user, invoice.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=invoice.region_id)
     
     try:
         issued_invoice = BillingService.mark_as_issued(db, invoice_id)
@@ -195,21 +195,15 @@ async def issue_invoice(
 
 # add payment
 
-@router.post(
-    "/addpayment",
-    response_model=PaymentResponse,
-    status_code=status.HTTP_201_CREATED
-)
+@router.post("/payments", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 async def add_payment(
     payment_create: PaymentCreate,
+    current_user: User = Depends(get_current_user),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
 
     try:
-
-        # Optional Region Access Validation
-        # await check_region_access(current_user, payment_create.region_id)
 
         payment = PaymentService.add_payment(
             db=db,
@@ -322,13 +316,6 @@ async def get_payment(
             detail="Payment not found"
         )
     
-    # Get invoice and check region access
-    from app.models.models import Invoice
-    invoice = db.query(Invoice).filter(Invoice.id == payment.invoice_id).first()
-    
-    if invoice:
-        await check_region_access(current_user, invoice.region_id)
-    
     return payment
 
 
@@ -365,7 +352,7 @@ async def update_payment_status(
 
 @router.get("/payments", response_model=PaginatedResponse)
 async def list_payments(
-    invoice_id: int = Query(None),
+    patient_id: int = Query(None),
     status: str = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
@@ -380,6 +367,9 @@ async def list_payments(
         skip=skip,
         limit=limit
     )
+    if patient_id:
+        payments = [payment for payment in payments if payment.patient_id == patient_id]
+        total = len(payments)
     
     return {
         "total": total,
