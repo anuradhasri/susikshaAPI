@@ -1,6 +1,5 @@
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
-from email.message import EmailMessage
 import hashlib
 import secrets
 import smtplib
@@ -14,6 +13,7 @@ from sqlalchemy.orm import Session, joinedload, object_session
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_token, hash_password, verify_password
+from app.email_templates.password_reset import build_password_reset_email
 from app.models.models import (
     Alert,
     Appointment,
@@ -62,6 +62,18 @@ def _password_reset_url(token: str) -> str:
     return f"{base_url}/reset-password?{urlencode({'token': token})}"
 
 
+def _password_policy_error(password: str) -> Optional[str]:
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    if not any(char.isupper() for char in password):
+        return "Password must include at least one uppercase letter"
+    if not any(char.isdigit() for char in password):
+        return "Password must include at least one number"
+    if not any(not char.isalnum() for char in password):
+        return "Password must include at least one special character"
+    return None
+
+
 def _write_audit_log(
     db: Session,
     *,
@@ -88,25 +100,22 @@ def _write_audit_log(
 
 
 def _send_password_reset_email(email: str, reset_url: str) -> bool:
-    if not settings.SMTP_HOST:
+    if not settings.email_host:
         return False
 
-    message = EmailMessage()
-    message["Subject"] = "Reset your Sushiksha password"
-    message["From"] = settings.SMTP_FROM_EMAIL
-    message["To"] = email
-    message.set_content(
-        "We received a request to reset your Sushiksha password.\n\n"
-        f"Use this link within {settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES} minutes:\n"
-        f"{reset_url}\n\n"
-        "If you did not request this, you can ignore this email."
+    message = build_password_reset_email(
+        to_email=email,
+        from_email=settings.email_from,
+        reset_url=reset_url,
+        expires_in_minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES,
     )
 
-    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as smtp:
-        if settings.SMTP_USE_TLS:
+    smtp_class = smtplib.SMTP_SSL if settings.email_use_ssl else smtplib.SMTP
+    with smtp_class(settings.email_host, settings.email_port, timeout=15) as smtp:
+        if settings.email_use_tls:
             smtp.starttls()
-        if settings.SMTP_USERNAME:
-            smtp.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+        if settings.email_username:
+            smtp.login(settings.email_username, settings.email_password)
         smtp.send_message(message)
     return True
 
@@ -875,8 +884,9 @@ async def change_password(payload: dict, request: Request, db: Session = Depends
 
     if not old_password or not new_password:
         raise HTTPException(status_code=400, detail="Old password and new password are required")
-    if len(new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    password_error = _password_policy_error(new_password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
     if old_password == new_password:
         raise HTTPException(status_code=400, detail="New password must be different from old password")
     if not verify_password(old_password, user.hashed_password):
@@ -960,8 +970,9 @@ async def reset_password(payload: dict, request: Request, db: Session = Depends(
 
     if not token or not new_password:
         raise HTTPException(status_code=400, detail="Token and new password are required")
-    if len(new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    password_error = _password_policy_error(new_password)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
 
     reset_token = (
         db.query(PasswordResetToken)
