@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access
-from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, InvoiceResponse, PaymentCreate, PaymentResponse, PaginatedResponse
+from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, InvoiceResponse, PaginatedPaymentResponse, PaymentCreate, PaymentListRequest, PaymentResponse, PaginatedResponse
 from app.services.billing_service import BillingService, PaymentService
 from app.models.models import User
 from app.utils.logger import setup_logging
@@ -202,7 +202,7 @@ async def issue_invoice(
 )
 async def add_payment(
     payment_create: PaymentCreate,
-    # current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
 
@@ -213,8 +213,8 @@ async def add_payment(
 
         payment = PaymentService.add_payment(
             db=db,
-            payment_create=payment_create        
-            # created_by=current_user.id
+            payment_create=payment_create,        
+            created_by=current_user.id
         )
 
         logger.info(
@@ -222,7 +222,7 @@ async def add_payment(
             extra={
                 "payment_id": payment.id,
                 "patient_id": payment.patient_id,
-                # "user_id": current_user.id
+                "user_id": current_user.id
             }
         )
 
@@ -236,7 +236,7 @@ async def add_payment(
         logger.error(
             f"Error recording payment: {str(e)}",
             extra={
-                # "user_id": current_user.id
+                "user_id": current_user.id
             }
         )
 
@@ -245,6 +245,28 @@ async def add_payment(
             detail="Failed to record payment"
         )
 
+@router.get(
+    "/payments/list",
+    response_model=PaginatedPaymentResponse
+)
+async def list_payments(
+    request: PaymentListRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    payments, total = PaymentService.list_payments(
+        db=db,
+        request=request,
+        created_by=current_user.id
+    )
+
+    return {
+        "total": total,
+        "skip": request.skip,
+        "limit": request.limit,
+        "items": payments
+    }
 
 @router.post("/payments", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 async def record_payment(
@@ -347,13 +369,13 @@ async def list_payments(
     status: str = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    current_user: User = Depends(get_current_user),
+    # current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """List payments"""
     payments, total = PaymentService.list_payments(
         db,
-        invoice_id=invoice_id,
+        # invoice_id=invoice_id,
         status=status,
         skip=skip,
         limit=limit

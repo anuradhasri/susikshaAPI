@@ -1,9 +1,10 @@
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from decimal import Decimal
 from datetime import date, datetime
-from app.models.models import Invoice, InvoiceItem, Payment, Therapist
-from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, PaymentCreate
+from app.models.models import Invoice, InvoiceItem, Patient, Payment, PaymentModeMaster, Therapist, UserRegionMapping
+from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, PaymentCreate, PaymentListRequest
 from app.utils.query_utils import soft_delete, filter_by_region
 
 
@@ -155,26 +156,92 @@ class PaymentService:
         db.refresh(payment)
         return payment
     
+    # fetch payments list
+    
     @staticmethod
     def list_payments(
         db: Session,
-        invoice_id: int = None,
-        status: str = None,
-        skip: int = 0,
-        limit: int = 100
-    ) -> tuple:
-        """List payments with filtering"""
-        query = db.query(Payment).filter(Payment.deleted_at.is_(None))
-        
-        if invoice_id:
-            query = query.filter(Payment.invoice_id == invoice_id)
-        
-        if status:
-            query = query.filter(Payment.status == status)
-        
+        request: PaymentListRequest,
+        created_by: int
+    ):
+
+        # Get User Region IDs
+        user_regions = (
+            db.query(UserRegionMapping.regionid)
+            .filter(UserRegionMapping.userid == created_by)
+            .all()
+        )
+
+        region_ids = [region.regionid for region in user_regions]
+
+        query = (
+            db.query(
+                Payment.id.label("payment_id"),
+
+                Patient.first_name.label("first_name"),
+                Patient.last_name.label("last_name"),
+
+                func.concat(
+                    Patient.first_name,
+                    " ",
+                    Patient.last_name
+                ).label("full_name"),
+
+                PaymentModeMaster.payment_mode_name.label("payment_mode"),
+
+                Payment.payment_amount.label("payment_amount"),
+
+                Payment.payment_status.label("payment_status"),
+
+                Payment.remark.label("payment_remark"),
+
+                Payment.payment_date.label("payment_date")
+            )
+            .join(
+                Patient,
+                Patient.id == Payment.patient_id
+            )
+            .outerjoin(
+                PaymentModeMaster,
+                PaymentModeMaster.id == Payment.payment_mode
+            )
+
+            # REGION FILTER
+            .filter(
+                Patient.region_id.in_(region_ids)
+            )
+        )
+
+        # Additional Filters
+
+        if request.patient_id:
+            query = query.filter(
+                Payment.patient_id == request.patient_id
+            )
+
+        if request.payment_status:
+            query = query.filter(
+                Payment.payment_status == request.payment_status
+            )
+
+        if request.payment_mode_id:
+            query = query.filter(
+                Payment.payment_mode == request.payment_mode_id
+            )
+
+        print(
+            query.statement.compile(
+                compile_kwargs={"literal_binds": True}
+            )
+        )
         total = query.count()
-        payments = query.offset(skip).limit(limit).all()
-        
+        payments = (
+            query
+            .offset(request.skip)
+            .limit(request.limit)
+            .all()
+        )
+
         return payments, total
 
 #  add payment
@@ -183,7 +250,7 @@ class PaymentService:
     def add_payment(
         db: Session,
         payment_create: PaymentCreate,
-        # created_by: int
+        created_by: int
     ) -> Payment:
 
         try:
@@ -215,7 +282,7 @@ class PaymentService:
                 payment_status=payment_status,
                 remark=payment_create.remark,
                 payment_date=saved_payment_date,
-                # created_by=created_by
+                created_by=created_by
             )
 
             db.add(payment)

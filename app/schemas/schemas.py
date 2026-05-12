@@ -425,7 +425,43 @@ class PaymentUpdate(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = None
 
+class PaymentListRequest(BaseModel):
+    patient_id: Optional[int] = None
+    payment_status: Optional[str] = None
+    payment_mode_id: Optional[int] = None
+    skip: int = 0
+    limit: int = 100
+    
+class PaymentListResponse(BaseModel):
 
+    payment_id: int
+
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    full_name: Optional[str] = None
+
+    # LEFT JOIN can return NULL
+    payment_mode: Optional[str] = None
+
+    payment_amount: Decimal
+
+    # nullable=True in DB
+    payment_status: Optional[str] = None
+
+    payment_remark: Optional[str] = None
+
+    # DB column is DateTime
+    payment_date: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+        
+class PaginatedPaymentResponse(BaseModel):
+    total: int
+    skip: int
+    limit: int
+    items: list[PaymentListResponse]
+                
 class PaymentResponse(BaseModel):
     id: int
     patient_id: int

@@ -750,4 +750,4 @@ class PaymentModeMaster(Base):
     __tablename__ = "payment_mode_master"
 
     id = Column(Integer, primary_key=True, index=True)
-    mode_name = Column(String(50))
+    payment_mode_name = Column(String(50))
