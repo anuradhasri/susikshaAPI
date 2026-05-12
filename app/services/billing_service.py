@@ -1,6 +1,7 @@
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime
 from app.models.models import Invoice, InvoiceItem, Payment, Therapist
 from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, PaymentCreate
 from app.utils.query_utils import soft_delete, filter_by_region
@@ -176,6 +177,60 @@ class PaymentService:
         
         return payments, total
 
+#  add payment
+
+    @staticmethod
+    def add_payment(
+        db: Session,
+        payment_create: PaymentCreate,
+        # created_by: int
+    ) -> Payment:
+
+        try:
+
+            # Validate Amount
+            if payment_create.payment_amount <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Amount must be greater than zero"
+                )
+
+            payment_status = (
+                "PAID"
+                if payment_create.payment_mode is not None
+                else "PENDING"
+            )
+
+            saved_payment_date = (
+                payment_create.payment_date
+                or datetime.utcnow()
+            )
+            
+            
+            # Create Payment Object
+            payment = Payment(
+                patient_id=payment_create.patient_id,
+                payment_amount=payment_create.payment_amount,
+                payment_mode=payment_create.payment_mode,
+                payment_status=payment_status,
+                remark=payment_create.remark,
+                payment_date=saved_payment_date,
+                # created_by=created_by
+            )
+
+            db.add(payment)
+            db.commit()
+            db.refresh(payment)
+
+            return payment
+
+        except HTTPException as http_ex:
+            db.rollback()
+            raise http_ex
+
+        except Exception as e:
+            db.rollback()
+            raise Exception(str(e))
 
 class TherapistService:
     """Service for therapist operations"""
@@ -214,3 +269,4 @@ class TherapistService:
         therapists = query.offset(skip).limit(limit).all()
         
         return therapists, total
+

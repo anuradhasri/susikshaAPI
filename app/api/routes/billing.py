@@ -1,3 +1,5 @@
+from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -190,6 +192,59 @@ async def issue_invoice(
 
 
 # ============== PAYMENTS ==============
+
+# add payment
+
+@router.post(
+    "/addpayment",
+    response_model=PaymentResponse,
+    status_code=status.HTTP_201_CREATED
+)
+async def add_payment(
+    payment_create: PaymentCreate,
+    # current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    try:
+
+        # Optional Region Access Validation
+        # await check_region_access(current_user, payment_create.region_id)
+
+        payment = PaymentService.add_payment(
+            db=db,
+            payment_create=payment_create        
+            # created_by=current_user.id
+        )
+
+        logger.info(
+            "Payment recorded successfully",
+            extra={
+                "payment_id": payment.id,
+                "patient_id": payment.patient_id,
+                # "user_id": current_user.id
+            }
+        )
+
+        return payment
+
+    except HTTPException as http_ex:
+        raise http_ex
+
+    except Exception as e:
+
+        logger.error(
+            f"Error recording payment: {str(e)}",
+            extra={
+                # "user_id": current_user.id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to record payment"
+        )
+
 
 @router.post("/payments", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 async def record_payment(

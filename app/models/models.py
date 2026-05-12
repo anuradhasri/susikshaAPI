@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, Integer, Boolean, DateTime, ForeignKey, Float, Text,
+    DECIMAL, BigInteger, Column, String, Integer, Boolean, DateTime, ForeignKey, Float, Text,
     Enum, Date, Time, JSON, UniqueConstraint, Index
 )
 from sqlalchemy.orm import relationship
@@ -419,7 +419,7 @@ class Invoice(Base):
     patient = relationship("Patient", back_populates="invoices")
     region = relationship("Region", back_populates="invoices")
     invoice_items = relationship("InvoiceItem", back_populates="invoice")
-    payments = relationship("Payment", back_populates="invoice")
+    # payments = relationship("Payment", back_populates="invoice")
 
     __table_args__ = (
         Index("idx_invoice_patient_id", "patient_id"),
@@ -452,23 +452,41 @@ class InvoiceItem(Base):
 class Payment(Base):
     __tablename__ = "payments"
 
-    id = Column(Integer, primary_key=True, index=True)
-    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
-    amount = Column(Float, nullable=False)
-    payment_method = Column(String(50), nullable=False)
-    transaction_id = Column(String(100), nullable=True)
-    status = Column(Enum(PaymentStatusEnum), default=PaymentStatusEnum.PENDING)
-    payment_date = Column(DateTime(timezone=True), nullable=True)
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
 
-    invoice = relationship("Invoice", back_populates="payments")
+    patient_id = Column(Integer, nullable=False, index=True)
+
+    payment_amount = Column(DECIMAL(12, 2), nullable=False)
+
+    payment_status = Column(String(50), nullable=True)
+
+    payment_mode = Column(
+        Integer,
+        ForeignKey("payment_mode_master.id"),
+        nullable=True
+    )
+
+    remark = Column(Text, nullable=True)
+
+    created_by = Column(Integer, nullable=True)
+
+    updated_by = Column(Integer, nullable=True)
+
+    created_at = Column(
+        DateTime,
+        server_default=func.now()
+    )
+
+    updated_at = Column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    payment_date = Column(DateTime, nullable=True)
 
     __table_args__ = (
-        Index("idx_payment_invoice_id", "invoice_id"),
-        Index("idx_payment_status", "status"),
+        Index("idx_payment_status", "payment_status"),
     )
 
 
@@ -618,3 +636,9 @@ class PatientDuplicate(Base):
         Index("idx_patient_duplicate_patient_id_2", "patient_id_2"),
         Index("idx_patient_duplicate_status", "status"),
     )
+
+class PaymentModeMaster(Base):
+    __tablename__ = "payment_mode_master"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mode_name = Column(String(50))

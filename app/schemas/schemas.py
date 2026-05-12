@@ -1,4 +1,5 @@
 from datetime import datetime, date
+from decimal import Decimal
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr, Field
 
@@ -408,8 +409,16 @@ class PaymentBase(BaseModel):
     notes: Optional[str] = None
 
 
-class PaymentCreate(PaymentBase):
-    pass
+# class PaymentCreate(PaymentBase):
+#     pass
+
+class PaymentCreate(BaseModel):
+    patient_id: int
+    payment_mode: Optional[int] = None
+    payment_amount: Decimal
+    payment_status: Optional[str] = None
+    remark: Optional[str] = None
+    payment_date: Optional[datetime] = None
 
 
 class PaymentUpdate(BaseModel):
@@ -417,13 +426,16 @@ class PaymentUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-class PaymentResponse(PaymentBase):
+class PaymentResponse(BaseModel):
     id: int
-    status: str
-    payment_date: Optional[datetime]
+    patient_id: int
+    payment_mode: Optional[int] = None
+    payment_amount: Decimal
+    payment_status: Optional[str] = None
+    remark: Optional[str] = None
+    payment_date: Optional[datetime] = None
     created_at: datetime
-    updated_at: datetime
-
+    
     class Config:
         from_attributes = True
 
