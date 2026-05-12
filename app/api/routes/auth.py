@@ -1,12 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
+from app.core.config import get_settings
 from app.core.database import get_db
-from app.schemas.schemas import UserCreate, UserLogin, TokenResponse, UserResponse
-from app.services.user_service import UserService, AuthService
+from app.schemas.schemas import (
+    ForgotPasswordRequest,
+    RefreshTokenRequest,
+    ResetPasswordRequest,
+    TokenResponse,
+    UserCreate,
+    UserLogin,
+    UserResponse,
+)
+from app.services.user_service import AuthService, PasswordResetService, UserService
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 logger = setup_logging(__name__)
+settings = get_settings()
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -60,27 +72,75 @@ async def login(user_login: UserLogin, db: Session = Depends(get_db)):
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
-    refresh_token: str,
+    payload: RefreshTokenRequest,
     db: Session = Depends(get_db)
 ):
     """Refresh access token using refresh token"""
-    from app.core.security import decode_token, create_access_token
-    
-    payload = decode_token(refresh_token)
-    if not payload or payload.get("type") != "refresh":
+    tokens = AuthService.rotate_refresh_token(db, payload.refresh_token)
+    if not tokens:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token"
         )
-    
-    user_id = payload.get("user_id")
-    user = UserService.get_user_by_id(db, user_id)
-    
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive"
-        )
-    
-    tokens = AuthService.create_tokens(user, db)
     return tokens
+
+
+def _client_ip(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.client.host if request.client else None
+
+
+def _password_policy_error(password: str) -> str | None:
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    if not any(char.isupper() for char in password):
+        return "Password must include at least one uppercase letter"
+    if not any(char.isdigit() for char in password):
+        return "Password must include at least one number"
+    if not any(not char.isalnum() for char in password):
+        return "Password must include at least one special character"
+    return None
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Create a password reset token.
+
+    The response is intentionally neutral so unknown emails cannot be enumerated.
+    In local/dev environments without SMTP, reset_url is returned to keep testing easy.
+    """
+    user, token = PasswordResetService.create_reset_token(
+        db,
+        email=payload.email,
+        expires_in_minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES,
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    reset_url = None
+    if user and token:
+        reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?{urlencode({'token': token})}"
+
+    return {
+        "message": "If that email exists, password reset instructions have been prepared.",
+        "reset_url": reset_url if reset_url and not settings.email_host else None,
+        "email_sent": bool(reset_url and settings.email_host),
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Reset password using a valid reset token."""
+    policy_error = _password_policy_error(payload.new_password)
+    if policy_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=policy_error)
+
+    if not PasswordResetService.reset_password(db, token=payload.token, new_password=payload.new_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+
+    return {"message": "Password reset successfully"}

@@ -23,7 +23,7 @@ async def create_appointment(
 ):
     """Create a new appointment"""
     # Check region access
-    await check_region_access(current_user, appointment_create.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment_create.region_id)
     
     try:
         appointment = AppointmentService.create_appointment(db, appointment_create)
@@ -66,7 +66,7 @@ async def get_appointment(
         )
     
     # Check region access
-    await check_region_access(current_user, appointment.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
     
     return appointment
 
@@ -88,7 +88,7 @@ async def update_appointment(
         )
     
     # Check region access
-    await check_region_access(current_user, appointment.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
     
     try:
         updated_appointment = AppointmentService.update_appointment(
@@ -123,7 +123,7 @@ async def delete_appointment(
         )
     
     # Check region access
-    await check_region_access(current_user, appointment.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
     
     try:
         AppointmentService.delete_appointment(db, appointment_id)

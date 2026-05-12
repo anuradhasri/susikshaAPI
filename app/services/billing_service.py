@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from decimal import Decimal
 from datetime import date, datetime
 from app.models.models import Invoice, InvoiceItem, Payment, Therapist
+from app.repositories.payment_repository import PaymentRepository
 from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, PaymentCreate
 from app.utils.query_utils import soft_delete, filter_by_region
 
@@ -113,32 +114,15 @@ class PaymentService:
     @staticmethod
     def record_payment(db: Session, payment_create: PaymentCreate) -> Payment:
         """Record a payment"""
-        payment = Payment(**payment_create.dict())
-        payment.status = "pending"
-        
-        db.add(payment)
+        payment = PaymentService.add_payment(db, payment_create)
         db.commit()
         db.refresh(payment)
-        
-        # Update invoice paid amount
-        invoice = db.query(Invoice).filter(Invoice.id == payment.invoice_id).first()
-        if invoice:
-            invoice.paid_amount += payment.amount
-            
-            if invoice.paid_amount >= invoice.total_amount:
-                invoice.status = "paid"
-            
-            db.commit()
-        
         return payment
     
     @staticmethod
     def get_payment_by_id(db: Session, payment_id: int) -> Payment:
         """Get payment by ID"""
-        return db.query(Payment).filter(
-            Payment.id == payment_id,
-            Payment.deleted_at.is_(None)
-        ).first()
+        return PaymentRepository.get_by_id(db, payment_id)
     
     @staticmethod
     def update_payment_status(db: Session, payment_id: int, status: str) -> Payment:
@@ -164,18 +148,7 @@ class PaymentService:
         limit: int = 100
     ) -> tuple:
         """List payments with filtering"""
-        query = db.query(Payment).filter(Payment.deleted_at.is_(None))
-        
-        if invoice_id:
-            query = query.filter(Payment.invoice_id == invoice_id)
-        
-        if status:
-            query = query.filter(Payment.status == status)
-        
-        total = query.count()
-        payments = query.offset(skip).limit(limit).all()
-        
-        return payments, total
+        return PaymentRepository.list(db, status=status, skip=skip, limit=limit)
 
 #  add payment
 
@@ -195,10 +168,8 @@ class PaymentService:
                     detail="Amount must be greater than zero"
                 )
 
-            payment_status = (
-                "PAID"
-                if payment_create.payment_mode is not None
-                else "PENDING"
+            payment_status = payment_create.payment_status or (
+                "PAID" if payment_create.payment_mode is not None else "PENDING"
             )
 
             saved_payment_date = (
@@ -208,17 +179,9 @@ class PaymentService:
             
             
             # Create Payment Object
-            payment = Payment(
-                patient_id=payment_create.patient_id,
-                payment_amount=payment_create.payment_amount,
-                payment_mode=payment_create.payment_mode,
-                payment_status=payment_status,
-                remark=payment_create.remark,
-                payment_date=saved_payment_date,
-                # created_by=created_by
-            )
-
-            db.add(payment)
+            payment_create.payment_status = payment_status
+            payment_create.payment_date = saved_payment_date
+            payment = PaymentRepository.create(db, payment_create)
             db.commit()
             db.refresh(payment)
 

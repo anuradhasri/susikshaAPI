@@ -109,7 +109,7 @@ async def check_region_access(
     target_region_id: Optional[int] = None
 ) -> bool:
     """Check if user can access target region"""
-    roles = await get_user_roles(current_user)
+    roles = await get_user_roles(current_user, db)
     
     # Admin has access to all regions
     if "admin" in roles:

@@ -203,6 +203,7 @@ class Patient(Base):
     sessions = relationship("Session", back_populates="patient")
     patient_packages = relationship("PatientPackage", back_populates="patient")
     invoices = relationship("Invoice", back_populates="patient")
+    payments = relationship("Payment", back_populates="patient")
     documents = relationship("Document", back_populates="patient")
     alerts = relationship("Alert", back_populates="patient")
 
@@ -483,7 +484,7 @@ class Payment(Base):
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
 
-    patient_id = Column(Integer, nullable=False, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
 
     payment_amount = Column(DECIMAL(12, 2), nullable=False)
 
@@ -513,6 +514,8 @@ class Payment(Base):
     )
 
     payment_date = Column(DateTime, nullable=True)
+
+    patient = relationship("Patient", back_populates="payments")
 
     __table_args__ = (
         Index("idx_payment_status", "payment_status"),

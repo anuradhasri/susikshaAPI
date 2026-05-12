@@ -21,7 +21,7 @@ async def create_patient(
 ):
     """Create a new patient"""
     # Check region access
-    await check_region_access(current_user, patient_create.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=patient_create.region_id)
     
     try:
         patient = PatientService.create_patient(db, patient_create)
@@ -58,7 +58,7 @@ async def get_patient(
         )
     
     # Check region access
-    await check_region_access(current_user, patient.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=patient.region_id)
     
     return patient
 
@@ -80,7 +80,7 @@ async def update_patient(
         )
     
     # Check region access
-    await check_region_access(current_user, patient.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=patient.region_id)
     
     try:
         updated_patient = PatientService.update_patient(db, patient_id, patient_update, current_user.region_id)
@@ -113,7 +113,7 @@ async def delete_patient(
         )
     
     # Check region access
-    await check_region_access(current_user, patient.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=patient.region_id)
     
     try:
         PatientService.delete_patient(db, patient_id)
@@ -168,7 +168,7 @@ async def get_patient_packages(
         )
     
     # Check region access
-    await check_region_access(current_user, patient.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=patient.region_id)
     
     packages = PatientService.get_patient_packages(db, patient_id, current_user.region_id)
     return packages
