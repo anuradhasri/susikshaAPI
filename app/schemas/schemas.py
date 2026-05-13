@@ -135,6 +135,8 @@ class PatientBase(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    father_name: Optional[str] = None
+    mother_name: Optional[str] = None
     diagnosis: Optional[str] = None
     medical_history: Optional[str] = None
     emergency_contact: Optional[str] = None
@@ -153,6 +155,8 @@ class PatientUpdate(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
     address: Optional[str] = None
+    father_name: Optional[str] = None
+    mother_name: Optional[str] = None
     diagnosis: Optional[str] = None
     medical_history: Optional[str] = None
     emergency_contact: Optional[str] = None
