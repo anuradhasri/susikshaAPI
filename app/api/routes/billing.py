@@ -199,7 +199,6 @@ async def issue_invoice(
 async def add_payment(
     payment_create: PaymentCreate,
     current_user: User = Depends(get_current_user),
-    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
 

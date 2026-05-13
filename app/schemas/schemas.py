@@ -1,10 +1,13 @@
-from datetime import datetime, date
+from datetime import datetime, date, time
 from decimal import Decimal
 from typing import Optional, List
+
 from pydantic import BaseModel, EmailStr, Field
 
 
-# ============== USER SCHEMAS ==============
+# =========================================================
+# USER SCHEMAS
+# =========================================================
 
 class RoleBase(BaseModel):
     name: str
@@ -98,7 +101,9 @@ class ResetPasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
-# ============== REGION SCHEMAS ==============
+# =========================================================
+# REGION SCHEMAS
+# =========================================================
 
 class RegionBase(BaseModel):
     name: str
@@ -125,7 +130,9 @@ class RegionResponse(RegionBase):
         from_attributes = True
 
 
-# ============== PATIENT SCHEMAS ==============
+# =========================================================
+# PATIENT SCHEMAS
+# =========================================================
 
 class PatientBase(BaseModel):
     first_name: str
@@ -167,7 +174,9 @@ class PatientResponse(PatientBase):
         from_attributes = True
 
 
-# ============== THERAPIST SCHEMAS ==============
+# =========================================================
+# THERAPIST SCHEMAS
+# =========================================================
 
 class TherapistBase(BaseModel):
     license_number: str
@@ -199,7 +208,9 @@ class TherapistResponse(TherapistBase):
         from_attributes = True
 
 
-# ============== APPOINTMENT SCHEMAS ==============
+# =========================================================
+# APPOINTMENT SCHEMAS
+# =========================================================
 
 class AppointmentBase(BaseModel):
     patient_id: int
@@ -236,7 +247,9 @@ class AppointmentDetailResponse(AppointmentResponse):
     therapist: TherapistResponse
 
 
-# ============== SESSION SCHEMAS ==============
+# =========================================================
+# SESSION SCHEMAS
+# =========================================================
 
 class SessionBase(BaseModel):
     patient_id: int
@@ -269,7 +282,9 @@ class SessionResponse(SessionBase):
         from_attributes = True
 
 
-# ============== SESSION NOTE SCHEMAS ==============
+# =========================================================
+# SESSION NOTE SCHEMAS
+# =========================================================
 
 class SessionNoteBase(BaseModel):
     session_id: int
@@ -291,7 +306,9 @@ class SessionNoteResponse(SessionNoteBase):
         from_attributes = True
 
 
-# ============== PACKAGE SCHEMAS ==============
+# =========================================================
+# PACKAGE SCHEMAS
+# =========================================================
 
 class PackageBase(BaseModel):
     name: str
@@ -324,7 +341,9 @@ class PackageResponse(PackageBase):
         from_attributes = True
 
 
-# ============== PATIENT PACKAGE SCHEMAS ==============
+# =========================================================
+# PATIENT PACKAGE SCHEMAS
+# =========================================================
 
 class PatientPackageBase(BaseModel):
     patient_id: int
@@ -357,7 +376,9 @@ class PatientPackageResponse(PatientPackageBase):
         from_attributes = True
 
 
-# ============== INVOICE SCHEMAS ==============
+# =========================================================
+# INVOICE SCHEMAS
+# =========================================================
 
 class InvoiceItemBase(BaseModel):
     description: str
@@ -412,7 +433,9 @@ class InvoiceResponse(InvoiceBase):
         from_attributes = True
 
 
-# ============== PAYMENT SCHEMAS ==============
+# =========================================================
+# PAYMENT SCHEMAS
+# =========================================================
 
 class PaymentBase(BaseModel):
     invoice_id: int
@@ -421,9 +444,6 @@ class PaymentBase(BaseModel):
     transaction_id: Optional[str] = None
     notes: Optional[str] = None
 
-
-# class PaymentCreate(PaymentBase):
-#     pass
 
 class PaymentCreate(BaseModel):
     patient_id: int
@@ -438,43 +458,37 @@ class PaymentUpdate(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = None
 
+
 class PaymentListRequest(BaseModel):
     patient_id: Optional[int] = None
     payment_status: Optional[str] = None
     payment_mode_id: Optional[int] = None
     skip: int = 0
     limit: int = 100
-    
+
+
 class PaymentListResponse(BaseModel):
-
     payment_id: int
-
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     full_name: Optional[str] = None
-
-    # LEFT JOIN can return NULL
     payment_mode: Optional[str] = None
-
     payment_amount: Decimal
-
-    # nullable=True in DB
     payment_status: Optional[str] = None
-
     payment_remark: Optional[str] = None
-
-    # DB column is DateTime
     payment_date: Optional[datetime] = None
 
     class Config:
         from_attributes = True
-        
+
+
 class PaginatedPaymentResponse(BaseModel):
     total: int
     skip: int
     limit: int
-    items: list[PaymentListResponse]
-                
+    items: List[PaymentListResponse]
+
+
 class PaymentResponse(BaseModel):
     id: int
     patient_id: int
@@ -484,12 +498,14 @@ class PaymentResponse(BaseModel):
     remark: Optional[str] = None
     payment_date: Optional[datetime] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
 
-# ============== NOTIFICATION SCHEMAS ==============
+# =========================================================
+# NOTIFICATION SCHEMAS
+# =========================================================
 
 class NotificationBase(BaseModel):
     user_id: int
@@ -508,7 +524,9 @@ class NotificationResponse(NotificationBase):
         from_attributes = True
 
 
-# ============== ALERT SCHEMAS ==============
+# =========================================================
+# ALERT SCHEMAS
+# =========================================================
 
 class AlertBase(BaseModel):
     alert_type: str
@@ -532,7 +550,9 @@ class AlertResponse(AlertBase):
         from_attributes = True
 
 
-# ============== DOCUMENT SCHEMAS ==============
+# =========================================================
+# DOCUMENT SCHEMAS
+# =========================================================
 
 class DocumentBase(BaseModel):
     patient_id: int
@@ -559,7 +579,9 @@ class DocumentResponse(DocumentBase):
         from_attributes = True
 
 
-# ============== DUPLICATE DETECTION SCHEMAS ==============
+# =========================================================
+# DUPLICATE DETECTION SCHEMAS
+# =========================================================
 
 class PatientDuplicateResponse(BaseModel):
     id: int
@@ -576,7 +598,9 @@ class PatientDuplicateResponse(BaseModel):
         from_attributes = True
 
 
-# ============== PAGINATION SCHEMAS ==============
+# =========================================================
+# PAGINATION SCHEMAS
+# =========================================================
 
 class PaginationParams(BaseModel):
     skip: int = 0
@@ -588,3 +612,18 @@ class PaginatedResponse(BaseModel):
     skip: int
     limit: int
     items: List
+
+
+# =========================================================
+# SLOT MASTER SCHEMAS
+# =========================================================
+
+class SlotMasterResponse(BaseModel):
+    id: int
+    slot_name: str
+    start_time: time
+    end_time: time
+    duration_minutes: Optional[int]
+
+    class Config:
+        from_attributes = True

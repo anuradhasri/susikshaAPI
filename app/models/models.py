@@ -484,7 +484,12 @@ class Payment(Base):
 
     id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
 
-    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id"),
+        nullable=False,
+        index=True
+    )
 
     payment_amount = Column(DECIMAL(12, 2), nullable=False)
 
@@ -498,8 +503,9 @@ class Payment(Base):
 
     remark = Column(Text, nullable=True)
 
-    created_by = Column(Integer, nullable=True)
+    payment_date = Column(DateTime, nullable=True)
 
+    created_by = Column(Integer, nullable=True)
     updated_by = Column(Integer, nullable=True)
 
     created_at = Column(
@@ -513,93 +519,13 @@ class Payment(Base):
         onupdate=func.now()
     )
 
-    payment_date = Column(DateTime, nullable=True)
-
     patient = relationship("Patient", back_populates="payments")
+
+    payment_mode_master = relationship("PaymentModeMaster", back_populates="payments")
 
     __table_args__ = (
         Index("idx_payment_status", "payment_status"),
     )
-
-    @property
-    def invoice_id(self):
-        return None
-
-    @property
-    def amount(self):
-        return self.payment_amount
-
-    @amount.setter
-    def amount(self, value):
-        self.payment_amount = value
-
-    @property
-    def payment_method(self):
-        return self.payment_mode
-
-    @payment_method.setter
-    def payment_method(self, value):
-        self.payment_mode = value
-
-    @property
-    def transaction_id(self):
-        return None
-
-    @property
-    def status(self):
-        return self.payment_status
-
-    @status.setter
-    def status(self, value):
-        self.payment_status = value
-
-    @property
-    def notes(self):
-        return self.remark
-
-    @notes.setter
-    def notes(self, value):
-        self.remark = value
-
-    @property
-    def invoice_id(self):
-        return None
-
-    @property
-    def amount(self):
-        return self.payment_amount
-
-    @amount.setter
-    def amount(self, value):
-        self.payment_amount = value
-
-    @property
-    def payment_method(self):
-        return self.payment_mode
-
-    @payment_method.setter
-    def payment_method(self, value):
-        self.payment_mode = value
-
-    @property
-    def transaction_id(self):
-        return None
-
-    @property
-    def status(self):
-        return self.payment_status
-
-    @status.setter
-    def status(self, value):
-        self.payment_status = value
-
-    @property
-    def notes(self):
-        return self.remark
-
-    @notes.setter
-    def notes(self, value):
-        self.remark = value
 
 
 # ============== NOTIFICATIONS & ALERTS ==============
@@ -753,4 +679,20 @@ class PaymentModeMaster(Base):
     __tablename__ = "payment_mode_master"
 
     id = Column(Integer, primary_key=True, index=True)
-    payment_mode_name = Column(String(50))
+
+    payment_mode_name = Column(String(50), nullable=False)
+
+    payments = relationship(
+        "Payment",
+        back_populates="payment_mode_master"
+    )
+    
+class SlotMaster(Base):
+    __tablename__ = "slot_master"
+
+    id = Column(Integer, primary_key=True, index=True)
+    slot_name = Column(String(100), nullable=False)
+    start_time = Column(Time, nullable=False)
+    end_time = Column(Time, nullable=False)
+    duration_minutes = Column(Integer, nullable = False)
+    is_active = Column(Boolean, nullable=False, default=True)
