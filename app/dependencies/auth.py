@@ -21,45 +21,67 @@ def _user_region_ids(db: Session, user_id: int) -> list[int]:
         )
     ]
 
-
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
-) -> User:
+):
     """Get current authenticated user from token"""
+
     token = credentials.credentials
-    
+
     payload = decode_token(token)
+
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
-    
-    user_id: int = payload.get("user_id")
-    username: str = payload.get("username")
-    
+
+    user_id = payload.get("user_id")
+    username = payload.get("username")
+
     if not user_id or not username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
-    
-    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+
+    # Get User
+    user = (
+        db.query(User)
+        .filter(
+            User.id == user_id,
+            User.deleted_at.is_(None)
+        )
+        .first()
+    )
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-    
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User is inactive",
         )
-    
-    return user
 
+    # Fetch Region IDs from mapping table
+    region_mappings = (
+        db.query(UserRegionMapping.regionid)
+        .filter(UserRegionMapping.userid == user.id)
+        .all()
+    )
+
+    # Convert [(1,), (2,)] -> [1, 2]
+    region_ids = [r.regionid for r in region_mappings]
+
+    # Attach to user object
+    user.region_ids = region_ids
+
+    return user
 
 async def get_current_admin(
     current_user: User = Depends(get_current_user),
