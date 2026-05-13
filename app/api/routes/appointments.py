@@ -1,3 +1,5 @@
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -5,16 +7,103 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access, get_user_roles
 from app.schemas.schemas import (
     AppointmentCreate, AppointmentUpdate, AppointmentResponse,
-    AppointmentDetailResponse, PaginatedResponse
+    AppointmentDetailResponse, PaginatedResponse, SlotMasterResponse
 )
-from app.services.appointment_service import AppointmentService
+from app.services.appointment_service import AppointmentService, SlotMasterService
 from app.models.models import User
+from app.services.patient_service import PatientService
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/appointments", tags=["appointments"])
 logger = setup_logging(__name__)
 
+@router.get(
+    "/slots",
+    response_model=List[SlotMasterResponse],
+    status_code=status.HTTP_200_OK
+)
+async def get_all_slots(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
 
+    try:
+        """List appointments with filtering"""
+        roles = await get_user_roles(current_user, db)
+        slots = SlotMasterService.get_all_slots(db)
+
+        return slots
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@router.get(
+    "/waitlist-patients",
+    status_code=status.HTTP_200_OK
+)
+async def get_waitlist_patients(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch available patients based on logged in user's region access
+    """
+
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_id
+    )
+
+    try:
+        
+        response = AppointmentService.get_waitlist_patients(
+            db=db,
+            current_user=current_user
+        )
+
+        logger.info(
+            "Waitlist patients fetched successfully",
+            extra={
+                "user_id": current_user.id,
+                "total_records": response["total"]
+            }
+        )
+
+        return response
+
+    except ValueError as e:
+
+        logger.warning(
+            f"Error fetching waitlist patients: {str(e)}",
+            extra={
+                "user_id": current_user.id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+
+        logger.error(
+            f"Error fetching waitlist patients: {str(e)}",
+            extra={
+                "user_id": current_user.id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error fetching waitlist patients"
+        )
+        
 @router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
 async def create_appointment(
     appointment_create: AppointmentCreate,
@@ -181,3 +270,4 @@ async def list_appointments(
         "limit": limit,
         "items": appointments
     }
+

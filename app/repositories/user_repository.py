@@ -3,7 +3,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.models import PasswordResetToken, Role, User, UserRegionMapping, UserRole
+from app.models.models import PasswordResetToken, Patient, Role, User, UserRegionMapping, UserRole
 from app.schemas.schemas import UserCreate, UserUpdate
 
 
@@ -98,4 +98,20 @@ class UserRepository:
                 PasswordResetToken.expires_at > now,
             )
             .first()
+        )
+
+    @staticmethod
+    def get_available_patients(
+        db: Session,
+        current_user
+    ):
+
+        return (
+            db.query(Patient)
+            .filter(
+                Patient.is_available == True,
+                Patient.region_id.in_(current_user.region_ids)
+            )
+            .order_by(Patient.id.desc())
+            .all()
         )

@@ -1,16 +1,54 @@
+from fastapi import HTTPException
+from grpc import Status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from datetime import datetime, date
-from app.models.models import Appointment, Session as DBSession, SessionNote, Therapist, PatientPackage
+from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage
 from app.repositories.appointment_repository import AppointmentRepository
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate
 from app.utils.query_utils import soft_delete, filter_by_region
 from app.services.patient_service import PatientService
+from app.repositories.user_repository import UserRepository
 
 
 class AppointmentService:
     """Service for appointment operations"""
-    
+    @staticmethod
+    def get_waitlist_patients(
+        db: Session,
+        current_user
+    ):
+        # =========================
+        # FETCH AVAILABLE PATIENTS
+        # =========================
+
+        patients = UserRepository.get_available_patients(
+            db=db,
+            current_user = current_user
+        )
+
+        response = []
+
+        for patient in patients:
+
+            response.append({
+                "id": patient.id,
+                "first_name": patient.first_name,
+                "last_name": patient.last_name,
+                "full_name": f"{patient.first_name} {patient.last_name}",
+                "phone": patient.phone,
+                "email": patient.email,
+                "diagnosis": patient.diagnosis,
+                "region_id": patient.region_id,
+                "is_available": patient.is_available
+            })
+
+        return {
+            "success": True,
+            "total": len(response),
+            "data": response
+        }    
+        
     @staticmethod
     def create_appointment(db: Session, appointment_create: AppointmentCreate) -> Appointment:
         """Create a new appointment"""
@@ -198,3 +236,18 @@ class SessionService:
         db.commit()
         db.refresh(session)
         return session
+
+
+class SlotMasterService:
+
+    @staticmethod
+    def get_all_slots(db: Session):
+
+        slots = (
+            db.query(SlotMaster)
+            .filter(SlotMaster.is_active == 1)
+            .order_by(SlotMaster.id.asc())
+            .all()
+        )
+
+        return slots
