@@ -179,6 +179,28 @@ async def delete_patient(
         )
 
 
+# @router.get("", response_model=PaginatedResponse)
+# async def list_patients(
+#     skip: int = Query(0, ge=0),
+#     limit: int = Query(100, ge=1, le=1000),
+#     current_user: User = Depends(get_current_user),
+#     db: Session = Depends(get_db)
+# ):
+#     """List patients"""
+#     patients, total = PatientService.list_patients(
+#         db,
+#         region_id=current_user.region_id,
+#         skip=skip,
+#         limit=limit
+#     )
+    
+#     return {
+#         "total": total,
+#         "skip": skip,
+#         "limit": limit,
+#         "items": patients
+#     }
+
 @router.get("", response_model=PaginatedResponse)
 async def list_patients(
     skip: int = Query(0, ge=0),
@@ -186,14 +208,12 @@ async def list_patients(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """List patients"""
     patients, total = PatientService.list_patients(
         db,
-        region_id=current_user.region_id,
+        region_ids=current_user.region_ids, 
         skip=skip,
         limit=limit
     )
-    
     return {
         "total": total,
         "skip": skip,

@@ -35,13 +35,23 @@ class PatientRepository:
             query = filter_by_region(query, region_id, Patient)
         return query.first()
 
+    # @staticmethod
+    # def list(db: Session, region_id: Optional[int] = None, skip: int = 0, limit: int = 100) -> tuple[list[Patient], int]:
+    #     query = db.query(Patient)
+    #     if hasattr(Patient, "deleted_at"):
+    #         query = query.filter(Patient.deleted_at.is_(None))
+    #     if region_id:
+    #         query = filter_by_region(query, region_id, Patient)
+    #     total = query.count()
+    #     return query.offset(skip).limit(limit).all(), total
+    
     @staticmethod
-    def list(db: Session, region_id: Optional[int] = None, skip: int = 0, limit: int = 100) -> tuple[list[Patient], int]:
+    def list(db: Session, region_ids: list[int] = None, skip: int = 0, limit: int = 100) -> tuple[list[Patient], int]:
         query = db.query(Patient)
         if hasattr(Patient, "deleted_at"):
             query = query.filter(Patient.deleted_at.is_(None))
-        if region_id:
-            query = filter_by_region(query, region_id, Patient)
+        if region_ids:
+            query = query.filter(Patient.region_id.in_(region_ids))
         total = query.count()
         return query.offset(skip).limit(limit).all(), total
 

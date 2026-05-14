@@ -44,10 +44,14 @@ class PatientService:
         """Soft delete patient"""
         return PatientRepository.delete(db, patient_id)
     
+    # @staticmethod
+    # def list_patients(db: Session, region_id: int = None, skip: int = 0, limit: int = 100) -> tuple:
+    #     """List patients with optional region filtering"""
+    #     return PatientRepository.list(db, region_id, skip, limit)
+    
     @staticmethod
-    def list_patients(db: Session, region_id: int = None, skip: int = 0, limit: int = 100) -> tuple:
-        """List patients with optional region filtering"""
-        return PatientRepository.list(db, region_id, skip, limit)
+    def list_patients(db: Session, region_ids: list[int] = None, skip: int = 0, limit: int = 100) -> tuple:
+        return PatientRepository.list(db, region_ids, skip, limit)
     
     @staticmethod
     def get_patient_packages(db: Session, patient_id: int, region_id: int = None) -> list:
