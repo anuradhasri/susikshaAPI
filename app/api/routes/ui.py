@@ -1,13 +1,15 @@
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 import hashlib
+from pathlib import Path
 import secrets
+import shutil
 import smtplib
 from typing import Any, Optional
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session, joinedload, object_session
 
 from app.core.config import get_settings
@@ -19,6 +21,7 @@ from app.models.models import (
     Appointment,
     AuditLog,
     Document,
+    DocumentTypeMaster,
     Invoice,
     Patient,
     PatientDuplicate,
@@ -42,6 +45,37 @@ from app.services.user_service import AuthService, UserService
 
 router = APIRouter(prefix="/api/v1/ui", tags=["ui"])
 settings = get_settings()
+UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "uploads"
+_PATIENT_PROFILE_SCHEMA_READY = False
+
+
+def _ensure_patient_profile_schema(db: Session) -> None:
+    global _PATIENT_PROFILE_SCHEMA_READY
+    if _PATIENT_PROFILE_SCHEMA_READY:
+        return
+
+    columns = {
+        col["name"]
+        for col in inspect(db.bind).get_columns("patients")
+    }
+    dialect = db.bind.dialect.name if db.bind else ""
+    definitions = {
+        "blood_group": "VARCHAR(20)",
+        "nationality": "VARCHAR(100)",
+        "emergency_phone": "VARCHAR(20)",
+        "referred_by": "VARCHAR(255)",
+        "registration_at": "DATETIME",
+        "profile_photo_path": "VARCHAR(500)",
+    }
+    for name, definition in definitions.items():
+        if name in columns:
+            continue
+        if dialect == "sqlite":
+            db.execute(text(f"ALTER TABLE patients ADD COLUMN {name} {definition}"))
+        else:
+            db.execute(text(f"ALTER TABLE patients ADD COLUMN {name} {definition} NULL"))
+    db.commit()
+    _PATIENT_PROFILE_SCHEMA_READY = True
 
 
 def _now() -> datetime:
@@ -159,6 +193,48 @@ def _split_name(full_name: str) -> tuple[str, str]:
     if len(parts) == 1:
         return parts[0], "Account"
     return parts[0], " ".join(parts[1:])
+
+
+def _document_type(value: Optional[str]) -> str:
+    return {
+        "general": "OTHER",
+        "report": "PROGRESS_REPORT",
+        "progress_report": "PROGRESS_REPORT",
+        "consent": "CONSENT_FORM",
+        "consent_form": "CONSENT_FORM",
+        "prescription": "OTHER",
+        "id": "OTHER",
+        "insurance": "OTHER",
+    }.get((value or "").lower(), (value or "other").upper())
+
+
+def _document_type_id(db: Session, value: Optional[str]) -> int:
+    name = _document_type(value)
+    row = db.query(DocumentTypeMaster).filter(
+        func.upper(DocumentTypeMaster.name) == name,
+        DocumentTypeMaster.status == 1,
+    ).first()
+    if row:
+        return row.id
+    fallback = db.query(DocumentTypeMaster).filter(func.upper(DocumentTypeMaster.name) == "OTHER").first()
+    if fallback:
+        return fallback.id
+    fallback = DocumentTypeMaster(name="OTHER", status=1)
+    db.add(fallback)
+    db.flush()
+    return fallback.id
+
+
+def _document_type_label(db: Optional[Session], document_type_id: Optional[int]) -> str:
+    if not db or not document_type_id:
+        return "other"
+    row = db.query(DocumentTypeMaster).filter(DocumentTypeMaster.id == document_type_id).first()
+    return (row.name if row else "OTHER").lower()
+
+
+def _safe_filename(filename: str) -> str:
+    clean = "".join(char if char.isalnum() or char in {".", "_", "-"} else "_" for char in filename)
+    return clean.strip("._") or "document"
 
 
 def _current_user(request: Request, db: Session) -> Optional[User]:
@@ -281,9 +357,18 @@ def _patient_shape(patient: Patient) -> dict:
         "gender": patient.gender.lower() if patient.gender else None,
         "phone": patient.phone,
         "email": patient.email,
+        "father_name": patient.father_name,
+        "mother_name": patient.mother_name,
+        "blood_group": patient.blood_group,
+        "nationality": patient.nationality,
         "address": patient.address,
         "emergency_contact": patient.alternate_contact,
-        "emergency_phone": None,
+        "emergency_phone": patient.emergency_phone,
+        "referred_by": patient.referred_by,
+        "registration_at": _iso(patient.registration_at or patient.created_at),
+        "profile_photo_path": patient.profile_photo_path,
+        "profile_photo_url": patient.profile_photo_path,
+        "clinical_observation": patient.clinical_observation,
         "diagnosis": patient.diagnosis,
         "notes": patient.notes,
         "is_active": True,
@@ -565,24 +650,27 @@ def _waitlist_shape(entry: WaitlistEntry) -> dict:
 
 
 def _document_shape(document: Document) -> dict:
+    db = object_session(document)
+    doc_type = _document_type_label(db, document.document_type_id)
+    file_url = document.file_path
     return {
         "id": document.id,
         "patient_id": document.patient_id,
         "session_id": None,
         "uploaded_by": document.uploaded_by,
-        "doc_type": document.document_type.value if hasattr(document.document_type, "value") else document.document_type,
-        "document_type": document.document_type.value if hasattr(document.document_type, "value") else document.document_type,
+        "doc_type": doc_type,
+        "document_type": doc_type,
         "title": document.title,
-        "file_url": document.file_path,
-        "file_path": document.file_path,
-        "file_name": document.file_path.rsplit("/", 1)[-1] if document.file_path else None,
+        "file_url": file_url,
+        "file_path": file_url,
+        "file_name": file_url.rsplit("/", 1)[-1] if file_url else None,
         "file_size": document.file_size,
-        "mime_type": document.mime_type,
+        "mime_type": None,
         "notes": document.description,
         "description": document.description,
         "created_at": _iso(document.created_at),
         "updated_at": _iso(document.updated_at),
-        "deleted_at": _iso(document.deleted_at),
+        "deleted_at": None,
         "patients": _patient_shape(document.patient) if document.patient else None,
     }
 
@@ -657,6 +745,9 @@ SHAPERS = {
 
 
 ALLOWED_UI_TABLES = {
+    "users",
+    "roles",
+    "user_roles",
     "patients",
     "therapists",
     "therapist_availability",
@@ -665,8 +756,14 @@ ALLOWED_UI_TABLES = {
     "patient_packages",
     "invoices",
     "payments",
+    "alerts",
+    "waitlist_entries",
+    "documents",
+    "audit_logs",
     "session_notes",
     "session_assignments",
+    "patient_duplicates",
+    "patients_history",
 }
 
 
@@ -689,6 +786,9 @@ def _parse_time(value: Optional[str]) -> Optional[time]:
 def _base_query(table: str, db: Session, user: Optional[User]):
     if table not in ALLOWED_UI_TABLES:
         raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
+
+    if table in {"patients", "appointments", "sessions", "patient_packages", "invoices", "payments", "alerts", "waitlist_entries", "documents"}:
+        _ensure_patient_profile_schema(db)
 
     region_ids = _user_region_ids(db, user)
     roles = _user_roles(db, user)
@@ -796,7 +896,7 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.filter(WaitlistEntry.patient_id.in_(patient_ids))
         return query
     if table == "documents":
-        query = db.query(Document).options(joinedload(Document.patient)).filter(Document.deleted_at.is_(None))
+        query = db.query(Document).options(joinedload(Document.patient))
         if region_ids:
             query = query.join(Patient, Patient.id == Document.patient_id).filter(Patient.region_id.in_(region_ids))
         return query
@@ -1492,6 +1592,81 @@ async def analytics(request: Request, period: Optional[str] = None, db: Session 
     return {"data": _analytics_payload(db, user, period)}
 
 
+@router.post("/patients/{patient_id}/documents")
+def upload_patient_document(
+    patient_id: int,
+    request: Request,
+    document_type: str = Form("other"),
+    title: Optional[str] = Form(None),
+    notes: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    user = _require_user(request, db)
+    _ensure_patient_profile_schema(db)
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    original_name = file.filename or "document"
+    safe_name = _safe_filename(original_name)
+    folder = UPLOAD_ROOT / "patients" / str(patient_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{int(datetime.utcnow().timestamp() * 1000)}-{safe_name}"
+    target = folder / stored_name
+
+    with target.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    relative_path = f"uploads/patients/{patient_id}/{stored_name}"
+    row = Document(
+        patient_id=patient_id,
+        document_type_id=_document_type_id(db, document_type),
+        title=title or original_name,
+        file_path=relative_path,
+        file_size=target.stat().st_size,
+        uploaded_by=user.id,
+        description=notes,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"data": _document_shape(row)}
+
+
+@router.post("/patients/{patient_id}/photo")
+def upload_patient_photo(
+    patient_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    user = _require_user(request, db)
+    _ensure_patient_profile_schema(db)
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    if file.content_type and file.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=400, detail="Photo must be JPG, PNG, or WEBP")
+
+    original_name = file.filename or "photo"
+    safe_name = _safe_filename(original_name)
+    folder = UPLOAD_ROOT / "patients" / str(patient_id) / "profile"
+    folder.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{int(datetime.utcnow().timestamp() * 1000)}-{safe_name}"
+    target = folder / stored_name
+
+    with target.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    patient.profile_photo_path = f"uploads/patients/{patient_id}/profile/{stored_name}"
+    patient.updated_by = user.id
+    db.commit()
+    db.refresh(patient)
+    return {"data": _patient_shape(patient)}
+
+
 @router.get("/{table}")
 async def list_rows(
     table: str,
@@ -1554,6 +1729,9 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
     if table not in ALLOWED_UI_TABLES:
         raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
 
+    if table == "patients":
+        _ensure_patient_profile_schema(db)
+
     region = _default_region(db)
     user_id = user.id if user else None
     region_id = item.get("region_id") or _primary_region_id(db, user) or region.id
@@ -1566,10 +1744,18 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             gender=item.get("gender"),
             email=item.get("email"),
             phone=item.get("phone"),
+            father_name=item.get("father_name"),
+            mother_name=item.get("mother_name"),
+            blood_group=item.get("blood_group"),
+            nationality=item.get("nationality") or "Indian",
             address=item.get("address"),
             diagnosis=item.get("diagnosis"),
             notes=item.get("notes"),
             alternate_contact=item.get("emergency_contact"),
+            emergency_phone=item.get("emergency_phone"),
+            referred_by=item.get("referred_by"),
+            registration_at=_parse_dt(item.get("registration_at")) if item.get("registration_at") else _now(),
+            clinical_observation=item.get("clinical_observation"),
             region_id=region_id,
         )
     elif table == "appointments":
@@ -1688,11 +1874,10 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
     elif table == "documents":
         row = Document(
             patient_id=item.get("patient_id") or 1,
-            document_type=item.get("doc_type") or item.get("document_type") or "other",
+            document_type_id=_document_type_id(db, item.get("doc_type") or item.get("document_type")),
             title=item.get("title"),
             file_path=item.get("file_url") or item.get("file_path"),
             file_size=item.get("file_size") or 0,
-            mime_type=item.get("mime_type") or "application/octet-stream",
             uploaded_by=user_id or 1,
             description=item.get("notes") or item.get("description"),
         )
@@ -1721,13 +1906,29 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
     if table == "patients":
         if "full_name" in item:
             row.first_name, row.last_name = _split_name(item["full_name"])
-        for key, attr in {"phone": "phone", "email": "email", "address": "address", "diagnosis": "diagnosis", "notes": "notes", "emergency_contact": "alternate_contact"}.items():
+        for key, attr in {
+            "phone": "phone",
+            "email": "email",
+            "father_name": "father_name",
+            "mother_name": "mother_name",
+            "blood_group": "blood_group",
+            "nationality": "nationality",
+            "address": "address",
+            "diagnosis": "diagnosis",
+            "clinical_observation": "clinical_observation",
+            "notes": "notes",
+            "emergency_contact": "alternate_contact",
+            "emergency_phone": "emergency_phone",
+            "referred_by": "referred_by",
+        }.items():
             if key in item:
                 setattr(row, attr, item[key])
         if "date_of_birth" in item:
             row.date_of_birth = _parse_date(item["date_of_birth"]) or row.date_of_birth
         if "gender" in item:
             row.gender = item["gender"]
+        if "registration_at" in item:
+            row.registration_at = _parse_dt(item["registration_at"]) if item["registration_at"] else row.registration_at
     elif table == "appointments":
         if "status" in item:
             row.status = item["status"]
@@ -1774,7 +1975,8 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
             row.is_active = not item["is_resolved"]
     elif table == "documents":
         if "deleted_at" in item:
-            row.deleted_at = _parse_dt(item["deleted_at"])
+            db.delete(row)
+            return
     elif table == "session_assignments":
         if "unassigned_at" in item:
             row.deleted_at = _parse_dt(item["unassigned_at"])

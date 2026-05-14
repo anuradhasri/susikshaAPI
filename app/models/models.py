@@ -81,20 +81,19 @@ class User(Base):
     last_name = Column(String(100), nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
-    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     phone = Column(String(20), nullable=True)
     last_login = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    region = relationship("Region", back_populates="users")
+    # region = relationship("Region", back_populates="users")
     user_roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
 
-    __table_args__ = (
-        Index("idx_user_region_id", "region_id"),
-        Index("idx_user_email_region_id", "email", "region_id"),
-    )
+    # __table_args__ = (
+    #     Index("idx_user_region_id", "region_id"),
+    #     Index("idx_user_email_region_id", "email", "region_id"),
+    # )
 
 
 class UserRole(Base):
@@ -164,7 +163,6 @@ class Region(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    users = relationship("User", back_populates="region")
     patients = relationship("Patient", back_populates="region")
     therapists = relationship("Therapist", back_populates="region")
     appointments = relationship("Appointment", back_populates="region")
@@ -186,11 +184,17 @@ class Patient(Base):
     address = Column(Text, nullable=True)
     father_name = Column(String(255), nullable=True)
     mother_name = Column(String(255), nullable=True)
+    blood_group = Column(String(20), nullable=True)
+    nationality = Column(String(100), nullable=True)
+    emergency_phone = Column(String(20), nullable=True)
+    referred_by = Column(String(255), nullable=True)
+    registration_at = Column(DateTime(timezone=True), nullable=True)
+    profile_photo_path = Column(String(500), nullable=True)
     diagnosis = Column(String(255), nullable=True)
     notes = Column(Text, nullable=True)
     alternate_contact = Column(String(255), nullable=True)
     clinical_observation = Column(Text, nullable=True)
-    status = Column(String(50), nullable=True)
+    status = Column(Integer, nullable=False, default=1, server_default="1")
     is_available = Column(Boolean, default=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -608,24 +612,32 @@ class Document(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
-    document_type = Column(Enum(DocumentTypeEnum), nullable=False)
+    document_type_id = Column(Integer, ForeignKey("document_type_master.id"), nullable=False)
     title = Column(String(255), nullable=False)
     file_path = Column(String(500), nullable=False)
     file_size = Column(Integer, nullable=False)
-    mime_type = Column(String(100), nullable=False)
     uploaded_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     description = Column(Text, nullable=True)
-    is_confidential = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     patient = relationship("Patient", back_populates="documents")
 
     __table_args__ = (
         Index("idx_document_patient_id", "patient_id"),
-        Index("idx_document_type", "document_type"),
+        Index("idx_document_type", "document_type_id"),
     )
+
+
+class DocumentTypeMaster(Base):
+    __tablename__ = "document_type_master"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(Integer, nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 # ============== AUDIT LOGS ==============
