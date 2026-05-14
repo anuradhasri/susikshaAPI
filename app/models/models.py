@@ -887,19 +887,19 @@ class PatientAssessmentDetail(Base):
     updated_by = Column(Integer, nullable=True)
 
 
-class PatientSlotBooking(StatusIdMixin, Base):
-    __tablename__ = "patient_slot_booking"
-    _status_category = "patient_slot_booking"
-    _default_status = "BOOKED"
+# class PatientSlotBooking(StatusIdMixin, Base):
+#     __tablename__ = "patient_slot_booking"
+#     _status_category = "patient_slot_booking"
+#     _default_status = "BOOKED"
 
-    id = Column(Integer, primary_key=True, index=True)
-    therapist_slot_mapping_id = Column(Integer, ForeignKey("therapist_slot_mapping.id"), nullable=False)
-    patient_session_plan_item_id = Column(Integer, ForeignKey("patient_session_plan_item.id"), nullable=True)
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=601, server_default="601")
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+#     id = Column(Integer, primary_key=True, index=True)
+#     therapist_slot_mapping_id = Column(Integer, ForeignKey("therapist_slot_mapping.id"), nullable=False)
+#     patient_session_plan_item_id = Column(Integer, ForeignKey("patient_session_plan_item.id"), nullable=True)
+#     status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=601, server_default="601")
+#     created_at = Column(DateTime, server_default=func.now())
+#     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
+#     status_master = relationship("StatusMaster", foreign_keys=[status_id])
 
 
 class PatientTherapy(StatusIdMixin, Base):
@@ -930,38 +930,6 @@ class LeaveSession(Base):
     code = Column(String(30), nullable=False)
     name = Column(String(50), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
-
-
-class TherapistLeave(Base):
-    __tablename__ = "therapist_leaves"
-
-    id = Column(Integer, primary_key=True, index=True)
-    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
-    leave_date = Column(Date, nullable=False)
-    leave_session = Column(String(20), nullable=False, default="full_day", server_default="full_day")
-    reason = Column(Text, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    created_by = Column(Integer, nullable=True)
-    updated_by = Column(Integer, nullable=True)
-
-
-class TherapistSlotMapping(StatusIdMixin, Base):
-    __tablename__ = "therapist_slot_mapping"
-    _status_category = "therapist_slot_mapping"
-    _default_status = "ASSIGNED"
-
-    id = Column(Integer, primary_key=True, index=True)
-    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
-    slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=False)
-    slot_date = Column(Date, nullable=False)
-    therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=801, server_default="801")
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
-
 
 
 class TherapistLeave(Base):
