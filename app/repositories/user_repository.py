@@ -110,6 +110,7 @@ class UserRepository:
             db.query(Patient)
             .filter(
                 Patient.is_available == True,
+                Patient.status == True,
                 Patient.region_id.in_(current_user.region_ids)
             )
             .order_by(Patient.id.desc())

@@ -1,5 +1,6 @@
 from datetime import datetime, date, time
 from decimal import Decimal
+from enum import Enum
 from typing import Optional, List
 
 from pydantic import BaseModel, EmailStr, Field
@@ -631,3 +632,42 @@ class SlotMasterResponse(BaseModel):
 
     class Config:
         from_attributes = True
+    
+    # ============================== patient session plan =====================   
+        
+class StatusEnum(str, Enum):
+    ACTIVE = "ACTIVE"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED"
+            
+class PatientSessionPlanBase(BaseModel):
+    patient_id: int
+    plan_name: str
+    total_sessions: Optional[int] = None
+    is_active: Optional[bool] = True
+    
+class PatientSessionPlanCreate(PatientSessionPlanBase):
+    pass
+
+class PatientSessionPlanUpdate(BaseModel):
+    plan_name: Optional[str] = None
+    total_sessions: Optional[int] = None
+    is_active: Optional[bool] = None
+    
+class PatientSessionPlanResponse(PatientSessionPlanBase):
+    id: int
+    patient_id:int
+    start_date: datetime
+    end_date: datetime
+    plan_name: str
+    status: StatusEnum 
+
+    class Config:
+        from_attributes = True                
+
+
+
+class PatientSessionPlanCreate(BaseModel):
+    id:int
+    plan_name: str
+    status: StatusEnum        

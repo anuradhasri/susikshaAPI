@@ -348,6 +348,67 @@ async def update_payment_status(
             detail="Error updating payment"
         )
 
+# add payment
+
+@router.post(
+    "/addpayment",
+    response_model=PaymentResponse,
+    status_code=status.HTTP_201_CREATED
+)
+async def add_payment(
+    payment_create: PaymentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+
+    """
+    Fetch therapist dropdown based on therapy id
+    """
+
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+    
+    try:
+
+        # Optional Region Access Validation
+        # await check_region_access(current_user, payment_create.region_id)
+
+        payment = PaymentService.add_payment(
+            db=db,
+            payment_create=payment_create,        
+            created_by=current_user.id
+        )
+
+        logger.info(
+            "Payment recorded successfully",
+            extra={
+                "payment_id": payment.id,
+                "patient_id": payment.patient_id,
+                "user_id": current_user.id
+            }
+        )
+
+        return payment
+
+    except HTTPException as http_ex:
+        raise http_ex
+
+    except Exception as e:
+
+        logger.error(
+            f"Error recording payment: {str(e)}",
+            extra={
+                "user_id": current_user.id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to record payment"
+        )    
 
 @router.get("/payments", response_model=PaginatedResponse)
 async def list_payments(
@@ -355,9 +416,19 @@ async def list_payments(
     status: str = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
-    # current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    """
+    Fetch therapist dropdown based on therapy id
+    """
+
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+    
     """List payments"""
     payments, total = PaymentService.list_payments(
         db,

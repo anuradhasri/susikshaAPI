@@ -81,20 +81,19 @@ class User(Base):
     last_name = Column(String(100), nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
-    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     phone = Column(String(20), nullable=True)
     last_login = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    region = relationship("Region", back_populates="users")
+    # region = relationship("Region", back_populates="users")
     user_roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
 
-    __table_args__ = (
-        Index("idx_user_region_id", "region_id"),
-        Index("idx_user_email_region_id", "email", "region_id"),
-    )
+    # __table_args__ = (
+    #     Index("idx_user_region_id", "region_id"),
+    #     Index("idx_user_email_region_id", "email", "region_id"),
+    # )
 
 
 class UserRole(Base):
@@ -164,7 +163,7 @@ class Region(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
-    users = relationship("User", back_populates="region")
+    # users = relationship("User", back_populates="region")
     patients = relationship("Patient", back_populates="region")
     therapists = relationship("Therapist", back_populates="region")
     appointments = relationship("Appointment", back_populates="region")
@@ -190,7 +189,7 @@ class Patient(Base):
     notes = Column(Text, nullable=True)
     alternate_contact = Column(String(255), nullable=True)
     clinical_observation = Column(Text, nullable=True)
-    status = Column(String(50), nullable=True)
+    status = Column(Boolean, default=True)
     is_available = Column(Boolean, default=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -206,6 +205,10 @@ class Patient(Base):
     payments = relationship("Payment", back_populates="patient")
     documents = relationship("Document", back_populates="patient")
     alerts = relationship("Alert", back_populates="patient")
+    session_plans = relationship(
+        "PatientSessionPlan",
+        back_populates="patient"
+    )
 
     __table_args__ = (
         Index("idx_patient_region_id", "region_id"),
@@ -227,7 +230,8 @@ class Therapist(Base):
     updated_by = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
+    is_active = Column(Boolean, nullable=False)
+    
     region = relationship("Region", back_populates="therapists")
     appointments = relationship("Appointment", back_populates="therapist")
     sessions = relationship("Session", back_populates="therapist")
@@ -237,6 +241,11 @@ class Therapist(Base):
         Index("idx_therapist_region_id", "region_id"),
     )
 
+    therapy_mappings = relationship(
+        "TherapistTherapyMapping",
+        back_populates="therapist"
+    )
+    
     @property
     def user_id(self):
         return None
@@ -696,3 +705,131 @@ class SlotMaster(Base):
     end_time = Column(Time, nullable=False)
     duration_minutes = Column(Integer, nullable = False)
     is_active = Column(Boolean, nullable=False, default=True)
+
+class StatusEnum(str, enum.Enum):
+    ACTIVE = "ACTIVE"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED" 
+    
+class PatientSessionPlan(Base):
+    __tablename__ = "patient_session_plan"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    patient_id = Column(
+        Integer,
+        ForeignKey("patients.id"),
+        nullable=False,
+        index=True
+    )
+
+    plan_name = Column(String(255), nullable=False)
+
+    total_sessions = Column(Integer, nullable=True)
+
+    start_date = Column(Date, nullable = True)
+    
+    end_date = Column(Date, nullable = True)
+    
+    status = Column(
+        Enum(StatusEnum),
+        default=StatusEnum.ACTIVE,
+        nullable=False
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    # Relationship
+    patient = relationship("Patient", back_populates="session_plans")
+    
+class PatientSessionPlanItem(Base):
+    __tablename__ = "patient_session_plan_item"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    patient_session_plan_id = Column(
+        Integer,
+        ForeignKey("patient_session_plan.id"),
+        nullable=False
+    )
+
+    therapy_id = Column(
+        Integer,
+        ForeignKey("therapy_master.id"),
+        nullable=False
+    )   
+    
+    therapy = relationship(
+        "TherapyMaster",
+        back_populates="patient_session_plan_items"
+    )
+    
+class TherapyMaster(Base):
+    __tablename__ = "therapy_master"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String(255), nullable=False)
+
+    therapy_code = Column(String(100), unique=True, nullable=True)
+
+    is_active = Column(Boolean, nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    # Relationships
+    patient_session_plan_items = relationship(
+        "PatientSessionPlanItem",
+        back_populates="therapy"
+    )    
+    
+    therapist_mappings = relationship(
+        "TherapistTherapyMapping",
+        back_populates="therapy"
+    )
+    
+    
+class TherapistTherapyMapping(Base):
+    __tablename__ = "therapist_therapy_mapping"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    therapist_id = Column(
+        Integer,
+        ForeignKey("therapists.id"),
+        nullable=False
+    )
+
+    therapy_id = Column(
+        Integer,
+        ForeignKey("therapy_master.id"),
+        nullable=False
+    )
+    is_active = Column(Boolean, nullable=False)
+    therapist = relationship(
+        "Therapist",
+        back_populates="therapy_mappings"
+    )
+
+    therapy = relationship(
+        "TherapyMaster",
+        back_populates="therapist_mappings"
+    )

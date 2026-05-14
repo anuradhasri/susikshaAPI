@@ -56,7 +56,7 @@ async def get_waitlist_patients(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_id
+        target_region_id=current_user.region_ids
     )
 
     try:
@@ -102,6 +102,142 @@ async def get_waitlist_patients(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error fetching waitlist patients"
+        )
+
+@router.get(
+    "/patient-plans/{patient_id}",
+    status_code=status.HTTP_200_OK
+)
+async def get_patient_plans(
+    patient_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch session plans for dropdown based on patient id
+    """
+
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
+    try:
+
+        response = AppointmentService.get_patient_plans(
+            db=db,
+            patient_id=patient_id,
+            current_user=current_user
+        )
+
+        logger.info(
+            "Patient session plans fetched successfully",
+            extra={
+                "user_id": current_user.id,
+                "patient_id": patient_id,
+                "total_records": response["total"]
+            }
+        )
+
+        return response
+
+    except ValueError as e:
+
+        logger.warning(
+            f"Error fetching patient session plans: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "patient_id": patient_id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+
+        logger.error(
+            f"Error fetching patient session plans: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "patient_id": patient_id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error fetching patient session plans"
+        )
+        
+@router.get(
+    "/patient-plans-therapies/{patient_session_plan_id}",
+    status_code=status.HTTP_200_OK
+)
+async def get_patient_plans_therapies(
+    patient_session_plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch session plans for dropdown based on patient id
+    """
+
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
+    try:
+
+        response = AppointmentService.get_patient_plans_therapies(
+            db=db,
+            patient_session_plan_id=patient_session_plan_id,
+            current_user=current_user
+        )
+
+        logger.info(
+            "Patient session plans fetched successfully",
+            extra={
+                "user_id": current_user.id,
+                "patient_session_plan_id": patient_session_plan_id,
+                "total_records": response["total"]
+            }
+        )
+
+        return response
+
+    except ValueError as e:
+
+        logger.warning(
+            f"Error fetching patient session plans: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "patient_session_plan_id": patient_session_plan_id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+
+        logger.error(
+            f"Error fetching patient session plans: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "patient_session_plan_id": patient_plans_id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error fetching patient session plans"
         )
         
 @router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
@@ -271,3 +407,70 @@ async def list_appointments(
         "items": appointments
     }
 
+@router.get(
+    "/therapists-list/{therapy_id}",
+    status_code=status.HTTP_200_OK
+)
+async def get_therapists(
+    therapy_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetch therapist dropdown based on therapy id
+    """
+
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
+    try:
+
+        response = AppointmentService.get_therapists(
+            db=db,
+            therapy_id=therapy_id,
+            current_user=current_user
+        )
+
+        logger.info(
+            "Therapists fetched successfully",
+            extra={
+                "user_id": current_user.id,
+                "therapy_id": therapy_id,
+                "total_records": response["total"]
+            }
+        )
+
+        return response
+
+    except ValueError as e:
+
+        logger.warning(
+            f"Error fetching therapists: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "therapy_id": therapy_id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+
+        logger.error(
+            f"Error fetching therapists: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "therapy_id": therapy_id
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error fetching therapists"
+        )

@@ -48,7 +48,43 @@ class AppointmentService:
             "total": len(response),
             "data": response
         }    
+    
+    @staticmethod
+    def get_patient_plans(
+        db: Session,
+        patient_id: int,
+        current_user
+    ):
+
+        return AppointmentRepository.get_patient_plans(
+            db=db,
+            patient_id=patient_id
+        )
+    
+    @staticmethod
+    def get_patient_plans_therapies(
+        db: Session,
+        patient_session_plan_id: int,
+        current_user
+    ):
+
+        return AppointmentRepository.get_patient_plans_therapies(
+            db=db,
+            patient_session_plan_id=patient_session_plan_id
+        )
         
+    @staticmethod
+    def get_therapists(
+        db: Session,
+        therapy_id: int,
+        current_user
+    ):
+
+        return AppointmentRepository.get_therapists(
+            db=db,
+            therapy_id=therapy_id
+        )    
+            
     @staticmethod
     def create_appointment(db: Session, appointment_create: AppointmentCreate) -> Appointment:
         """Create a new appointment"""
@@ -251,3 +287,5 @@ class SlotMasterService:
         )
 
         return slots
+    
+    

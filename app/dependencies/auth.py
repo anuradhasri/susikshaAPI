@@ -1,7 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional , List
 from app.core.database import get_db
 from app.core.security import decode_token, TokenData
 from app.models.models import User, UserRole, Role, UserRegionMapping
@@ -125,26 +125,57 @@ async def get_user_roles(
     return [role.name for role in user_roles]
 
 
+# async def check_region_access(
+#     current_user: User = Depends(get_current_user),
+#     db: Session = Depends(get_db),
+#     target_region_id: Optional[List] = None
+# ) -> bool:
+#     """Check if user can access target region"""
+#     roles = await get_user_roles(current_user, db)
+    
+#     # Admin has access to all regions
+#     if "admin" in roles:
+#         return True
+    
+#     # Non-admin users can only access their own region
+#     region_ids = _user_region_ids(db, current_user.id)
+#     if target_region_id and target_region_id not in region_ids:
+#         raise HTTPException(
+#             status_code=status.HTTP_403_FORBIDDEN,
+#             detail="You don't have access to this region",
+#         )
+    
+#     return True
+
 async def check_region_access(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-    target_region_id: Optional[int] = None
+    target_region_id: Optional[List[int]] = None
 ) -> bool:
-    """Check if user can access target region"""
+    """Check if user can access target regions"""
+
     roles = await get_user_roles(current_user, db)
-    
+
     # Admin has access to all regions
     if "admin" in roles:
         return True
-    
-    # Non-admin users can only access their own region
+
+    # Non-admin users can only access their own regions
     region_ids = _user_region_ids(db, current_user.id)
-    if target_region_id and target_region_id not in region_ids:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have access to this region",
-        )
-    
+
+    if target_region_id:
+        unauthorized_regions = [
+            region_id
+            for region_id in target_region_id
+            if region_id not in region_ids
+        ]
+
+        if unauthorized_regions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You don't have access to regions: {unauthorized_regions}",
+            )
+
     return True
 
 
