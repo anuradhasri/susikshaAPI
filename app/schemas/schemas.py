@@ -273,6 +273,25 @@ class SlotBookingResponse(BaseModel):
         from_attributes = True
 
 
+class SlotCancelRequest(BaseModel):
+    region_id: Optional[int] = None
+
+
+class SlotCancelResponse(BaseModel):
+    success: bool
+    message: str
+    patient_slot_booking_id: int
+    therapist_slot_mapping_id: Optional[int] = None
+    patient_session_plan_item_id: Optional[int] = None
+    allocated_sessions: Optional[int] = None
+    assigned_sessions: Optional[int] = None
+    completed_sessions: Optional[int] = None
+    remaining_sessions: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
 class AppointmentDetailResponse(AppointmentResponse):
     patient: PatientResponse
     therapist: TherapistResponse

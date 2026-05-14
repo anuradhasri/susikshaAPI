@@ -162,8 +162,8 @@ class AppointmentService:
             booking_create.patient_session_plan_id,
             booking_create.therapy_id,
         )
-        # if not plan_item:
-        #     raise ValueError("No session left for selected therapy")
+        if not plan_item:
+            raise ValueError("No session left for selected therapy")
 
         assigned_sessions = plan_item.assigned_sessions or 0
         completed_sessions = plan_item.completed_sessions or 0
@@ -190,6 +190,51 @@ class AppointmentService:
         db.refresh(patient_slot_booking)
         db.refresh(therapist_slot_mapping)
         db.refresh(plan_item)
+
+        return {
+            "patient_slot_booking": patient_slot_booking,
+            "therapist_slot_mapping": therapist_slot_mapping,
+            "patient_session_plan_item": plan_item,
+        }
+
+    @staticmethod
+    def cancel_slot(db: Session, patient_slot_booking_id: int):
+        patient_slot_booking = AppointmentRepository.get_patient_slot_booking_for_update(
+            db,
+            patient_slot_booking_id,
+        )
+        if not patient_slot_booking:
+            raise ValueError("Slot booking not found")
+
+        if patient_slot_booking.status == "CANCELLED":
+            raise ValueError("Slot booking already cancelled")
+
+        if patient_slot_booking.status == "COMPLETED":
+            raise ValueError("Completed slot cannot be cancelled")
+
+        therapist_slot_mapping = patient_slot_booking.therapist_slot_mapping
+        plan_item = patient_slot_booking.patient_session_plan_item
+
+        patient_slot_booking.status = "CANCELLED"
+
+        if therapist_slot_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
+            db,
+            therapist_slot_mapping.id,
+            exclude_patient_slot_booking_id=patient_slot_booking.id,
+        ):
+            therapist_slot_mapping.status = "CANCELLED"
+
+        if plan_item:
+            assigned_sessions = plan_item.assigned_sessions or 0
+            if assigned_sessions > 0:
+                plan_item.assigned_sessions = assigned_sessions - 1
+
+        db.commit()
+        db.refresh(patient_slot_booking)
+        if therapist_slot_mapping:
+            db.refresh(therapist_slot_mapping)
+        if plan_item:
+            db.refresh(plan_item)
 
         return {
             "patient_slot_booking": patient_slot_booking,

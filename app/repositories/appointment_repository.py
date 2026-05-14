@@ -334,6 +334,34 @@ class AppointmentRepository:
         return booking
 
     @staticmethod
+    def get_patient_slot_booking_for_update(
+        db: Session,
+        patient_slot_booking_id: int,
+    ) -> Optional[PatientSlotBooking]:
+        return (
+            db.query(PatientSlotBooking)
+            .filter(PatientSlotBooking.id == patient_slot_booking_id)
+            .with_for_update()
+            .first()
+        )
+
+    @staticmethod
+    def has_active_patient_booking_for_mapping(
+        db: Session,
+        therapist_slot_mapping_id: int,
+        exclude_patient_slot_booking_id: Optional[int] = None,
+    ) -> bool:
+        query = db.query(PatientSlotBooking).filter(
+            PatientSlotBooking.therapist_slot_mapping_id == therapist_slot_mapping_id,
+            PatientSlotBooking.status != "CANCELLED",
+        )
+
+        if exclude_patient_slot_booking_id:
+            query = query.filter(PatientSlotBooking.id != exclude_patient_slot_booking_id)
+
+        return query.first() is not None
+
+    @staticmethod
     def has_conflict(db: Session, therapist_id: int, start_time: datetime, end_time: datetime) -> bool:
         return (
             db.query(Appointment)
