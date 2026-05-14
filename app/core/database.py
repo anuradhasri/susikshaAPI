@@ -30,5 +30,5 @@ def get_db():
 
 # Initialize database
 def init_db():
-    """Create all tables"""
-    Base.metadata.create_all(bind=engine)
+    """DB schema is managed explicitly from the live database, not model create_all."""
+    return None

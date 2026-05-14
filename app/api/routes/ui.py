@@ -19,8 +19,6 @@ from app.core.database import get_db
 from app.core.security import decode_token, hash_password, verify_password
 from app.email_templates.password_reset import build_password_reset_email
 from app.models.models import (
-    Alert,
-    Appointment,
     AuditLog,
     Document,
     DocumentTypeMaster,
@@ -33,15 +31,11 @@ from app.models.models import (
     PaymentModeMaster,
     Region,
     Role,
-    Session as TherapySession,
-    SessionAssignment,
-    SessionNote,
     Therapist,
     TherapistAvailability,
     User,
     UserRegionMapping,
     UserRole,
-    WaitlistEntry,
 )
 from app.services.user_service import AuthService, UserService
 
@@ -56,6 +50,14 @@ ALLOWED_DOCUMENT_EXTENSIONS = {
     if ext.strip()
 }
 _PATIENT_PROFILE_SCHEMA_READY = False
+REMOVED_DB_TABLES = {
+    "appointments",
+    "sessions",
+    "alerts",
+    "waitlist_entries",
+    "session_notes",
+    "session_assignments",
+}
 
 
 def _ensure_patient_profile_schema(db: Session) -> None:
@@ -464,7 +466,7 @@ def _availability_shape(row: TherapistAvailability) -> dict:
     }
 
 
-def _appointment_shape(appointment: Appointment) -> dict:
+def _appointment_shape(appointment: Any) -> dict:
     duration = max(0, int((appointment.end_time - appointment.start_time).total_seconds() / 60))
     return {
         "id": appointment.id,
@@ -488,7 +490,7 @@ def _appointment_shape(appointment: Appointment) -> dict:
     }
 
 
-def _session_shape(session: TherapySession) -> dict:
+def _session_shape(session: Any) -> dict:
     return {
         "id": session.id,
         "appointment_id": session.appointment_id,
@@ -518,29 +520,10 @@ def _package_session_stats(patient_package: PatientPackage) -> dict:
     total = patient_package.package.total_sessions if patient_package.package else (
         (patient_package.sessions_completed or 0) + (patient_package.sessions_remaining or 0)
     )
-    db = object_session(patient_package)
     package_sessions = []
-    if db:
-        package_sessions = (
-            db.query(TherapySession)
-            .join(SessionAssignment, SessionAssignment.session_id == TherapySession.id)
-            .options(joinedload(TherapySession.therapist))
-            .filter(
-                TherapySession.patient_id == patient_package.patient_id,
-                TherapySession.deleted_at.is_(None),
-                SessionAssignment.package_id == patient_package.package_id,
-                SessionAssignment.deleted_at.is_(None),
-            )
-            .all()
-        )
-    if package_sessions:
-        completed = sum(1 for s in package_sessions if _status_value(s.status) == "completed")
-        scheduled = sum(1 for s in package_sessions if _status_value(s.status) in {"scheduled", "in_progress"})
-        remaining = max(0, total - completed)
-    else:
-        completed = patient_package.sessions_completed or 0
-        scheduled = 0
-        remaining = patient_package.sessions_remaining if patient_package.sessions_remaining is not None else max(0, total - completed)
+    completed = patient_package.sessions_completed or 0
+    scheduled = 0
+    remaining = patient_package.sessions_remaining if patient_package.sessions_remaining is not None else max(0, total - completed)
     return {
         "total": total,
         "completed": completed,
@@ -631,7 +614,7 @@ def _payment_mode_id(db: Session, value: Any) -> Optional[int]:
     return mode.id
 
 
-def _alert_shape(alert: Alert) -> dict:
+def _alert_shape(alert: Any) -> dict:
     severity = {"low": "info", "medium": "warning", "high": "warning"}.get(alert.severity, alert.severity)
     return {
         "id": alert.id,
@@ -653,7 +636,7 @@ def _alert_shape(alert: Alert) -> dict:
     }
 
 
-def _waitlist_shape(entry: WaitlistEntry) -> dict:
+def _waitlist_shape(entry: Any) -> dict:
     patient = entry.patient
     therapist = entry.preferred_therapist
     return {
@@ -720,7 +703,7 @@ def _audit_shape(log: AuditLog) -> dict:
     }
 
 
-def _note_shape(note: SessionNote) -> dict:
+def _note_shape(note: Any) -> dict:
     therapist = None
     if note.session and note.session.therapist:
         therapist = note.session.therapist
@@ -737,7 +720,7 @@ def _note_shape(note: SessionNote) -> dict:
     }
 
 
-def _assignment_shape(assignment: SessionAssignment) -> dict:
+def _assignment_shape(assignment: Any) -> dict:
     therapist = assignment.session.therapist if assignment.session else None
     return {
         "id": assignment.id,
@@ -813,8 +796,10 @@ def _parse_time(value: Optional[str]) -> Optional[time]:
 def _base_query(table: str, db: Session, user: Optional[User]):
     if table not in ALLOWED_UI_TABLES:
         raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
+    if table in REMOVED_DB_TABLES:
+        raise HTTPException(status_code=404, detail=f"Table is not present in the database: {table}")
 
-    if table in {"patients", "appointments", "sessions", "patient_packages", "invoices", "payments", "alerts", "waitlist_entries", "documents"}:
+    if table in {"patients", "patient_packages", "invoices", "payments", "documents"}:
         _ensure_patient_profile_schema(db)
 
     region_ids = _user_region_ids(db, user)
@@ -824,12 +809,6 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         query = db.query(Patient)
         if region_ids:
             query = query.filter(Patient.region_id.in_(region_ids))
-        if current_therapist:
-            patient_ids = db.query(TherapySession.patient_id).filter(
-                TherapySession.therapist_id == current_therapist.id,
-                TherapySession.deleted_at.is_(None),
-            )
-            query = query.filter(Patient.id.in_(patient_ids))
         return query
     if table == "users":
         query = db.query(User).filter(User.deleted_at.is_(None))
@@ -853,74 +832,20 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         elif region_ids:
             query = query.join(Therapist, Therapist.id == TherapistAvailability.therapist_id).filter(Therapist.region_id.in_(region_ids))
         return query
-    if table == "appointments":
-        query = db.query(Appointment).options(joinedload(Appointment.patient), joinedload(Appointment.therapist)).filter(Appointment.deleted_at.is_(None))
-        if region_ids:
-            query = query.filter(Appointment.region_id.in_(region_ids))
-        if current_therapist:
-            query = query.filter(Appointment.therapist_id == current_therapist.id)
-        return query
-    if table == "sessions":
-        query = db.query(TherapySession).options(joinedload(TherapySession.patient), joinedload(TherapySession.therapist)).filter(TherapySession.deleted_at.is_(None))
-        if region_ids:
-            query = query.join(Patient, Patient.id == TherapySession.patient_id).filter(Patient.region_id.in_(region_ids))
-        if current_therapist:
-            query = query.filter(TherapySession.therapist_id == current_therapist.id)
-        return query
     if table == "patient_packages":
         query = db.query(PatientPackage).options(joinedload(PatientPackage.package)).filter(PatientPackage.deleted_at.is_(None))
         if region_ids:
             query = query.join(Patient, Patient.id == PatientPackage.patient_id).filter(Patient.region_id.in_(region_ids))
-        if current_therapist:
-            patient_ids = db.query(TherapySession.patient_id).filter(
-                TherapySession.therapist_id == current_therapist.id,
-                TherapySession.deleted_at.is_(None),
-            )
-            query = query.filter(PatientPackage.patient_id.in_(patient_ids))
         return query
     if table == "invoices":
         query = db.query(Invoice).options(joinedload(Invoice.patient)).filter(Invoice.deleted_at.is_(None))
         if region_ids:
             query = query.filter(Invoice.region_id.in_(region_ids))
-        if current_therapist:
-            patient_ids = db.query(TherapySession.patient_id).filter(
-                TherapySession.therapist_id == current_therapist.id,
-                TherapySession.deleted_at.is_(None),
-            )
-            query = query.filter(Invoice.patient_id.in_(patient_ids))
         return query
     if table == "payments":
         query = db.query(Payment).options(joinedload(Payment.patient))
         if region_ids:
             query = query.join(Patient, Patient.id == Payment.patient_id).filter(Patient.region_id.in_(region_ids))
-        if current_therapist:
-            patient_ids = db.query(TherapySession.patient_id).filter(
-                TherapySession.therapist_id == current_therapist.id,
-                TherapySession.deleted_at.is_(None),
-            )
-            query = query.filter(Payment.patient_id.in_(patient_ids))
-        return query
-    if table == "alerts":
-        query = db.query(Alert).filter(Alert.deleted_at.is_(None))
-        if region_ids:
-            query = query.outerjoin(Patient, Patient.id == Alert.patient_id).filter((Alert.patient_id.is_(None)) | (Patient.region_id.in_(region_ids)))
-        if current_therapist:
-            patient_ids = db.query(TherapySession.patient_id).filter(
-                TherapySession.therapist_id == current_therapist.id,
-                TherapySession.deleted_at.is_(None),
-            )
-            query = query.filter(Alert.patient_id.in_(patient_ids))
-        return query
-    if table == "waitlist_entries":
-        query = db.query(WaitlistEntry).options(joinedload(WaitlistEntry.patient), joinedload(WaitlistEntry.preferred_therapist)).filter(WaitlistEntry.deleted_at.is_(None))
-        if region_ids:
-            query = query.join(Patient, Patient.id == WaitlistEntry.patient_id).filter(Patient.region_id.in_(region_ids))
-        if current_therapist:
-            patient_ids = db.query(TherapySession.patient_id).filter(
-                TherapySession.therapist_id == current_therapist.id,
-                TherapySession.deleted_at.is_(None),
-            )
-            query = query.filter(WaitlistEntry.patient_id.in_(patient_ids))
         return query
     if table == "documents":
         query = db.query(Document).options(joinedload(Document.patient))
@@ -929,17 +854,13 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return query
     if table == "audit_logs":
         return db.query(AuditLog)
-    if table == "session_notes":
-        return db.query(SessionNote).options(joinedload(SessionNote.session).joinedload(TherapySession.therapist)).filter(SessionNote.deleted_at.is_(None))
-    if table == "session_assignments":
-        return db.query(SessionAssignment).options(joinedload(SessionAssignment.session).joinedload(TherapySession.therapist))
     raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
 
 
 FIELD_MAP = {
     "full_name": None,
     "patient_code": None,
-    "scheduled_at": Appointment.start_time,
+    "scheduled_at": None,
     "is_active": None,
     "is_resolved": None,
     "changed_at": AuditLog.created_at,
@@ -956,14 +877,10 @@ def _column_for(table: str, field: str):
         "patients": Patient,
         "therapists": Therapist,
         "therapist_availability": TherapistAvailability,
-        "appointments": Appointment,
-        "sessions": TherapySession,
         "patient_packages": PatientPackage,
         "invoices": Invoice,
         "payments": Payment,
         "documents": Document,
-        "session_notes": SessionNote,
-        "session_assignments": SessionAssignment,
     }
     if table not in model_map:
         raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
@@ -1292,7 +1209,7 @@ def _status_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
-def _appointment_session_status(appointment: Appointment) -> str:
+def _appointment_session_status(appointment: Any) -> str:
     status_value = _status_value(appointment.status)
     if status_value in {"confirmed", "scheduled", "in_progress", "completed", "cancelled", "no_show"}:
         return "scheduled" if status_value == "confirmed" else status_value
@@ -1300,55 +1217,7 @@ def _appointment_session_status(appointment: Appointment) -> str:
 
 
 def _ensure_sessions_for_appointments(db: Session, user: Optional[User]) -> None:
-    existing_appointment_ids = {
-        row[0]
-        for row in db.query(TherapySession.appointment_id)
-        .filter(TherapySession.appointment_id.isnot(None), TherapySession.deleted_at.is_(None))
-        .all()
-    }
-    query = _base_query("appointments", db, user)
-    appointments_without_sessions = [
-        appointment
-        for appointment in query.all()
-        if appointment.id not in existing_appointment_ids
-    ]
-    if not appointments_without_sessions:
-        return
-
-    for appointment in appointments_without_sessions:
-        duration = max(1, int((appointment.end_time - appointment.start_time).total_seconds() / 60))
-        last_number = (
-            db.query(func.max(TherapySession.session_number))
-            .filter(TherapySession.patient_id == appointment.patient_id, TherapySession.deleted_at.is_(None))
-            .scalar()
-            or 0
-        )
-        session = TherapySession(
-            patient_id=appointment.patient_id,
-            therapist_id=appointment.therapist_id,
-            appointment_id=appointment.id,
-            session_number=last_number + 1,
-            duration_minutes=duration,
-            status=_appointment_session_status(appointment),
-            session_date=appointment.start_time.date(),
-            progress_notes=appointment.notes,
-            billing_status="pending",
-        )
-        db.add(session)
-        db.flush()
-        active_package = (
-            db.query(PatientPackage)
-            .filter(
-                PatientPackage.patient_id == appointment.patient_id,
-                PatientPackage.status == "active",
-                PatientPackage.deleted_at.is_(None),
-            )
-            .order_by(PatientPackage.created_at.desc())
-            .first()
-        )
-        if active_package:
-            db.add(SessionAssignment(session_id=session.id, package_id=active_package.package_id))
-    db.commit()
+    return None
 
 
 def _invoice_ui_status(invoice: Invoice) -> str:
@@ -1375,7 +1244,57 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     previous_period_start, previous_period_end = _previous_period_window(period_key, period_start, period_end)
     roles = _user_roles(db, user)
     current_therapist = _current_therapist(db, user) if "therapist" in roles else None
-    _ensure_sessions_for_appointments(db, user)
+    patients = _base_query("patients", db, user).all()
+    therapists = _base_query("therapists", db, user).all()
+    invoices = _base_query("invoices", db, user).all()
+    payments = _base_query("payments", db, user).all()
+    patient_packages = _base_query("patient_packages", db, user).all()
+    availability_rows = _base_query("therapist_availability", db, user).filter(
+        TherapistAvailability.availability_date >= period_start,
+        TherapistAvailability.availability_date <= period_end,
+    ).all()
+    revenue = sum(float(payment.payment_amount or 0) for payment in payments)
+    receivables = sum(max(0, (invoice.total_amount or 0) - (invoice.paid_amount or 0)) for invoice in invoices)
+    diagnosis_counts = Counter((patient.diagnosis or "Other").strip() or "Other" for patient in patients)
+    palette = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#6b7280", "#8b5cf6"]
+    total_diagnoses = sum(diagnosis_counts.values()) or 1
+    diagnosis_data = [
+        {"name": name, "value": round((count / total_diagnoses) * 100, 1), "count": count, "color": palette[i % len(palette)]}
+        for i, (name, count) in enumerate(diagnosis_counts.most_common(6))
+    ]
+    return {
+        "period": {k: v for k, v in period_info.items() if k not in {"start", "end"}},
+        "stats": {
+            "totalPatients": len(patients),
+            "todayAppointments": 0,
+            "activeSessions": 0,
+            "monthRevenue": round(revenue, 2),
+            "periodRevenue": round(revenue, 2),
+            "unresolvedAlerts": 0,
+            "completedSessionsToday": 0,
+            "unbilledSessions": 0,
+            "activeTherapists": sum(1 for therapist in therapists if therapist.is_active),
+            "revenueGrowth": 0,
+            "waitlistCount": 0,
+        },
+        "kpiCards": [
+            {"title": "Revenue", "value": f"Rs {round(revenue):,}", "icon": "revenue", "change": "live payments", "changeType": "neutral"},
+            {"title": "Receivables", "value": f"Rs {round(receivables):,}", "icon": "receivables", "change": f"{len(invoices)} invoices", "changeType": "neutral"},
+            {"title": "Avg. Utilization", "value": "0%", "icon": "avg", "change": "slots table only", "changeType": "neutral"},
+            {"title": "Active Packages", "value": str(sum(1 for pp in patient_packages if pp.status == "active")), "icon": "packages", "change": f"{len(patient_packages)} total", "changeType": "neutral"},
+            {"title": "Leakage", "value": "0", "icon": "leakage", "change": "sessions table not present", "changeType": "neutral"},
+        ],
+        "revenueData": [],
+        "sessionTrendData": [],
+        "diagnosisData": diagnosis_data,
+        "therapistUtilization": [],
+        "therapistAvailability": [_availability_shape(row) for row in availability_rows],
+        "billingRows": [_invoice_shape(invoice) for invoice in invoices],
+        "unbilledSessions": [],
+        "patientProgress": [],
+        "waitlist": [],
+        "therapistSessions": [],
+    }
 
     patients = _base_query("patients", db, user).all()
     therapists = _base_query("therapists", db, user).all()

@@ -24,7 +24,7 @@ class AppointmentRepository:
             db.query(PatientSessionPlan)
             .filter(
                 PatientSessionPlan.patient_id == patient_id,
-                PatientSessionPlan.status == 'Active'
+                PatientSessionPlan.status == "ACTIVE"
             )
             .all()
         )
