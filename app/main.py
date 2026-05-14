@@ -1,6 +1,8 @@
 import logging
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from app.core.config import get_settings
 from app.core.database import init_db
@@ -58,6 +60,10 @@ def create_app() -> FastAPI:
     # Include routers
     for router in routers:
         app.include_router(router)
+
+    uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
     
     # Root endpoint
     @app.get("/health")
