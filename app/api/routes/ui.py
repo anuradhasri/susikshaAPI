@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 import hashlib
+import mimetypes
 from pathlib import Path
 import secrets
 import shutil
@@ -9,6 +10,7 @@ from typing import Any, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session, joinedload, object_session
 
@@ -46,6 +48,13 @@ from app.services.user_service import AuthService, UserService
 router = APIRouter(prefix="/api/v1/ui", tags=["ui"])
 settings = get_settings()
 UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "uploads"
+DOCUMENT_UPLOAD_ROOT = Path(settings.DOCUMENT_UPLOAD_PATH)
+MAX_DOCUMENT_UPLOAD_SIZE_BYTES = settings.MAX_DOCUMENT_UPLOAD_SIZE_MB * 1024 * 1024
+ALLOWED_DOCUMENT_EXTENSIONS = {
+    ext.strip().lower() if ext.strip().startswith(".") else f".{ext.strip().lower()}"
+    for ext in settings.DOCUMENT_ALLOWED_EXTENSIONS.split(",")
+    if ext.strip()
+}
 _PATIENT_PROFILE_SCHEMA_READY = False
 
 
@@ -235,6 +244,22 @@ def _document_type_label(db: Optional[Session], document_type_id: Optional[int])
 def _safe_filename(filename: str) -> str:
     clean = "".join(char if char.isalnum() or char in {".", "_", "-"} else "_" for char in filename)
     return clean.strip("._") or "document"
+
+
+def _document_file_path(document: Document) -> Path:
+    document_root = DOCUMENT_UPLOAD_ROOT.resolve()
+    relative_path = Path(document.file_path)
+    if relative_path.is_absolute():
+        path = relative_path.resolve()
+    elif document.file_path.replace("\\", "/").startswith("uploads/"):
+        path = (Path(__file__).resolve().parents[3] / document.file_path).resolve()
+        document_root = UPLOAD_ROOT.resolve()
+    else:
+        path = (DOCUMENT_UPLOAD_ROOT / relative_path).resolve()
+
+    if not str(path).startswith(str(document_root)) or not path.exists():
+        raise HTTPException(status_code=404, detail="Document file not found")
+    return path
 
 
 def _current_user(request: Request, db: Session) -> Optional[User]:
@@ -652,7 +677,7 @@ def _waitlist_shape(entry: WaitlistEntry) -> dict:
 def _document_shape(document: Document) -> dict:
     db = object_session(document)
     doc_type = _document_type_label(db, document.document_type_id)
-    file_url = document.file_path
+    file_url = f"api/v1/ui/documents/{document.id}/view"
     return {
         "id": document.id,
         "patient_id": document.patient_id,
@@ -662,8 +687,10 @@ def _document_shape(document: Document) -> dict:
         "document_type": doc_type,
         "title": document.title,
         "file_url": file_url,
-        "file_path": file_url,
-        "file_name": file_url.rsplit("/", 1)[-1] if file_url else None,
+        "view_url": file_url,
+        "download_url": f"api/v1/ui/documents/{document.id}/download",
+        "file_path": document.file_path,
+        "file_name": document.title or (document.file_path.rsplit("/", 1)[-1] if document.file_path else None),
         "file_size": document.file_size,
         "mime_type": None,
         "notes": document.description,
@@ -934,6 +961,7 @@ def _column_for(table: str, field: str):
         "patient_packages": PatientPackage,
         "invoices": Invoice,
         "payments": Payment,
+        "documents": Document,
         "session_notes": SessionNote,
         "session_assignments": SessionAssignment,
     }
@@ -960,9 +988,13 @@ def _apply_filters(query, table: str, filters: list[dict]):
         elif field == "is_billed" and table == "sessions":
             if op == "eq":
                 query = query.filter(TherapySession.billing_status.in_(["billed", "paid"]) if str(value).lower() == "true" else TherapySession.billing_status.notin_(["billed", "paid"]))
+        elif field == "deleted_at" and table == "documents":
+            continue
         elif col is not None:
             if op == "eq":
                 query = query.filter(col == value)
+            elif op == "in":
+                query = query.filter(col.in_(value or []))
             elif op == "gte":
                 query = query.filter(col >= value)
             elif op == "lte":
@@ -1610,7 +1642,14 @@ def upload_patient_document(
 
     original_name = file.filename or "document"
     safe_name = _safe_filename(original_name)
-    folder = UPLOAD_ROOT / "patients" / str(patient_id)
+    extension = Path(safe_name).suffix.lower()
+    if extension not in ALLOWED_DOCUMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only these file types are allowed: {', '.join(sorted(ALLOWED_DOCUMENT_EXTENSIONS))}",
+        )
+
+    folder = DOCUMENT_UPLOAD_ROOT / "patients" / str(patient_id)
     folder.mkdir(parents=True, exist_ok=True)
     stored_name = f"{int(datetime.utcnow().timestamp() * 1000)}-{safe_name}"
     target = folder / stored_name
@@ -1618,13 +1657,21 @@ def upload_patient_document(
     with target.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    relative_path = f"uploads/patients/{patient_id}/{stored_name}"
+    file_size = target.stat().st_size
+    if file_size > MAX_DOCUMENT_UPLOAD_SIZE_BYTES:
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=413,
+            detail=f"Document size must be {settings.MAX_DOCUMENT_UPLOAD_SIZE_MB} MB or less",
+        )
+
+    relative_path = f"patients/{patient_id}/{stored_name}"
     row = Document(
         patient_id=patient_id,
         document_type_id=_document_type_id(db, document_type),
         title=title or original_name,
         file_path=relative_path,
-        file_size=target.stat().st_size,
+        file_size=file_size,
         uploaded_by=user.id,
         description=notes,
     )
@@ -1665,6 +1712,113 @@ def upload_patient_photo(
     db.commit()
     db.refresh(patient)
     return {"data": _patient_shape(patient)}
+
+
+@router.get("/documents/{document_id}/download")
+def download_document_file(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    path = _document_file_path(document)
+
+    return FileResponse(
+        path=str(path),
+        filename=document.title or path.name,
+        media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+    )
+
+
+@router.get("/documents/{document_id}/view")
+def view_document_file(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    path = _document_file_path(document)
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    download_url = f"/api/v1/ui/documents/{document.id}/download"
+    raw_url = f"/api/v1/ui/documents/{document.id}/inline"
+    title = document.title or path.name
+
+    if mime_type.startswith("text/") or mime_type in {"application/xml", "text/xml", "application/json"}:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        import html
+        return HTMLResponse(f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; background: #f8fafc; color: #0f172a; }}
+    header {{ display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: white; border-bottom: 1px solid #e2e8f0; }}
+    a {{ color: #2563eb; text-decoration: none; font-weight: 600; }}
+    pre {{ margin: 0; padding: 16px; white-space: pre-wrap; word-break: break-word; font: 13px/1.5 Consolas, monospace; }}
+  </style>
+</head>
+<body>
+  <header><strong>{html.escape(title)}</strong><a href="{download_url}">Download</a></header>
+  <pre>{html.escape(content)}</pre>
+</body>
+</html>
+""")
+
+    if mime_type.startswith("image/") or mime_type == "application/pdf":
+        return FileResponse(
+            path=str(path),
+            filename=title,
+            media_type=mime_type,
+            headers={"Content-Disposition": f'inline; filename="{title}"'},
+        )
+
+    import html
+    return HTMLResponse(f"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{html.escape(title)}</title>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; background: #f8fafc; color: #0f172a; }}
+    header {{ display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: white; border-bottom: 1px solid #e2e8f0; }}
+    main {{ padding: 24px; }}
+    iframe {{ width: 100%; height: calc(100vh - 100px); border: 1px solid #e2e8f0; background: white; }}
+    a {{ color: #2563eb; text-decoration: none; font-weight: 600; margin-left: 12px; }}
+  </style>
+</head>
+<body>
+  <header><strong>{html.escape(title)}</strong><span><a href="{raw_url}" target="_blank">Open Raw</a><a href="{download_url}">Download</a></span></header>
+  <main><iframe src="{raw_url}" title="{html.escape(title)}"></iframe></main>
+</body>
+</html>
+""")
+
+
+@router.get("/documents/{document_id}/inline")
+def inline_document_file(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    path = _document_file_path(document)
+    return FileResponse(
+        path=str(path),
+        filename=document.title or path.name,
+        media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{document.title or path.name}"'},
+    )
 
 
 @router.get("/{table}")

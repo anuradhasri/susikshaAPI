@@ -67,6 +67,11 @@ class Settings(BaseSettings):
         "DOCUMENT_UPLOAD_PATH",
         "C:/uploads/documents"
     )
+    MAX_DOCUMENT_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_DOCUMENT_UPLOAD_SIZE_MB", "20"))
+    DOCUMENT_ALLOWED_EXTENSIONS: str = os.getenv(
+        "DOCUMENT_ALLOWED_EXTENSIONS",
+        ".pdf,.doc,.docx,.jpg,.jpeg,.png"
+    )
 
     @property
     def email_host(self) -> str:
