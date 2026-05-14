@@ -5,7 +5,7 @@ from sqlalchemy import and_, or_
 from datetime import datetime, date
 from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage
 from app.repositories.appointment_repository import AppointmentRepository
-from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate
+from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate, SlotBookingCreate
 from app.utils.query_utils import soft_delete, filter_by_region
 from app.services.patient_service import PatientService
 from app.repositories.user_repository import UserRepository
@@ -111,6 +111,108 @@ class AppointmentService:
         db.commit()
         db.refresh(db_appointment)
         return db_appointment
+
+    @staticmethod
+    def book_slot(db: Session, booking_create: SlotBookingCreate):
+        # """Book a patient slot using therapist leave, slot mapping, and plan item balance."""
+        # therapist = AppointmentRepository.get_therapist(db, booking_create.therapist_id)
+        # if not therapist or not therapist.is_active:
+        #     raise ValueError("Therapist is not available")
+
+        # if not AppointmentRepository.therapist_supports_therapy(
+        #     db,
+        #     booking_create.therapist_id,
+        #     booking_create.therapy_id,
+        # ):
+        #     raise ValueError("Therapist is not available for selected therapy")
+
+        slot = AppointmentRepository.get_slot(db, booking_create.slot_id)
+        if not slot:
+            raise ValueError("Selected slot is not available")
+
+        therapist_leave = AppointmentRepository.get_therapist_leave(
+            db,
+            booking_create.therapist_id,
+            booking_create.slot_date,
+        )
+        if AppointmentService._leave_blocks_slot(therapist_leave, slot.start_time):
+            raise ValueError("Therapist is not available")
+
+        if AppointmentRepository.get_active_therapist_slot_mapping(
+            db,
+            booking_create.therapist_id,
+            booking_create.slot_id,
+            booking_create.slot_date,
+            booking_create.therapy_id,
+        ):
+            raise ValueError("Slot already booked for selected therapist and slot")
+
+        if AppointmentRepository.patient_has_slot_booking(
+            db,
+            booking_create.patient_id,
+            booking_create.slot_id,
+            booking_create.slot_date,
+            booking_create.therapy_id,
+        ):
+            raise ValueError("Patient already booked for selected therapy and slot")
+
+        plan_item = AppointmentRepository.get_plan_item_for_booking(
+            db,
+            booking_create.patient_id,
+            booking_create.patient_session_plan_id,
+            booking_create.therapy_id,
+        )
+        # if not plan_item:
+        #     raise ValueError("No session left for selected therapy")
+
+        assigned_sessions = plan_item.assigned_sessions or 0
+        completed_sessions = plan_item.completed_sessions or 0
+        used_sessions = assigned_sessions + completed_sessions
+        if used_sessions >= plan_item.allocated_sessions:
+            raise ValueError("No session left for selected therapy")
+
+        therapist_slot_mapping = AppointmentRepository.create_therapist_slot_mapping(
+            db,
+            therapist_id=booking_create.therapist_id,
+            slot_id=booking_create.slot_id,
+            slot_date=booking_create.slot_date,
+            therapy_id=booking_create.therapy_id,
+        )
+
+        patient_slot_booking = AppointmentRepository.create_patient_slot_booking(
+            db,
+            therapist_slot_mapping_id=therapist_slot_mapping.id,
+            patient_session_plan_item_id=plan_item.id,
+        )
+
+        plan_item.assigned_sessions = assigned_sessions + 1
+        db.commit()
+        db.refresh(patient_slot_booking)
+        db.refresh(therapist_slot_mapping)
+        db.refresh(plan_item)
+
+        return {
+            "patient_slot_booking": patient_slot_booking,
+            "therapist_slot_mapping": therapist_slot_mapping,
+            "patient_session_plan_item": plan_item,
+        }
+
+    @staticmethod
+    def _leave_blocks_slot(therapist_leave, slot_start) -> bool:
+        if not therapist_leave:
+            return False
+
+        leave_session = str(therapist_leave.leave_session or "").lower()
+        if leave_session in {"full_day", "full day", "fullday", "full"}:
+            return True
+
+        if leave_session in {"morning", "first_half", "first half", "forenoon"}:
+            return slot_start.hour < 13
+
+        if leave_session in {"afternoon", "second_half", "second half", "half_day"}:
+            return slot_start.hour >= 13
+
+        return True
     
     @staticmethod
     def get_appointment_by_id(db: Session, appointment_id: int, region_id: int = None) -> Appointment:

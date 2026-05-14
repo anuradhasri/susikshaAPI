@@ -231,6 +231,17 @@ class AppointmentCreate(AppointmentBase):
     pass
 
 
+class SlotBookingCreate(BaseModel):
+    patient_id: int
+    therapist_id: int
+    therapy_id: int
+    patient_session_plan_id: int
+    slot_id: int
+    slot_date: date
+    region_id: int
+    notes: Optional[str] = None
+
+
 class AppointmentUpdate(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
@@ -242,6 +253,21 @@ class AppointmentResponse(AppointmentBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SlotBookingResponse(BaseModel):
+    success: bool
+    message: str
+    patient_slot_booking_id: int
+    therapist_slot_mapping_id: int
+    patient_session_plan_item_id: int
+    allocated_sessions: int
+    assigned_sessions: int
+    completed_sessions: int
+    remaining_sessions: int
 
     class Config:
         from_attributes = True

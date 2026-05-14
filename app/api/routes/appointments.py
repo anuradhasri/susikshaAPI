@@ -7,7 +7,8 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access, get_user_roles
 from app.schemas.schemas import (
     AppointmentCreate, AppointmentUpdate, AppointmentResponse,
-    AppointmentDetailResponse, PaginatedResponse, SlotMasterResponse
+    AppointmentDetailResponse, PaginatedResponse, SlotBookingCreate,
+    SlotBookingResponse, SlotMasterResponse
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
 from app.models.models import User
@@ -272,6 +273,76 @@ async def create_appointment(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating appointment"
+        )
+
+
+@router.post(
+    "/slot-booking",
+    response_model=SlotBookingResponse,
+    status_code=status.HTTP_201_CREATED
+)
+async def book_slot(
+    booking_create: SlotBookingCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Book a slot after checking therapist availability, slot conflicts, and patient sessions."""
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=booking_create.region_id
+    )
+
+    try:
+        booking = AppointmentService.book_slot(db, booking_create)
+        patient_slot_booking = booking["patient_slot_booking"]
+        therapist_slot_mapping = booking["therapist_slot_mapping"]
+        plan_item = booking["patient_session_plan_item"]
+        remaining_sessions = (
+            plan_item.allocated_sessions
+            - (plan_item.assigned_sessions or 0)
+            - (plan_item.completed_sessions or 0)
+        )
+        logger.info(
+            "Slot booked successfully",
+            extra={
+                "patient_slot_booking_id": patient_slot_booking.id,
+                "therapist_slot_mapping_id": therapist_slot_mapping.id,
+                "user_id": current_user.id,
+                "patient_id": booking_create.patient_id,
+                "therapist_id": booking_create.therapist_id
+            }
+        )
+        return {
+            "success": True,
+            "message": "Slot booked successfully",
+            "patient_slot_booking_id": patient_slot_booking.id,
+            "therapist_slot_mapping_id": therapist_slot_mapping.id,
+            "patient_session_plan_item_id": plan_item.id,
+            "allocated_sessions": plan_item.allocated_sessions,
+            "assigned_sessions": plan_item.assigned_sessions,
+            "completed_sessions": plan_item.completed_sessions,
+            "remaining_sessions": remaining_sessions
+        }
+
+    except ValueError as e:
+        logger.warning(
+            f"Error booking slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error booking slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error booking slot"
         )
 
 

@@ -1,12 +1,23 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from app.models.models import Appointment, PatientSessionPlan, PatientSessionPlanItem, Therapist, TherapistTherapyMapping, TherapyMaster
+from app.models.models import (
+    Appointment,
+    PatientSessionPlan,
+    PatientSessionPlanItem,
+    PatientSlotBooking,
+    SlotMaster,
+    Therapist,
+    TherapistLeave,
+    TherapistSlotMapping,
+    TherapistTherapyMapping,
+    TherapyMaster,
+)
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate
 from app.utils.query_utils import filter_by_region, soft_delete
 
@@ -172,6 +183,155 @@ class AppointmentRepository:
     @staticmethod
     def get_therapist(db: Session, therapist_id: int) -> Optional[Therapist]:
         return db.query(Therapist).filter(Therapist.id == therapist_id).first()
+
+    @staticmethod
+    def get_slot(db: Session, slot_id: int) -> Optional[SlotMaster]:
+        return (
+            db.query(SlotMaster)
+            .filter(
+                SlotMaster.id == slot_id,
+                SlotMaster.is_active == 1,
+            )
+            .first()
+        )
+
+    @staticmethod
+    def therapist_supports_therapy(db: Session, therapist_id: int, therapy_id: int) -> bool:
+        return (
+            db.query(TherapistTherapyMapping)
+            .filter(
+                TherapistTherapyMapping.therapist_id == therapist_id,
+                TherapistTherapyMapping.therapy_id == therapy_id,
+                TherapistTherapyMapping.is_active == 1,
+            )
+            .first()
+            is not None
+        )
+
+    @staticmethod
+    def get_plan_item_for_booking(
+        db: Session,
+        patient_id: int,
+        patient_session_plan_id: int,
+        therapy_id: int,
+    ) -> Optional[PatientSessionPlanItem]:
+        return (
+            db.query(PatientSessionPlanItem)
+            .join(
+                PatientSessionPlan,
+                PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id,
+            )
+            .filter(
+                PatientSessionPlan.id == patient_session_plan_id,
+                PatientSessionPlan.patient_id == patient_id,
+                PatientSessionPlan.status.in_(["ACTIVE", "Active", "active" ,"completed" ,"COMPLETED","Completed"]),
+                PatientSessionPlanItem.therapy_id == therapy_id,
+            )
+            .with_for_update()
+            .first()
+        )
+
+    @staticmethod
+    def get_therapist_leave(
+        db: Session,
+        therapist_id: int,
+        slot_date: date,
+    ) -> Optional[TherapistLeave]:
+        return (
+            db.query(TherapistLeave)
+            .filter(
+                TherapistLeave.therapist_id == therapist_id,
+                TherapistLeave.leave_date == slot_date,
+            )
+            .first()
+        )
+
+    @staticmethod
+    def get_active_therapist_slot_mapping(
+        db: Session,
+        therapist_id: int,
+        slot_id: int,
+        slot_date: date,
+        therapy_id: int,
+    ) -> Optional[TherapistSlotMapping]:
+        return (
+            db.query(TherapistSlotMapping)
+            .filter(
+                TherapistSlotMapping.therapist_id == therapist_id,
+                TherapistSlotMapping.slot_id == slot_id,
+                TherapistSlotMapping.slot_date == slot_date,
+                TherapistSlotMapping.therapy_id == therapy_id,
+                TherapistSlotMapping.status != "CANCELLED",
+            )
+            .first()
+        )
+
+    @staticmethod
+    def patient_has_slot_booking(
+        db: Session,
+        patient_id: int,
+        slot_id: int,
+        slot_date: date,
+        therapy_id: int,
+    ) -> bool:
+        return (
+            db.query(PatientSlotBooking)
+            .join(
+                TherapistSlotMapping,
+                TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id,
+            )
+            .join(
+                PatientSessionPlanItem,
+                PatientSessionPlanItem.id == PatientSlotBooking.patient_session_plan_item_id,
+            )
+            .join(
+                PatientSessionPlan,
+                PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id,
+            )
+            .filter(
+                PatientSessionPlan.patient_id == patient_id,
+                TherapistSlotMapping.slot_id == slot_id,
+                TherapistSlotMapping.slot_date == slot_date,
+                TherapistSlotMapping.therapy_id == therapy_id,
+                PatientSlotBooking.status != "CANCELLED",
+            )
+            .first()
+            is not None
+        )
+
+    @staticmethod
+    def create_therapist_slot_mapping(
+        db: Session,
+        therapist_id: int,
+        slot_id: int,
+        slot_date: date,
+        therapy_id: int,
+    ) -> TherapistSlotMapping:
+        mapping = TherapistSlotMapping(
+            therapist_id=therapist_id,
+            slot_id=slot_id,
+            slot_date=slot_date,
+            therapy_id=therapy_id,
+            status="BOOKED",
+        )
+        db.add(mapping)
+        db.flush()
+        return mapping
+
+    @staticmethod
+    def create_patient_slot_booking(
+        db: Session,
+        therapist_slot_mapping_id: int,
+        patient_session_plan_item_id: int,
+    ) -> PatientSlotBooking:
+        booking = PatientSlotBooking(
+            therapist_slot_mapping_id=therapist_slot_mapping_id,
+            patient_session_plan_item_id=patient_session_plan_item_id,
+            status="BOOKED",
+        )
+        db.add(booking)
+        db.flush()
+        return booking
 
     @staticmethod
     def has_conflict(db: Session, therapist_id: int, start_time: datetime, end_time: datetime) -> bool:
