@@ -7,7 +7,8 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access, get_user_roles
 from app.schemas.schemas import (
     AppointmentCreate, AppointmentUpdate, AppointmentResponse,
-    AppointmentDetailResponse, PaginatedResponse, SlotMasterResponse
+    AppointmentDetailResponse, PaginatedResponse, SlotBookingCreate,
+    SlotBookingResponse, SlotCancelRequest, SlotCancelResponse, SlotMasterResponse
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
 from app.models.models import User
@@ -231,7 +232,7 @@ async def get_patient_plans_therapies(
             f"Error fetching patient session plans: {str(e)}",
             extra={
                 "user_id": current_user.id,
-                "patient_session_plan_id": patient_plans_id
+                "patient_session_plan_id": patient_session_plan_id
             }
         )
 
@@ -240,128 +241,150 @@ async def get_patient_plans_therapies(
             detail="Error fetching patient session plans"
         )
         
-@router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
-async def create_appointment(
-    appointment_create: AppointmentCreate,
+
+@router.post(
+    "/slot-booking",
+    response_model=SlotBookingResponse,
+    status_code=status.HTTP_201_CREATED
+)
+async def book_slot(
+    booking_create: SlotBookingCreate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Create a new appointment"""
-    # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment_create.region_id)
-    
+    """Book a slot after checking therapist availability, slot conflicts, and patient sessions."""
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
     try:
-        appointment = AppointmentService.create_appointment(db, appointment_create)
+        booking = AppointmentService.book_slot(db, booking_create)
+        patient_slot_booking = booking["patient_slot_booking"]
+        therapist_slot_mapping = booking["therapist_slot_mapping"]
+        plan_item = booking["patient_session_plan_item"]
+        remaining_sessions = (
+            plan_item.allocated_sessions
+            - (plan_item.assigned_sessions or 0)
+            - (plan_item.completed_sessions or 0)
+        )
         logger.info(
-            f"Appointment created",
+            "Slot booked successfully",
             extra={
-                "appointment_id": appointment.id,
+                "patient_slot_booking_id": patient_slot_booking.id,
+                "therapist_slot_mapping_id": therapist_slot_mapping.id,
                 "user_id": current_user.id,
-                "patient_id": appointment.patient_id
+                "patient_id": booking_create.patient_id,
+                "therapist_id": booking_create.therapist_id
             }
         )
-        return appointment
+        return {
+            "success": True,
+            "message": "Slot booked successfully",
+            "patient_slot_booking_id": patient_slot_booking.id,
+            "therapist_slot_mapping_id": therapist_slot_mapping.id,
+            "patient_session_plan_item_id": plan_item.id,
+            "allocated_sessions": plan_item.allocated_sessions,
+            "assigned_sessions": plan_item.assigned_sessions,
+            "completed_sessions": plan_item.completed_sessions,
+            "remaining_sessions": remaining_sessions
+        }
+
     except ValueError as e:
-        logger.warning(f"Error creating appointment: {str(e)}", extra={"user_id": current_user.id})
+        logger.warning(
+            f"Error booking slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
     except Exception as e:
-        logger.error(f"Error creating appointment: {str(e)}", extra={"user_id": current_user.id})
+        logger.error(
+            f"Error booking slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating appointment"
+            detail="Error booking slot"
         )
 
 
-@router.get("/{appointment_id}", response_model=AppointmentDetailResponse)
-async def get_appointment(
-    appointment_id: int,
+@router.patch(
+    "/slot-cancel/{patient_slot_booking_id}",
+    response_model=SlotCancelResponse,
+    status_code=status.HTTP_200_OK
+)
+async def cancel_slot(
+    patient_slot_booking_id: int,
+    # cancel_request: SlotCancelRequest = SlotCancelRequest(),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get appointment by ID"""
-    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
-    
-    if not appointment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Appointment not found"
-        )
-    
-    # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
-    
-    return appointment
+    """Cancel a booked slot and return the assigned session to the plan item."""
+    # if cancel_request.region_id is not None:
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
 
-
-@router.patch("/{appointment_id}", response_model=AppointmentResponse)
-async def update_appointment(
-    appointment_id: int,
-    appointment_update: AppointmentUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Update appointment"""
-    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
-    
-    if not appointment:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Appointment not found"
-        )
-    
-    # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
-    
     try:
-        updated_appointment = AppointmentService.update_appointment(
-            db, appointment_id, appointment_update, current_user.region_id
-        )
+        cancellation = AppointmentService.cancel_slot(db, patient_slot_booking_id)
+        patient_slot_booking = cancellation["patient_slot_booking"]
+        therapist_slot_mapping = cancellation["therapist_slot_mapping"]
+        plan_item = cancellation["patient_session_plan_item"]
+
+        remaining_sessions = None
+        if plan_item:
+            remaining_sessions = (
+                plan_item.allocated_sessions
+                - (plan_item.assigned_sessions or 0)
+                - (plan_item.completed_sessions or 0)
+            )
+
         logger.info(
-            f"Appointment updated",
-            extra={"appointment_id": appointment_id, "user_id": current_user.id}
-        )
-        return updated_appointment
-    except Exception as e:
-        logger.error(f"Error updating appointment: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error updating appointment"
+            "Slot cancelled successfully",
+            extra={
+                "patient_slot_booking_id": patient_slot_booking.id,
+                "therapist_slot_mapping_id": therapist_slot_mapping.id if therapist_slot_mapping else None,
+                "user_id": current_user.id
+            }
         )
 
+        return {
+            "success": True,
+            "message": "Slot cancelled successfully",
+            "patient_slot_booking_id": patient_slot_booking.id,
+            "therapist_slot_mapping_id": therapist_slot_mapping.id if therapist_slot_mapping else None,
+            "patient_session_plan_item_id": plan_item.id if plan_item else None,
+            "allocated_sessions": plan_item.allocated_sessions if plan_item else None,
+            "assigned_sessions": plan_item.assigned_sessions if plan_item else None,
+            "completed_sessions": plan_item.completed_sessions if plan_item else None,
+            "remaining_sessions": remaining_sessions
+        }
 
-@router.delete("/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_appointment(
-    appointment_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Delete appointment"""
-    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
-    
-    if not appointment:
+    except ValueError as e:
+        logger.warning(
+            f"Error cancelling slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Appointment not found"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         )
-    
-    # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
-    
-    try:
-        AppointmentService.delete_appointment(db, appointment_id)
-        logger.info(
-            f"Appointment deleted",
-            extra={"appointment_id": appointment_id, "user_id": current_user.id}
-        )
+
     except Exception as e:
-        logger.error(f"Error deleting appointment: {str(e)}")
+        logger.error(
+            f"Error cancelling slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error deleting appointment"
-        )
+            detail="Error cancelling slot"
+        )        
 
 
 @router.get("", response_model=PaginatedResponse)
@@ -474,3 +497,127 @@ async def get_therapists(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error fetching therapists"
         )
+                
+@router.post("", response_model=AppointmentResponse, status_code=status.HTTP_201_CREATED)
+async def create_appointment(
+    appointment_create: AppointmentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new appointment"""
+    # Check region access
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment_create.region_id)
+    
+    try:
+        appointment = AppointmentService.create_appointment(db, appointment_create)
+        logger.info(
+            f"Appointment created",
+            extra={
+                "appointment_id": appointment.id,
+                "user_id": current_user.id,
+                "patient_id": appointment.patient_id
+            }
+        )
+        return appointment
+    except ValueError as e:
+        logger.warning(f"Error creating appointment: {str(e)}", extra={"user_id": current_user.id})
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error creating appointment: {str(e)}", extra={"user_id": current_user.id})
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating appointment"
+        )
+
+@router.get("/{appointment_id}", response_model=AppointmentDetailResponse)
+async def get_appointment(
+    appointment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get appointment by ID"""
+    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
+    
+    if not appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Appointment not found"
+        )
+    
+    # Check region access
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
+    
+    return appointment
+
+
+@router.patch("/{appointment_id}", response_model=AppointmentResponse)
+async def update_appointment(
+    appointment_id: int,
+    appointment_update: AppointmentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update appointment"""
+    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
+    
+    if not appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Appointment not found"
+        )
+    
+    # Check region access
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
+    
+    try:
+        updated_appointment = AppointmentService.update_appointment(
+            db, appointment_id, appointment_update, current_user.region_id
+        )
+        logger.info(
+            f"Appointment updated",
+            extra={"appointment_id": appointment_id, "user_id": current_user.id}
+        )
+        return updated_appointment
+    except Exception as e:
+        logger.error(f"Error updating appointment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error updating appointment"
+        )
+
+
+@router.delete("/{appointment_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_appointment(
+    appointment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete appointment"""
+    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
+    
+    if not appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Appointment not found"
+        )
+    
+    # Check region access
+    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
+    
+    try:
+        AppointmentService.delete_appointment(db, appointment_id)
+        logger.info(
+            f"Appointment deleted",
+            extra={"appointment_id": appointment_id, "user_id": current_user.id}
+        )
+    except Exception as e:
+        logger.error(f"Error deleting appointment: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error deleting appointment"
+        )
+
+

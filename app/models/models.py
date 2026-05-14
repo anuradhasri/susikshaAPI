@@ -731,10 +731,19 @@ class PatientSessionPlanItem(Base):
         ForeignKey("therapy_master.id"),
         nullable=False
     )   
+
+    allocated_sessions = Column(Integer, nullable=False)
+    assigned_sessions = Column(Integer, nullable=False, default=0)
+    completed_sessions = Column(Integer, nullable=False, default=0)
     
     therapy = relationship(
         "TherapyMaster",
         back_populates="patient_session_plan_items"
+    )
+
+    patient_slot_bookings = relationship(
+        "PatientSlotBooking",
+        back_populates="patient_session_plan_item"
     )
     
 class TherapyMaster(Base):
@@ -952,3 +961,69 @@ class TherapistSlotMapping(StatusIdMixin, Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     status_master = relationship("StatusMaster", foreign_keys=[status_id])
+
+
+
+class TherapistLeave(Base):
+    __tablename__ = "therapist_leaves"
+
+    id = Column(Integer, primary_key=True, index=True)
+    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
+    leave_date = Column(Date, nullable=False)
+    leave_session = Column(String(20), nullable=False, default="full_day")
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
+
+    therapist = relationship("Therapist")
+
+
+class TherapistSlotMapping(Base):
+    __tablename__ = "therapist_slot_mapping"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
+    slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=False)
+    slot_date = Column(Date, nullable=False)
+    therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
+    status = Column(String(20), nullable=False, default="ASSIGNED")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    therapist = relationship("Therapist")
+    slot = relationship("SlotMaster")
+    therapy = relationship("TherapyMaster")
+    patient_slot_bookings = relationship(
+        "PatientSlotBooking",
+        back_populates="therapist_slot_mapping"
+    )
+
+
+class PatientSlotBooking(Base):
+    __tablename__ = "patient_slot_booking"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    therapist_slot_mapping_id = Column(
+        Integer,
+        ForeignKey("therapist_slot_mapping.id"),
+        nullable=False
+    )
+    patient_session_plan_item_id = Column(
+        Integer,
+        ForeignKey("patient_session_plan_item.id"),
+        nullable=True
+    )
+    status = Column(String(20), nullable=False, default="BOOKED")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    therapist_slot_mapping = relationship(
+        "TherapistSlotMapping",
+        back_populates="patient_slot_bookings"
+    )
+    patient_session_plan_item = relationship(
+        "PatientSessionPlanItem",
+        back_populates="patient_slot_bookings"
+    )
