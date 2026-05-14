@@ -399,12 +399,7 @@ def _patient_shape(patient: Patient) -> dict:
         "diagnosis": patient.diagnosis,
         "notes": patient.notes,
         "is_active": True,
-        "duplicate_of_id": None,
-        "created_at": _iso(patient.created_at),
-        "updated_at": _iso(patient.updated_at),
-        "deleted_at": None,
-        "created_by": patient.created_by,
-        "updated_by": patient.updated_by,
+        "assessment_answers": patient.assessment_answers,
     }
 
 

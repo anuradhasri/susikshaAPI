@@ -173,6 +173,7 @@ class PatientResponse(PatientBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    assessment_answers: Optional[dict | list] = None  # add this
 
     class Config:
         from_attributes = True
