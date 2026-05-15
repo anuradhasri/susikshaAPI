@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import (
     Appointment,
+    Patient,
     PatientSessionPlan,
     PatientSessionPlanItem,
     PatientSlotBooking,
@@ -344,6 +345,66 @@ class AppointmentRepository:
             .with_for_update()
             .first()
         )
+        
+    @staticmethod
+    def get_calendar_data(
+        db: Session,
+        selected_date,
+        region_ids
+    ):
+
+        query = (
+            db.query(
+                TherapistSlotMapping.id.label("slot_mapping_id"),
+                Therapist.id.label("therapist_id"),
+                Therapist.first_name,
+                Therapist.last_name,
+                SlotMaster.start_time,
+                TherapyMaster.name.label("therapy_name"),
+                Patient.first_name.label("patient_first_name"),
+                Patient.last_name.label("patient_last_name")
+            )
+            .join(
+                Therapist,
+                Therapist.id == TherapistSlotMapping.therapist_id
+            )
+            .join(
+                SlotMaster,
+                SlotMaster.id == TherapistSlotMapping.slot_id
+            )
+            .outerjoin(
+                TherapyMaster,
+                TherapyMaster.id == TherapistSlotMapping.therapy_id
+            )
+            .outerjoin(
+                PatientSlotBooking,
+                PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id
+            )
+            .outerjoin(
+                Patient,
+                Patient.id == PatientSlotBooking.patient_session_plan_item_id
+            )
+            .filter(
+                TherapistSlotMapping.slot_date == selected_date,
+                Therapist.region_id.in_(region_ids)
+            )
+            .order_by(SlotMaster.start_time)
+        )
+
+        return query.all()
+
+
+    @staticmethod
+    def get_therapist_leaves(
+        db: Session,
+        selected_date
+    ):
+
+        return (
+            db.query(TherapistLeave)
+            .filter(TherapistLeave.leave_date == selected_date)
+            .all()
+        )    
 
     @staticmethod
     def has_active_patient_booking_for_mapping(

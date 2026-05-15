@@ -2,7 +2,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import date, datetime
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access, get_user_roles
 from app.schemas.schemas import (
@@ -385,6 +385,70 @@ async def cancel_slot(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error cancelling slot"
         )        
+
+@router.get("/calendar")
+async def get_appointment_calendar(
+    selected_date: date,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Fetch appointment calendar data for the selected date.
+    """
+
+    # Check region access
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
+    try:
+        response = AppointmentService.get_calendar_view(
+            db=db,
+            selected_date=selected_date,
+            region_ids=current_user.region_ids
+        )
+
+        logger.info(
+            "Appointment calendar fetched successfully",
+            extra={
+                "user_id": current_user.id,
+                "selected_date": str(selected_date),
+                "total_records": response.get("total", 0)
+            }
+        )
+
+        return response
+
+    except ValueError as e:
+        logger.warning(
+            f"Validation error while fetching appointment calendar: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "selected_date": str(selected_date)
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Unexpected error while fetching appointment calendar: {str(e)}",
+            extra={
+                "user_id": current_user.id,
+                "selected_date": str(selected_date)
+            }
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch appointment calendar"
+        )
+
 
 
 @router.get("", response_model=PaginatedResponse)

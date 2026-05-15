@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from fastapi import HTTPException
 from grpc import Status
 from sqlalchemy.orm import Session
@@ -258,6 +260,74 @@ class AppointmentService:
             return slot_start.hour >= 13
 
         return True
+    
+    @staticmethod
+    def get_calendar_view(
+        db,
+        selected_date,
+        region_ids
+    ):
+
+        records = AppointmentRepository.get_calendar_data(
+            db=db,
+            selected_date=selected_date,
+            region_ids=region_ids
+        )
+
+        leaves = AppointmentRepository.get_therapist_leaves(
+            db=db,
+            selected_date=selected_date
+        )
+
+        leave_therapist_ids = {
+            leave.therapist_id
+            for leave in leaves
+        }
+
+        therapist_map = defaultdict(lambda: {
+            "therapist_id": None,
+            "therapist_name": None,
+            "therapy_name": None,
+            "slots": []
+        })
+
+        for row in records:
+
+            therapist_id = row.therapist_id
+
+            if therapist_id in leave_therapist_ids:
+                continue
+
+            therapist_name = (
+                f"{row.first_name} {row.last_name}"
+            )
+
+            therapist_map[therapist_id]["therapist_id"] = therapist_id
+            therapist_map[therapist_id]["therapist_name"] = therapist_name
+            therapist_map[therapist_id]["therapy_name"] = row.therapy_name
+
+            patient_name = None
+
+            if row.patient_first_name:
+                patient_name = (
+                    f"{row.patient_first_name} "
+                    f"{row.patient_last_name}"
+                )
+
+            therapist_map[therapist_id]["slots"].append({
+                "slot_mapping_id": row.slot_mapping_id,
+                "slot_time": row.start_time,
+                "patient_name": patient_name,
+                "patient_code": "CP-1029",
+                "session_no": 4,
+                "total_sessions": 10,
+                "status": "Booked" if patient_name else "Available"
+            })
+
+        return {
+            "date": str(selected_date),
+            "therapists": list(therapist_map.values())
+        }    
     
     @staticmethod
     def get_appointment_by_id(db: Session, appointment_id: int, region_id: int = None) -> Appointment:
