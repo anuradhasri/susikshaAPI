@@ -94,10 +94,11 @@ class AppointmentRepository:
     @staticmethod
     def get_therapists(
         db: Session,
-        therapy_id: int
+        therapy_id: int,
+        region_ids: Optional[list[int]] = None,
     ):
 
-        therapists = (
+        query = (
             db.query(
                 Therapist.id.label("therapist_id"),
                 Therapist.name.label("therapist_name")
@@ -111,8 +112,18 @@ class AppointmentRepository:
                 TherapistTherapyMapping.is_active == 1,
                 Therapist.is_active ==1 
             )
-            .all()
         )
+        therapists = query.all()
+
+        if not therapists:
+            fallback_query = (
+                db.query(
+                    Therapist.id.label("therapist_id"),
+                    Therapist.name.label("therapist_name")
+                )
+                .filter(Therapist.is_active == 1)
+            )
+            therapists = fallback_query.order_by(Therapist.name.asc()).all()
 
         response = [
             {
@@ -442,6 +453,14 @@ class AppointmentRepository:
         )
 
         return query.all()
+
+    @staticmethod
+    def get_active_therapists_for_calendar(
+        db: Session,
+        region_ids: Optional[list[int]] = None,
+    ):
+        query = db.query(Therapist).filter(Therapist.is_active == 1)
+        return query.order_by(Therapist.name.asc()).all()
 
 
     @staticmethod

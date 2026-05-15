@@ -241,6 +241,37 @@ def _ensure_session_plan_columns(db: Session):
     db.commit()
 
 
+def _ensure_legacy_region_rows(db: Session):
+    if not _table_exists(db, "regions"):
+        return
+
+    referenced_ids = set()
+    for table_name in ("patients", "therapists", "appointments", "invoices"):
+        if not _table_exists(db, table_name) or not _column_exists(db, table_name, "region_id"):
+            continue
+        rows = db.execute(text(f"SELECT DISTINCT region_id FROM {table_name} WHERE region_id IS NOT NULL")).all()
+        referenced_ids.update(row[0] for row in rows)
+
+    if _table_exists(db, "user_region_mapping") and _column_exists(db, "user_region_mapping", "regionid"):
+        rows = db.execute(text("SELECT DISTINCT regionid FROM user_region_mapping WHERE regionid IS NOT NULL")).all()
+        referenced_ids.update(row[0] for row in rows)
+
+    for region_id in sorted(referenced_ids):
+        db.execute(text(
+            """
+            INSERT INTO regions (id, name, code, location)
+            VALUES (:id, :name, :code, :location)
+            ON DUPLICATE KEY UPDATE id = id
+            """
+        ), {
+            "id": region_id,
+            "name": f"Region {region_id}",
+            "code": f"REG{region_id}",
+            "location": "Legacy",
+        })
+    db.commit()
+
+
 def migrate_enums_to_master_lookups(db: Session):
     _seed_master_lookups(db)
     _migrate_lookup_column(db, "invoices", "status", "status_id", "invoice", "draft", "fk_invoices_status_id")
@@ -257,6 +288,7 @@ def migrate_enums_to_master_lookups(db: Session):
 def align_database_schema():
     db = SessionLocal()
     try:
+        _ensure_legacy_region_rows(db)
         migrate_enums_to_master_lookups(db)
         _ensure_patient_assessment_columns(db)
         _ensure_session_plan_columns(db)

@@ -264,6 +264,23 @@ def _document_file_path(document: Document) -> Path:
     return path
 
 
+def _patient_photo_file_path(patient: Patient) -> Path:
+    if not patient.profile_photo_path:
+        raise HTTPException(status_code=404, detail="Patient photo not found")
+
+    normalized_path = patient.profile_photo_path.replace("\\", "/").lstrip("/")
+    if normalized_path.startswith("uploads/"):
+        photo_root = UPLOAD_ROOT.resolve()
+        path = (Path(__file__).resolve().parents[3] / normalized_path).resolve()
+    else:
+        photo_root = DOCUMENT_UPLOAD_ROOT.resolve()
+        path = (DOCUMENT_UPLOAD_ROOT / Path(normalized_path)).resolve()
+
+    if not str(path).startswith(str(photo_root)) or not path.exists():
+        raise HTTPException(status_code=404, detail="Patient photo file not found")
+    return path
+
+
 def _current_user(request: Request, db: Session) -> Optional[User]:
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
@@ -376,14 +393,8 @@ def _patient_shape(patient: Patient) -> dict:
     full_name = f"{patient.first_name} {patient.last_name}".strip()
     profile_photo_url = None
     if patient.profile_photo_path:
-        normalized_path = patient.profile_photo_path.replace("\\", "/").lstrip("/")
-        if normalized_path.startswith("uploads/"):
-            profile_photo_url = normalized_path
-        elif "/uploads/" in normalized_path:
-            profile_photo_url = normalized_path.split("/uploads/", 1)[1]
-            profile_photo_url = f"uploads/{profile_photo_url}"
-        else:
-            profile_photo_url = f"uploads/{normalized_path}"
+        version = int(patient.updated_at.timestamp()) if patient.updated_at else int(datetime.utcnow().timestamp())
+        profile_photo_url = f"api/v1/ui/patients/{patient.id}/photo?v={version}"
     return {
         "id": patient.id,
         "patient_code": f"PT-{patient.id:04d}",
@@ -841,8 +852,6 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return db.query(UserRole).filter(UserRole.deleted_at.is_(None))
     if table == "therapists":
         query = db.query(Therapist)
-        if region_ids:
-            query = query.filter(Therapist.region_id.in_(region_ids))
         return query
     if table == "therapist_availability":
         query = db.query(TherapistAvailability).options(joinedload(TherapistAvailability.therapist)).filter(TherapistAvailability.deleted_at.is_(None))
@@ -1351,7 +1360,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     payments = _base_query("payments", db, user).all()
     alerts = _base_query("alerts", db, user).all()
     patient_packages = _base_query("patient_packages", db, user).all()
-    waitlist_entries = _base_query("waitlist_entries", db, user).all()
+    waitlist_entries = []
     availability_rows = _base_query("therapist_availability", db, user).filter(
         TherapistAvailability.availability_date >= period_start,
         TherapistAvailability.availability_date <= period_end,
@@ -1590,6 +1599,19 @@ async def analytics(request: Request, period: Optional[str] = None, db: Session 
     return {"data": _analytics_payload(db, user, period)}
 
 
+@router.get("/patients/{patient_id}")
+async def get_patient_detail(
+    patient_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = _current_user(request, db)
+    patient = _base_query("patients", db, user).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return {"data": _patient_shape(patient)}
+
+
 @router.post("/patients/{patient_id}/documents")
 def upload_patient_document(
     patient_id: int,
@@ -1665,7 +1687,7 @@ def upload_patient_photo(
 
     original_name = file.filename or "photo"
     safe_name = _safe_filename(original_name)
-    folder = UPLOAD_ROOT / "patients" / str(patient_id) / "profile"
+    folder = DOCUMENT_UPLOAD_ROOT / "patients" / str(patient_id) / "profile"
     folder.mkdir(parents=True, exist_ok=True)
     stored_name = f"{int(datetime.utcnow().timestamp() * 1000)}-{safe_name}"
     target = folder / stored_name
@@ -1673,11 +1695,30 @@ def upload_patient_photo(
     with target.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    patient.profile_photo_path = f"uploads/patients/{patient_id}/profile/{stored_name}"
+    patient.profile_photo_path = f"patients/{patient_id}/profile/{stored_name}"
     patient.updated_by = user.id
     db.commit()
     db.refresh(patient)
     return {"data": _patient_shape(patient)}
+
+
+@router.get("/patients/{patient_id}/photo")
+def view_patient_photo(
+    patient_id: int,
+    db: Session = Depends(get_db),
+):
+    _ensure_patient_profile_schema(db)
+    patient = db.query(Patient).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    path = _patient_photo_file_path(patient)
+    return FileResponse(
+        path=str(path),
+        filename=path.name,
+        media_type=mimetypes.guess_type(path.name)[0] or "image/jpeg",
+        headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+    )
 
 
 @router.get("/documents/{document_id}/download")
@@ -1803,7 +1844,7 @@ async def list_rows(
     import json
 
     parsed_filters = json.loads(filters or "[]")
-    if table == "session_assignments":
+    if table in {"alerts", "session_assignments", "waitlist_entries"}:
         return {"data": [], "count": 0 if count else None}
     if table in {"sessions", "patient_packages"}:
         _ensure_sessions_for_appointments(db, user)

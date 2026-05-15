@@ -84,7 +84,8 @@ class AppointmentService:
 
         return AppointmentRepository.get_therapists(
             db=db,
-            therapy_id=therapy_id
+            therapy_id=therapy_id,
+            region_ids=current_user.region_ids
         )    
             
     @staticmethod
@@ -313,6 +314,13 @@ class AppointmentService:
             "therapy_name": None,
             "slots": []
         })
+
+        for therapist in AppointmentRepository.get_active_therapists_for_calendar(db, region_ids):
+            if therapist.id in leave_therapist_ids:
+                continue
+            therapist_map[therapist.id]["therapist_id"] = therapist.id
+            therapist_map[therapist.id]["therapist_name"] = therapist.name
+            therapist_map[therapist.id]["therapy_name"] = None
 
         for row in records:
 
