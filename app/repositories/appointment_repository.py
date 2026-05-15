@@ -261,7 +261,7 @@ class AppointmentRepository:
                 TherapistSlotMapping.slot_id == slot_id,
                 TherapistSlotMapping.slot_date == slot_date,
                 TherapistSlotMapping.therapy_id == therapy_id,
-                TherapistSlotMapping.status != "CANCELLED",
+                TherapistSlotMapping.status_id != 804,
             )
             .first()
         )
@@ -293,7 +293,7 @@ class AppointmentRepository:
                 TherapistSlotMapping.slot_id == slot_id,
                 TherapistSlotMapping.slot_date == slot_date,
                 TherapistSlotMapping.therapy_id == therapy_id,
-                PatientSlotBooking.status != "CANCELLED",
+                PatientSlotBooking.status_id != 602,
             )
             .first()
             is not None
@@ -312,7 +312,7 @@ class AppointmentRepository:
             slot_id=slot_id,
             slot_date=slot_date,
             therapy_id=therapy_id,
-            status="BOOKED",
+            status_id=802,
         )
         db.add(mapping)
         db.flush()
@@ -327,7 +327,7 @@ class AppointmentRepository:
         booking = PatientSlotBooking(
             therapist_slot_mapping_id=therapist_slot_mapping_id,
             patient_session_plan_item_id=patient_session_plan_item_id,
-            status="BOOKED",
+            status_id=601,
         )
         db.add(booking)
         db.flush()
@@ -353,7 +353,7 @@ class AppointmentRepository:
     ) -> bool:
         query = db.query(PatientSlotBooking).filter(
             PatientSlotBooking.therapist_slot_mapping_id == therapist_slot_mapping_id,
-            PatientSlotBooking.status != "CANCELLED",
+            PatientSlotBooking.status_id != 602,
         )
 
         if exclude_patient_slot_booking_id:

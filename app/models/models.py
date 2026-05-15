@@ -281,28 +281,6 @@ class Patient(Base):
     referred_by = Column(String(255), nullable=True)
     registration_at = Column(DateTime(timezone=True), nullable=True)
     profile_photo_path = Column(String(500), nullable=True)
-    assessment_date = Column(Date, nullable=True)
-    assessment_background = Column(Text, nullable=True)
-    assessment_referral_reason = Column(Text, nullable=True)
-    assessment_cooperation = Column(Text, nullable=True)
-    assessment_visual_performance = Column(Text, nullable=True)
-    assessment_imitation_skills = Column(Text, nullable=True)
-    assessment_gross_motor_skills = Column(Text, nullable=True)
-    assessment_fine_motor_skills = Column(Text, nullable=True)
-    assessment_sensory_processing = Column(Text, nullable=True)
-    assessment_play_leisure_skills = Column(Text, nullable=True)
-    assessment_social_skills = Column(Text, nullable=True)
-    assessment_receptive_language = Column(Text, nullable=True)
-    assessment_expressive_language = Column(Text, nullable=True)
-    assessment_pre_skills = Column(Text, nullable=True)
-    assessment_reading_comprehension = Column(Text, nullable=True)
-    assessment_language_communication = Column(Text, nullable=True)
-    assessment_conceptual_awareness = Column(Text, nullable=True)
-    assessment_visual_spatial_time = Column(Text, nullable=True)
-    assessment_mathematics_skills = Column(Text, nullable=True)
-    assessment_attention_processing = Column(Text, nullable=True)
-    assessment_recommendations = Column(Text, nullable=True)
-    assessment_report_notes = Column(Text, nullable=True)
     diagnosis = Column(String(255), nullable=True)
     notes = Column(Text, nullable=True)
     alternate_contact = Column(String(255), nullable=True)
@@ -400,6 +378,63 @@ class TherapistAvailability(Base):
         Index("idx_therapist_availability_date", "availability_date"),
         Index("idx_therapist_availability_status", "status"),
     )
+
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
+    start_time = Column(DateTime(timezone=True), nullable=False)
+    end_time = Column(DateTime(timezone=True), nullable=False)
+    status = Column(String(50), nullable=False, default="scheduled")
+    notes = Column(Text, nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    patient = relationship("Patient")
+    therapist = relationship("Therapist")
+    region = relationship("Region")
+
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
+    appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=True)
+    session_number = Column(Integer, nullable=False)
+    duration_minutes = Column(Integer, nullable=False)
+    status = Column(String(50), nullable=False, default="scheduled")
+    session_date = Column(Date, nullable=False)
+    progress_notes = Column(Text, nullable=True)
+    billing_status = Column(String(50), default="pending")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    patient = relationship("Patient")
+    therapist = relationship("Therapist")
+    appointment = relationship("Appointment")
+
+
+class SessionNote(Base):
+    __tablename__ = "session_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("sessions.id"), nullable=False)
+    note_type = Column(String(50), nullable=False)
+    content = Column(Text, nullable=False)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    session = relationship("Session")
 
 
 # ============== PACKAGES ==============
@@ -660,6 +695,12 @@ class PaymentModeMaster(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     payment_mode_name = Column(String(50), nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     payments = relationship(
         "Payment",
@@ -948,29 +989,34 @@ class TherapistLeave(Base):
     therapist = relationship("Therapist")
 
 
-class TherapistSlotMapping(Base):
+class TherapistSlotMapping(StatusIdMixin, Base):
     __tablename__ = "therapist_slot_mapping"
+    _status_category = "therapist_slot_mapping"
+    _default_status = "BOOKED"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
     slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=False)
     slot_date = Column(Date, nullable=False)
     therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
-    status = Column(String(20), nullable=False, default="ASSIGNED")
+    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=802, server_default="802")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     therapist = relationship("Therapist")
     slot = relationship("SlotMaster")
     therapy = relationship("TherapyMaster")
+    status_master = relationship("StatusMaster", foreign_keys=[status_id])
     patient_slot_bookings = relationship(
         "PatientSlotBooking",
         back_populates="therapist_slot_mapping"
     )
 
 
-class PatientSlotBooking(Base):
+class PatientSlotBooking(StatusIdMixin, Base):
     __tablename__ = "patient_slot_booking"
+    _status_category = "patient_slot_booking"
+    _default_status = "BOOKED"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     therapist_slot_mapping_id = Column(
@@ -983,10 +1029,11 @@ class PatientSlotBooking(Base):
         ForeignKey("patient_session_plan_item.id"),
         nullable=True
     )
-    status = Column(String(20), nullable=False, default="BOOKED")
+    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=601, server_default="601")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    status_master = relationship("StatusMaster", foreign_keys=[status_id])
     therapist_slot_mapping = relationship(
         "TherapistSlotMapping",
         back_populates="patient_slot_bookings"

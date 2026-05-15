@@ -676,6 +676,16 @@ class SlotMasterResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class MasterOptionResponse(BaseModel):
+    id: int
+    code: Optional[str] = None
+    name: str
+    category: Optional[str] = None
+
+    class Config:
+        from_attributes = True
     
     # ============================== patient session plan =====================   
         

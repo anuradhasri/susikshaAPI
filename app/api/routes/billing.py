@@ -261,6 +261,29 @@ async def list_payments(
         "items": payments
     }
 
+
+@router.post(
+    "/payments/list",
+    response_model=PaginatedPaymentResponse
+)
+async def list_payments_post(
+    request: PaymentListRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    payments, total = PaymentService.list_payments(
+        db=db,
+        request=request,
+        created_by=current_user.id
+    )
+
+    return {
+        "total": total,
+        "skip": request.skip,
+        "limit": request.limit,
+        "items": payments
+    }
+
 @router.post("/payments", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 async def record_payment(
     payment_create: PaymentCreate,
