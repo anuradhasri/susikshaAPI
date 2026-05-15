@@ -690,36 +690,48 @@ class MasterOptionResponse(BaseModel):
     
     # ============================== patient session plan =====================   
         
-class PatientSessionPlanBase(BaseModel):
-    patient_id: int
-    plan_name: str
-    total_sessions: Optional[int] = None
-    is_active: Optional[bool] = True
-    status_id: Optional[int] = None
-    
-class PatientSessionPlanCreate(PatientSessionPlanBase):
-    pass
-
-class PatientSessionPlanUpdate(BaseModel):
-    plan_name: Optional[str] = None
-    total_sessions: Optional[int] = None
-    is_active: Optional[bool] = None
-    
-class PatientSessionPlanResponse(PatientSessionPlanBase):
-    id: int
-    patient_id:int
-    start_date: datetime
-    end_date: datetime
-    plan_name: str
-    status: str
-
-    class Config:
-        from_attributes = True                
-
+class PatientSessionPlanItemCreate(BaseModel):
+    therapy_id: int
+    allocated_sessions: int = Field(..., gt=0)
 
 
 class PatientSessionPlanCreate(BaseModel):
-    id:int
-    plan_name: str
-    status_id: Optional[int] = None
+    patient_id: int
+    start_date: date
+    end_date: date
+    total_sessions: int = Field(..., gt=0)
+    plan_name: Optional[str] = None
+    status: Optional[str] = "ACTIVE"
+    items: List[PatientSessionPlanItemCreate] = Field(..., min_length=1)
+
+
+class PatientSessionPlanUpdate(BaseModel):
+    plan_name: Optional[str] = None
+    total_sessions: Optional[int] = Field(default=None, gt=0)
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
     status: Optional[str] = None
+
+
+class PatientSessionPlanItemResponse(BaseModel):
+    id: int
+    therapy_id: int
+    therapy_name: str
+    allocated_sessions: int
+    assigned_sessions: int
+    completed_sessions: int
+    remaining_sessions: int
+
+
+class PatientSessionPlanResponse(BaseModel):
+    id: int
+    patient_id: int
+    plan_name: str
+    total_sessions: int
+    start_date: date
+    end_date: date
+    status: str
+    items: List[PatientSessionPlanItemResponse] = []
+
+    class Config:
+        from_attributes = True

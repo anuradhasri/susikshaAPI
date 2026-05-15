@@ -25,7 +25,7 @@ class DocumentTypeEnum(str, enum.Enum):
     OTHER = "other"
 
 
-STATUS_MASTER_DATA = {
+MASTER_LOOKUP_DATA = {
     "invoice": {
         "draft": 301,
         "issued": 302,
@@ -77,7 +77,7 @@ STATUS_MASTER_DATA = {
 
 STATUS_ID_TO_CODE = {
     category: {status_id: code for code, status_id in values.items()}
-    for category, values in STATUS_MASTER_DATA.items()
+    for category, values in MASTER_LOOKUP_DATA.items()
 }
 
 
@@ -94,7 +94,7 @@ def _status_id_for(category: str, value, default: Optional[str] = None) -> Optio
         return None
 
     code = _coerce_status_code(value)
-    statuses = STATUS_MASTER_DATA[category]
+    statuses = MASTER_LOOKUP_DATA[category]
     if code in statuses:
         return statuses[code]
 
@@ -105,22 +105,47 @@ def _status_id_for(category: str, value, default: Optional[str] = None) -> Optio
     raise ValueError(f"Unknown {category} status: {value}")
 
 
-class StatusMaster(Base):
-    __tablename__ = "status_master"
-
+class MasterLookupBase:
     id = Column(Integer, primary_key=True, index=True)
-    category = Column(String(100), nullable=False)
-    code = Column(String(100), nullable=False)
+    code = Column(String(100), nullable=False, unique=True)
     name = Column(String(100), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (
-        UniqueConstraint("category", "code", name="uq_status_master_category_code"),
-        Index("idx_status_master_category", "category"),
-        Index("idx_status_master_active", "is_active"),
-    )
+
+class InvoiceStatusMaster(MasterLookupBase, Base):
+    __tablename__ = "invoice_status_master"
+
+
+class PatientSessionPlanStatusMaster(MasterLookupBase, Base):
+    __tablename__ = "patient_session_plan_status_master"
+
+
+class PatientAssessmentStatusMaster(MasterLookupBase, Base):
+    __tablename__ = "patient_assessment_status_master"
+
+
+class PatientTherapyStatusMaster(MasterLookupBase, Base):
+    __tablename__ = "patient_therapy_status_master"
+
+
+class AssessmentTypeMaster(MasterLookupBase, Base):
+    __tablename__ = "assessment_type_master"
+
+
+class QuestionTypeMaster(MasterLookupBase, Base):
+    __tablename__ = "question_type_master"
+
+
+MASTER_LOOKUP_MODELS = {
+    "invoice": InvoiceStatusMaster,
+    "patient_session_plan": PatientSessionPlanStatusMaster,
+    "patient_assessment": PatientAssessmentStatusMaster,
+    "patient_therapy": PatientTherapyStatusMaster,
+    "assessment_type": AssessmentTypeMaster,
+    "question_type": QuestionTypeMaster,
+}
 
 
 class StatusIdMixin:
@@ -129,8 +154,10 @@ class StatusIdMixin:
 
     @hybrid_property
     def status(self):
-        if self.status_master is not None:
-            return self.status_master.code
+        relationship_name = f"{self._status_category}_status_master"
+        master_row = getattr(self, relationship_name, None)
+        if master_row is not None:
+            return master_row.code
         return STATUS_ID_TO_CODE.get(self._status_category, {}).get(self.status_id)
 
     @status.setter
@@ -139,9 +166,10 @@ class StatusIdMixin:
 
     @status.expression
     def status(cls):
+        master_model = MASTER_LOOKUP_MODELS[cls._status_category]
         return (
-            select(StatusMaster.code)
-            .where(StatusMaster.id == cls.status_id)
+            select(master_model.code)
+            .where(master_model.id == cls.status_id)
             .scalar_subquery()
         )
 
@@ -498,7 +526,7 @@ class Invoice(StatusIdMixin, Base):
     due_date = Column(Date, nullable=False)
     total_amount = Column(Float, nullable=False)
     paid_amount = Column(Float, default=0)
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=301, server_default="301")
+    status_id = Column(Integer, ForeignKey("invoice_status_master.id"), nullable=False, default=301, server_default="301")
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -508,7 +536,7 @@ class Invoice(StatusIdMixin, Base):
     region = relationship("Region", back_populates="invoices")
     invoice_items = relationship("InvoiceItem", back_populates="invoice")
     # payments = relationship("Payment", back_populates="invoice")
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
+    invoice_status_master = relationship("InvoiceStatusMaster", foreign_keys=[status_id])
 
     __table_args__ = (
         Index("idx_invoice_patient_id", "patient_id"),
@@ -741,7 +769,7 @@ class PatientSessionPlan(StatusIdMixin, Base):
     
     end_date = Column(Date, nullable = True)
     
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=401, server_default="401")
+    status_id = Column(Integer, ForeignKey("patient_session_plan_status_master.id"), nullable=False, default=401, server_default="401")
 
     created_at = Column(
         DateTime(timezone=True),
@@ -756,7 +784,12 @@ class PatientSessionPlan(StatusIdMixin, Base):
 
     # Relationship
     patient = relationship("Patient", back_populates="session_plans")
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
+    items = relationship(
+        "PatientSessionPlanItem",
+        back_populates="patient_session_plan",
+        cascade="all, delete-orphan",
+    )
+    patient_session_plan_status_master = relationship("PatientSessionPlanStatusMaster", foreign_keys=[status_id])
     
 class PatientSessionPlanItem(Base):
     __tablename__ = "patient_session_plan_item"
@@ -783,45 +816,72 @@ class PatientSessionPlanItem(Base):
         "TherapyMaster",
         back_populates="patient_session_plan_items"
     )
+    patient_session_plan = relationship(
+        "PatientSessionPlan",
+        back_populates="items"
+    )
 
     patient_slot_bookings = relationship(
         "PatientSlotBooking",
         back_populates="patient_session_plan_item"
     )
     
+# class TherapyMaster(Base):
+#     __tablename__ = "therapy_master"
+
+#     id = Column(Integer, primary_key=True, index=True)
+
+#     name = Column(String(255), nullable=False)
+
+#     # therapy_code = Column(String(100), unique=True, nullable=True)
+
+#     is_active = Column(Boolean, nullable=False)
+
+#     created_at = Column(
+#         DateTime(timezone=True),
+#         server_default=func.now()
+#     )
+
+#     updated_at = Column(
+#         DateTime(timezone=True),
+#         server_default=func.now(),
+#         onupdate=func.now()
+#     )
+
+#     # Relationships
+#     patient_session_plan_items = relationship(
+#         "PatientSessionPlanItem",
+#         back_populates="therapy"
+#     )    
+    
+#     therapist_mappings = relationship(
+#         "TherapistTherapyMapping",
+#         back_populates="therapy"
+#     )
+
 class TherapyMaster(Base):
     __tablename__ = "therapy_master"
 
     id = Column(Integer, primary_key=True, index=True)
-
     name = Column(String(255), nullable=False)
-
-    therapy_code = Column(String(100), unique=True, nullable=True)
-
+    description = Column(Text)
     is_active = Column(Boolean, nullable=False)
 
-    created_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now()
-    )
+    created_at = Column("created_date", DateTime(timezone=True), server_default=func.now())
+    created_by = Column(Integer)
 
-    updated_at = Column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now()
-    )
+    updated_at = Column("updated_date", DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by = Column(Integer)
 
-    # Relationships
     patient_session_plan_items = relationship(
         "PatientSessionPlanItem",
         back_populates="therapy"
-    )    
-    
+    )
+
     therapist_mappings = relationship(
         "TherapistTherapyMapping",
         back_populates="therapy"
     )
-    
     
 class TherapistTherapyMapping(Base):
     __tablename__ = "therapist_therapy_mapping"
@@ -856,7 +916,7 @@ class AssessmentMaster(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
-    type_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=901, server_default="901")
+    type_id = Column(Integer, ForeignKey("assessment_type_master.id"), nullable=False, default=901, server_default="901")
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     created_date = Column(DateTime, server_default=func.now())
@@ -864,7 +924,7 @@ class AssessmentMaster(Base):
     updated_by = Column(Integer, nullable=True)
     created_by = Column(Integer, nullable=True)
 
-    type_master = relationship("StatusMaster", foreign_keys=[type_id])
+    type_master = relationship("AssessmentTypeMaster", foreign_keys=[type_id])
 
 
 class QuestionMaster(Base):
@@ -872,14 +932,14 @@ class QuestionMaster(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     question_text = Column(Text, nullable=False)
-    question_type_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=1001, server_default="1001")
+    question_type_id = Column(Integer, ForeignKey("question_type_master.id"), nullable=False, default=1001, server_default="1001")
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     created_date = Column(DateTime, server_default=func.now())
     updated_date = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(Integer, nullable=True)
     updated_by = Column(Integer, nullable=True)
 
-    question_type_master = relationship("StatusMaster", foreign_keys=[question_type_id])
+    question_type_master = relationship("QuestionTypeMaster", foreign_keys=[question_type_id])
 
 
 class AssessmentQuestion(Base):
@@ -903,7 +963,7 @@ class PatientAssessment(StatusIdMixin, Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     assessment_id = Column(Integer, ForeignKey("assessment_master.id"), nullable=False)
     assigned_by = Column(Integer, nullable=True)
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=501, server_default="501")
+    status_id = Column(Integer, ForeignKey("patient_assessment_status_master.id"), nullable=False, default=501, server_default="501")
     completed_date = Column("completed_Date", DateTime, nullable=True)
     notes = Column(Text, nullable=True)
     created_date = Column(DateTime, server_default=func.now())
@@ -911,7 +971,7 @@ class PatientAssessment(StatusIdMixin, Base):
     created_by = Column(Integer, nullable=True)
     updated_by = Column(Integer, nullable=True)
 
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
+    patient_assessment_status_master = relationship("PatientAssessmentStatusMaster", foreign_keys=[status_id])
 
 
 class PatientAssessmentDetail(Base):
@@ -938,11 +998,10 @@ class PatientAssessmentDetail(Base):
 #     id = Column(Integer, primary_key=True, index=True)
 #     therapist_slot_mapping_id = Column(Integer, ForeignKey("therapist_slot_mapping.id"), nullable=False)
 #     patient_session_plan_item_id = Column(Integer, ForeignKey("patient_session_plan_item.id"), nullable=True)
-#     status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=601, server_default="601")
+#     status_id = Column(Integer, nullable=False, default=601, server_default="601")
 #     created_at = Column(DateTime, server_default=func.now())
 #     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
-#     status_master = relationship("StatusMaster", foreign_keys=[status_id])
 
 
 class PatientTherapy(StatusIdMixin, Base):
@@ -954,7 +1013,7 @@ class PatientTherapy(StatusIdMixin, Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
     number_of_sessions = Column(Integer, nullable=False, default=0, server_default="0")
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=True, default=701, server_default="701")
+    status_id = Column(Integer, ForeignKey("patient_therapy_status_master.id"), nullable=True, default=701, server_default="701")
     slot_id = Column(Integer, nullable=True)
     notes = Column(Text, nullable=True)
     created_date = Column(DateTime, server_default=func.now())
@@ -963,7 +1022,7 @@ class PatientTherapy(StatusIdMixin, Base):
     updated_by = Column(Integer, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
 
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
+    patient_therapy_status_master = relationship("PatientTherapyStatusMaster", foreign_keys=[status_id])
 
 
 class LeaveSession(Base):

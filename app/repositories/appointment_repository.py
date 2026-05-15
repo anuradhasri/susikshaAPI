@@ -36,7 +36,7 @@ class AppointmentRepository:
             db.query(PatientSessionPlan)
             .filter(
                 PatientSessionPlan.patient_id == patient_id,
-                PatientSessionPlan.status == "ACTIVE"
+                PatientSessionPlan.status_id == 401
             )
             .all()
         )
@@ -225,7 +225,7 @@ class AppointmentRepository:
             .filter(
                 PatientSessionPlan.id == patient_session_plan_id,
                 PatientSessionPlan.patient_id == patient_id,
-                PatientSessionPlan.status.in_(["ACTIVE", "Active", "active" ,"completed" ,"COMPLETED","Completed"]),
+                PatientSessionPlan.status_id.in_([401, 403]),
                 PatientSessionPlanItem.therapy_id == therapy_id,
             )
             .with_for_update()
