@@ -777,6 +777,8 @@ class PatientSessionPlan(StatusIdMixin, Base):
     start_date = Column(Date, nullable = True)
     
     end_date = Column(Date, nullable = True)
+
+    notes = Column(Text, nullable=True)
     
     status_id = Column(Integer, ForeignKey("patient_session_plan_status_master.id"), nullable=False, default=401, server_default="401")
 
@@ -820,6 +822,7 @@ class PatientSessionPlanItem(Base):
     allocated_sessions = Column(Integer, nullable=False)
     assigned_sessions = Column(Integer, nullable=False, default=0)
     completed_sessions = Column(Integer, nullable=False, default=0)
+    amount_per_session = Column(DECIMAL(10, 2), nullable=False, default=0, server_default="0.00")
     
     therapy = relationship(
         "TherapyMaster",

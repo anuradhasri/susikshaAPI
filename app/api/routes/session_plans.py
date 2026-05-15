@@ -13,7 +13,7 @@ from app.models.models import (
     TherapyMaster,
     User,
 )
-from app.schemas.schemas import PatientSessionPlanCreate
+from app.schemas.schemas import PatientSessionPlanCreate, PatientSessionPlanUpdate
 
 router = APIRouter(prefix="/api/v1/session-plans", tags=["session-plans"])
 
@@ -42,6 +42,7 @@ def _shape_plan(plan: PatientSessionPlan) -> dict:
             "assigned_sessions": item.assigned_sessions or 0,
             "completed_sessions": item.completed_sessions or 0,
             "remaining_sessions": max(0, (item.allocated_sessions or 0) - used),
+            "amount_per_session": float(item.amount_per_session or 0),
         })
     return {
         "id": plan.id,
@@ -50,6 +51,7 @@ def _shape_plan(plan: PatientSessionPlan) -> dict:
         "total_sessions": plan.total_sessions or 0,
         "start_date": plan.start_date.isoformat() if plan.start_date else None,
         "end_date": plan.end_date.isoformat() if plan.end_date else None,
+        "notes": plan.notes,
         "status": _status_label(plan.status_id),
         "items": items,
     }
@@ -146,6 +148,7 @@ async def create_session_plan(
         total_sessions=payload.total_sessions,
         start_date=payload.start_date,
         end_date=payload.end_date,
+        notes=payload.notes,
         status_id=401,
     )
     db.add(plan)
@@ -158,10 +161,125 @@ async def create_session_plan(
             allocated_sessions=item.allocated_sessions,
             assigned_sessions=0,
             completed_sessions=0,
+            amount_per_session=item.amount_per_session,
         ))
 
     db.commit()
     db.refresh(plan)
+    plan = (
+        db.query(PatientSessionPlan)
+        .options(joinedload(PatientSessionPlan.items).joinedload(PatientSessionPlanItem.therapy))
+        .filter(PatientSessionPlan.id == plan.id)
+        .first()
+    )
+    return {"data": _shape_plan(plan)}
+
+
+@router.get("/{plan_id}")
+async def get_session_plan(
+    plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    plan = (
+        db.query(PatientSessionPlan)
+        .options(joinedload(PatientSessionPlan.items).joinedload(PatientSessionPlanItem.therapy))
+        .filter(PatientSessionPlan.id == plan_id)
+        .first()
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Session plan not found")
+    _assert_patient_access(db, plan.patient_id, current_user)
+    return {"data": _shape_plan(plan)}
+
+
+@router.put("/{plan_id}")
+@router.patch("/{plan_id}")
+async def update_session_plan(
+    plan_id: int,
+    payload: PatientSessionPlanUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    plan = (
+        db.query(PatientSessionPlan)
+        .options(joinedload(PatientSessionPlan.items).joinedload(PatientSessionPlanItem.therapy))
+        .filter(PatientSessionPlan.id == plan_id)
+        .first()
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="Session plan not found")
+    _assert_patient_access(db, plan.patient_id, current_user)
+
+    next_start = payload.start_date if payload.start_date is not None else plan.start_date
+    next_end = payload.end_date if payload.end_date is not None else plan.end_date
+    next_total = payload.total_sessions if payload.total_sessions is not None else plan.total_sessions
+    if next_start and next_end and next_end < next_start:
+        raise HTTPException(status_code=400, detail="End date cannot be before start date")
+
+    if payload.items is not None:
+        therapy_ids = [item.therapy_id for item in payload.items]
+        if len(set(therapy_ids)) != len(therapy_ids):
+            raise HTTPException(status_code=400, detail="Each therapy can be added only once")
+        allocated_total = sum(item.allocated_sessions for item in payload.items)
+        if allocated_total > (next_total or 0):
+            raise HTTPException(status_code=400, detail="Allocated therapy sessions cannot exceed total sessions")
+        active_therapy_count = (
+            db.query(TherapyMaster)
+            .filter(TherapyMaster.id.in_(therapy_ids), TherapyMaster.is_active == 1)
+            .count()
+        )
+        if active_therapy_count != len(therapy_ids):
+            raise HTTPException(status_code=400, detail="One or more therapies are invalid")
+
+        existing_by_therapy = {item.therapy_id: item for item in plan.items}
+        keep_ids = set()
+        for item in payload.items:
+            existing = existing_by_therapy.get(item.therapy_id)
+            if existing:
+                existing.allocated_sessions = item.allocated_sessions
+                existing.amount_per_session = item.amount_per_session
+                keep_ids.add(existing.id)
+            else:
+                new_item = PatientSessionPlanItem(
+                    patient_session_plan_id=plan.id,
+                    therapy_id=item.therapy_id,
+                    allocated_sessions=item.allocated_sessions,
+                    assigned_sessions=0,
+                    completed_sessions=0,
+                    amount_per_session=item.amount_per_session,
+                )
+                db.add(new_item)
+                db.flush()
+                keep_ids.add(new_item.id)
+
+        for existing in list(plan.items):
+            if existing.id not in keep_ids:
+                if (existing.assigned_sessions or 0) or (existing.completed_sessions or 0):
+                    raise HTTPException(status_code=400, detail="Cannot remove therapy items with assigned or completed sessions")
+                db.delete(existing)
+    elif payload.total_sessions is not None:
+        allocated_total = sum(item.allocated_sessions or 0 for item in plan.items)
+        if allocated_total > payload.total_sessions:
+            raise HTTPException(status_code=400, detail="Allocated therapy sessions cannot exceed total sessions")
+
+    if payload.plan_name is not None:
+        plan.plan_name = payload.plan_name.strip() or _plan_name(next_start, next_end)
+    if payload.total_sessions is not None:
+        plan.total_sessions = payload.total_sessions
+    if payload.start_date is not None:
+        plan.start_date = payload.start_date
+    if payload.end_date is not None:
+        plan.end_date = payload.end_date
+    if payload.notes is not None:
+        plan.notes = payload.notes
+    if payload.status is not None:
+        status_id = {"ACTIVE": 401, "CANCELLED": 402, "COMPLETED": 403}.get(payload.status.upper())
+        if not status_id:
+            raise HTTPException(status_code=400, detail="Invalid plan status")
+        plan.status_id = status_id
+
+    db.commit()
     plan = (
         db.query(PatientSessionPlan)
         .options(joinedload(PatientSessionPlan.items).joinedload(PatientSessionPlanItem.therapy))

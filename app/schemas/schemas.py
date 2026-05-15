@@ -489,11 +489,11 @@ class InvoiceResponse(InvoiceBase):
 # =========================================================
 
 class PaymentBase(BaseModel):
-    invoice_id: int
-    amount: float
-    payment_method: str
-    transaction_id: Optional[str] = None
-    notes: Optional[str] = None
+    patient_id: int
+    payment_amount: Decimal
+    payment_mode: Optional[int] = None
+    payment_status: Optional[str] = None
+    remark: Optional[str] = None
 
 
 class PaymentCreate(BaseModel):
@@ -506,8 +506,8 @@ class PaymentCreate(BaseModel):
 
 
 class PaymentUpdate(BaseModel):
-    status: Optional[str] = None
-    notes: Optional[str] = None
+    payment_status: Optional[str] = None
+    remark: Optional[str] = None
 
 
 class PaymentListRequest(BaseModel):
@@ -694,6 +694,7 @@ class MasterOptionResponse(BaseModel):
 class PatientSessionPlanItemCreate(BaseModel):
     therapy_id: int
     allocated_sessions: int = Field(..., gt=0)
+    amount_per_session: Decimal = Field(default=Decimal("0.00"), ge=0)
 
 
 class PatientSessionPlanCreate(BaseModel):
@@ -702,6 +703,7 @@ class PatientSessionPlanCreate(BaseModel):
     end_date: date
     total_sessions: int = Field(..., gt=0)
     plan_name: Optional[str] = None
+    notes: Optional[str] = None
     status: Optional[str] = "ACTIVE"
     items: List[PatientSessionPlanItemCreate] = Field(..., min_length=1)
 
@@ -711,7 +713,9 @@ class PatientSessionPlanUpdate(BaseModel):
     total_sessions: Optional[int] = Field(default=None, gt=0)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    notes: Optional[str] = None
     status: Optional[str] = None
+    items: Optional[List[PatientSessionPlanItemCreate]] = None
 
 
 class PatientSessionPlanItemResponse(BaseModel):
@@ -722,6 +726,7 @@ class PatientSessionPlanItemResponse(BaseModel):
     assigned_sessions: int
     completed_sessions: int
     remaining_sessions: int
+    amount_per_session: Decimal
 
 
 class PatientSessionPlanResponse(BaseModel):
@@ -731,6 +736,7 @@ class PatientSessionPlanResponse(BaseModel):
     total_sessions: int
     start_date: date
     end_date: date
+    notes: Optional[str] = None
     status: str
     items: List[PatientSessionPlanItemResponse] = []
 

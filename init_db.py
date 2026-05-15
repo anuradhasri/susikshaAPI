@@ -102,6 +102,24 @@ def _foreign_key_exists(db: Session, table_name: str, constraint_name: str) -> b
     ).first())
 
 
+def _foreign_key_referenced_table(db: Session, table_name: str, constraint_name: str) -> str | None:
+    row = db.execute(
+        text(
+            """
+            SELECT referenced_table_name
+            FROM information_schema.key_column_usage
+            WHERE table_schema = DATABASE()
+              AND table_name = :table_name
+              AND constraint_name = :constraint_name
+              AND referenced_table_name IS NOT NULL
+            LIMIT 1
+            """
+        ),
+        {"table_name": table_name, "constraint_name": constraint_name},
+    ).first()
+    return row[0] if row else None
+
+
 def _ensure_lookup_table(db: Session, table_name: str):
     if not _table_exists(db, table_name):
         db.execute(text(
@@ -178,9 +196,23 @@ def _migrate_lookup_column(
             f"UPDATE {table_name} SET {new_column} = {default_id} WHERE {new_column} IS NULL"
         ))
 
+    valid_ids = ", ".join(str(status_id) for status_id in MASTER_LOOKUP_DATA[category].values())
+    db.execute(text(
+        f"""
+        UPDATE {table_name}
+        SET {new_column} = {default_id}
+        WHERE {new_column} NOT IN ({valid_ids})
+        """
+    ))
+
     db.execute(text(f"ALTER TABLE {table_name} MODIFY {new_column} INT NOT NULL DEFAULT {default_id}"))
 
-    if not _foreign_key_exists(db, table_name, constraint_name):
+    referenced_table = _foreign_key_referenced_table(db, table_name, constraint_name)
+    if referenced_table and referenced_table != lookup_table:
+        db.execute(text(f"ALTER TABLE {table_name} DROP FOREIGN KEY {constraint_name}"))
+        referenced_table = None
+
+    if not referenced_table and not _foreign_key_exists(db, table_name, constraint_name):
         db.execute(text(
             f"""
             ALTER TABLE {table_name}
@@ -194,6 +226,18 @@ def _ensure_patient_assessment_columns(db: Session):
     for column_name, definition in PATIENT_ASSESSMENT_COLUMNS.items():
         if not _column_exists(db, "patients", column_name):
             db.execute(text(f"ALTER TABLE patients ADD COLUMN {column_name} {definition}"))
+    db.commit()
+
+
+def _ensure_session_plan_columns(db: Session):
+    if _table_exists(db, "patient_session_plan") and not _column_exists(db, "patient_session_plan", "notes"):
+        db.execute(text("ALTER TABLE patient_session_plan ADD COLUMN notes TEXT NULL"))
+
+    if _table_exists(db, "patient_session_plan_item") and not _column_exists(db, "patient_session_plan_item", "amount_per_session"):
+        db.execute(text(
+            "ALTER TABLE patient_session_plan_item "
+            "ADD COLUMN amount_per_session DECIMAL(10,2) NOT NULL DEFAULT 0.00"
+        ))
     db.commit()
 
 
@@ -215,6 +259,7 @@ def align_database_schema():
     try:
         migrate_enums_to_master_lookups(db)
         _ensure_patient_assessment_columns(db)
+        _ensure_session_plan_columns(db)
         print("[OK] Database schema aligned")
     finally:
         db.close()

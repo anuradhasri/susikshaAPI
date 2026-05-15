@@ -6,7 +6,7 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access
 from app.schemas.schemas import InvoiceCreate, InvoiceUpdate, InvoiceResponse, PaginatedPaymentResponse, PaymentCreate, PaymentListRequest, PaymentResponse, PaginatedResponse
 from app.services.billing_service import BillingService, PaymentService
-from app.models.models import User
+from app.models.models import Patient, User
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
@@ -291,18 +291,15 @@ async def record_payment(
     db: Session = Depends(get_db)
 ):
     """Record a payment"""
-    # Get invoice and check region access
-    from app.models.models import Invoice
-    invoice = db.query(Invoice).filter(Invoice.id == payment_create.invoice_id).first()
-    
-    if not invoice:
+    patient = db.query(Patient).filter(Patient.id == payment_create.patient_id).first()
+
+    if not patient:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice not found"
+            detail="Patient not found"
         )
-    
-    # Check region access
-    await check_region_access(current_user, invoice.region_id)
+
+    await check_region_access(current_user=current_user, db=db, target_region_id=[patient.region_id])
     
     try:
         payment = PaymentService.record_payment(db, payment_create)
@@ -311,7 +308,7 @@ async def record_payment(
             extra={
                 "payment_id": payment.id,
                 "user_id": current_user.id,
-                "invoice_id": invoice.id
+                "patient_id": patient.id
             }
         )
         return payment

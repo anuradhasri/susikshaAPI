@@ -115,10 +115,7 @@ class PaymentService:
     @staticmethod
     def record_payment(db: Session, payment_create: PaymentCreate) -> Payment:
         """Record a payment"""
-        payment = PaymentService.add_payment(db, payment_create)
-        db.commit()
-        db.refresh(payment)
-        return payment
+        return PaymentService.add_payment(db, payment_create, created_by=None)
     
     @staticmethod
     def get_payment_by_id(db: Session, payment_id: int) -> Payment:
@@ -132,8 +129,8 @@ class PaymentService:
         if not payment:
             return None
         
-        payment.status = status
-        if status == "completed":
+        payment.payment_status = status
+        if status.lower() in {"completed", "paid"}:
             payment.payment_date = date.today()
         
         db.commit()

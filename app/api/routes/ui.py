@@ -19,6 +19,7 @@ from app.core.database import get_db
 from app.core.security import decode_token, hash_password, verify_password
 from app.email_templates.password_reset import build_password_reset_email
 from app.models.models import (
+    Appointment,
     AuditLog,
     Document,
     DocumentTypeMaster,
@@ -33,6 +34,8 @@ from app.models.models import (
     Role,
     Therapist,
     TherapistAvailability,
+    Session as TherapySession,
+    SessionNote,
     User,
     UserRegionMapping,
     UserRole,
@@ -51,11 +54,8 @@ ALLOWED_DOCUMENT_EXTENSIONS = {
 }
 _PATIENT_PROFILE_SCHEMA_READY = False
 REMOVED_DB_TABLES = {
-    "appointments",
-    "sessions",
     "alerts",
     "waitlist_entries",
-    "session_notes",
     "session_assignments",
 }
 
@@ -374,6 +374,16 @@ def _user_role_shape(user_role: UserRole) -> dict:
 
 def _patient_shape(patient: Patient) -> dict:
     full_name = f"{patient.first_name} {patient.last_name}".strip()
+    profile_photo_url = None
+    if patient.profile_photo_path:
+        normalized_path = patient.profile_photo_path.replace("\\", "/").lstrip("/")
+        if normalized_path.startswith("uploads/"):
+            profile_photo_url = normalized_path
+        elif "/uploads/" in normalized_path:
+            profile_photo_url = normalized_path.split("/uploads/", 1)[1]
+            profile_photo_url = f"uploads/{profile_photo_url}"
+        else:
+            profile_photo_url = f"uploads/{normalized_path}"
     return {
         "id": patient.id,
         "patient_code": f"PT-{patient.id:04d}",
@@ -389,14 +399,22 @@ def _patient_shape(patient: Patient) -> dict:
         "blood_group": patient.blood_group,
         "nationality": patient.nationality,
         "address": patient.address,
+        "emergency_contact": patient.alternate_contact,
         "emergency_phone": patient.emergency_phone,
         "referred_by": patient.referred_by,
         "registration_at": _iso(patient.registration_at or patient.created_at),
         "profile_photo_path": patient.profile_photo_path,
+        "profile_photo_url": profile_photo_url,
         "clinical_observation": patient.clinical_observation,
         "diagnosis": patient.diagnosis,
         "notes": patient.notes,
         "is_active": True,
+        "region_id": patient.region_id,
+        "created_at": _iso(patient.created_at),
+        "updated_at": _iso(patient.updated_at),
+        "deleted_at": None,
+        "created_by": patient.created_by,
+        "updated_by": patient.updated_by,
         "assessment_answers": patient.assessment_answers,
     }
 
@@ -572,17 +590,23 @@ def _invoice_shape(invoice: Invoice) -> dict:
 
 
 def _payment_shape(payment: Payment) -> dict:
+    payment_mode = payment.payment_mode_master.payment_mode_name if payment.payment_mode_master else None
+    status_value = payment.payment_status or "PENDING"
     return {
         "id": payment.id,
-        "invoice_id": payment.invoice_id,
+        "invoice_id": None,
         "patient_id": payment.patient_id,
-        "amount": payment.amount,
-        "payment_method": payment.payment_method,
+        "amount": float(payment.payment_amount or 0),
+        "payment_amount": float(payment.payment_amount or 0),
+        "payment_method": payment_mode,
+        "payment_mode": payment_mode,
         "payment_date": _iso(payment.payment_date or payment.created_at),
-        "reference_number": payment.transaction_id,
-        "transaction_id": payment.transaction_id,
-        "notes": payment.notes,
-        "status": payment.status.value if hasattr(payment.status, "value") else payment.status,
+        "reference_number": None,
+        "transaction_id": None,
+        "notes": payment.remark,
+        "payment_remark": payment.remark,
+        "status": status_value.lower(),
+        "payment_status": status_value,
         "created_at": _iso(payment.created_at),
         "updated_at": _iso(payment.updated_at),
     }
@@ -597,11 +621,11 @@ def _payment_mode_id(db: Session, value: Any) -> Optional[int]:
         return int(value)
 
     mode_name = str(value).strip()
-    mode = db.query(PaymentModeMaster).filter(PaymentModeMaster.mode_name == mode_name).first()
+    mode = db.query(PaymentModeMaster).filter(PaymentModeMaster.payment_mode_name == mode_name).first()
     if mode:
         return mode.id
 
-    mode = PaymentModeMaster(mode_name=mode_name)
+    mode = PaymentModeMaster(payment_mode_name=mode_name)
     db.add(mode)
     db.flush()
     return mode.id
@@ -790,6 +814,8 @@ def _base_query(table: str, db: Session, user: Optional[User]):
     if table not in ALLOWED_UI_TABLES:
         raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
     if table in REMOVED_DB_TABLES:
+        if table == "session_assignments":
+            return db.query(TherapySession).filter(False)
         raise HTTPException(status_code=404, detail=f"Table is not present in the database: {table}")
 
     if table in {"patients", "patient_packages", "invoices", "payments", "documents"}:
@@ -824,6 +850,28 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.filter(TherapistAvailability.therapist_id == current_therapist.id)
         elif region_ids:
             query = query.join(Therapist, Therapist.id == TherapistAvailability.therapist_id).filter(Therapist.region_id.in_(region_ids))
+        return query
+    if table == "appointments":
+        query = (
+            db.query(Appointment)
+            .options(joinedload(Appointment.patient), joinedload(Appointment.therapist))
+            .filter(Appointment.deleted_at.is_(None))
+        )
+        if current_therapist:
+            query = query.filter(Appointment.therapist_id == current_therapist.id)
+        elif region_ids:
+            query = query.filter(Appointment.region_id.in_(region_ids))
+        return query
+    if table == "sessions":
+        query = (
+            db.query(TherapySession)
+            .options(joinedload(TherapySession.patient), joinedload(TherapySession.therapist))
+            .filter(TherapySession.deleted_at.is_(None))
+        )
+        if current_therapist:
+            query = query.filter(TherapySession.therapist_id == current_therapist.id)
+        elif region_ids:
+            query = query.join(Patient, Patient.id == TherapySession.patient_id).filter(Patient.region_id.in_(region_ids))
         return query
     if table == "patient_packages":
         query = db.query(PatientPackage).options(joinedload(PatientPackage.package)).filter(PatientPackage.deleted_at.is_(None))
@@ -864,9 +912,15 @@ FIELD_MAP = {
 
 
 def _column_for(table: str, field: str):
+    if table == "appointments" and field == "scheduled_at":
+        return Appointment.start_time
+    if table == "sessions" and field == "is_billed":
+        return None
     if field in FIELD_MAP:
         return FIELD_MAP[field]
     model_map = {
+        "appointments": Appointment,
+        "sessions": TherapySession,
         "patients": Patient,
         "therapists": Therapist,
         "therapist_availability": TherapistAvailability,
@@ -1311,7 +1365,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     unbilled_sessions = [s for s in unbilled_source_sessions if s.billing_status not in {"billed", "paid"}]
     current_period_payments = [
         p for p in payments
-        if _status_value(p.status) == "completed"
+        if _status_value(p.payment_status) in {"completed", "paid"}
         and (p.payment_date or p.created_at)
         and (
             (p.payment_date or p.created_at).date() >= first_of_month
@@ -1319,11 +1373,11 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
             else period_start <= (p.payment_date or p.created_at).date() <= period_end
         )
     ]
-    current_period_revenue = sum(p.amount or 0 for p in current_period_payments)
+    current_period_revenue = sum(float(p.payment_amount or 0) for p in current_period_payments)
     previous_period_revenue = sum(
-        p.amount or 0
+        float(p.payment_amount or 0)
         for p in payments
-        if _status_value(p.status) == "completed"
+        if _status_value(p.payment_status) in {"completed", "paid"}
         and (p.payment_date or p.created_at)
         and previous_period_start <= (p.payment_date or p.created_at).date() <= previous_period_end
     )
@@ -1338,8 +1392,8 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
         for payment in payments:
             paid_at = payment.payment_date or payment.created_at
             paid_date = paid_at.date() if paid_at else None
-            if paid_date and period_start <= paid_date <= period_end and _status_value(payment.status) == "completed":
-                revenue_by_day[paid_date] += payment.amount or 0
+            if paid_date and period_start <= paid_date <= period_end and _status_value(payment.payment_status) in {"completed", "paid"}:
+                revenue_by_day[paid_date] += float(payment.payment_amount or 0)
         for session in completed_period_sessions:
             sessions_by_day[session.session_date] += 1
         revenue_chart = []
@@ -1356,8 +1410,8 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
         sessions_by_month = defaultdict(int)
         for payment in payments:
             paid_at = payment.payment_date or payment.created_at
-            if paid_at and paid_at.date() >= first_of_year and _status_value(payment.status) == "completed":
-                revenue_by_month[_month_key(paid_at)] += payment.amount or 0
+            if paid_at and paid_at.date() >= first_of_year and _status_value(payment.payment_status) in {"completed", "paid"}:
+                revenue_by_month[_month_key(paid_at)] += float(payment.payment_amount or 0)
         for session in completed_sessions:
             if session.session_date >= first_of_year:
                 sessions_by_month[_month_key(session.session_date)] += 1
@@ -1425,7 +1479,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
 
     billing_rows = []
     for invoice in invoices:
-        payment = next((p for p in payments if p.invoice_id == invoice.id and _status_value(p.status) == "completed"), None)
+        payment = next((p for p in payments if p.patient_id == invoice.patient_id and _status_value(p.payment_status) in {"completed", "paid"}), None)
         billing_rows.append({
             "id": invoice.id,
             "patientName": f"{invoice.patient.first_name} {invoice.patient.last_name}".strip() if invoice.patient else "Unknown",
@@ -1435,7 +1489,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
             "paidAmount": invoice.paid_amount or 0,
             "balance": max(0, (invoice.total_amount or 0) - (invoice.paid_amount or 0)),
             "status": _invoice_ui_status(invoice),
-            "paymentMode": payment.payment_method if payment else "Not paid",
+            "paymentMode": payment.payment_mode_master.payment_mode_name if payment and payment.payment_mode_master else "Not paid",
             "dueDate": _iso(invoice.due_date),
         })
 
@@ -1749,6 +1803,8 @@ async def list_rows(
     import json
 
     parsed_filters = json.loads(filters or "[]")
+    if table == "session_assignments":
+        return {"data": [], "count": 0 if count else None}
     if table in {"sessions", "patient_packages"}:
         _ensure_sessions_for_appointments(db, user)
     query = _base_query(table, db, user)
