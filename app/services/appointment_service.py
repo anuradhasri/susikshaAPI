@@ -5,7 +5,7 @@ from grpc import Status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from datetime import datetime, date
-from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage
+from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage, STATUS_ID_TO_CODE
 from app.repositories.appointment_repository import AppointmentRepository
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate, SlotBookingCreate
 from app.utils.query_utils import soft_delete, filter_by_region
@@ -187,16 +187,29 @@ class AppointmentService:
             patient_session_plan_item_id=plan_item.id,
         )
 
+        appointment = Appointment(
+            patient_id=booking_create.patient_id,
+            therapist_id=booking_create.therapist_id,
+            start_time=datetime.combine(booking_create.slot_date, slot.start_time),
+            end_time=datetime.combine(booking_create.slot_date, slot.end_time),
+            status="scheduled",
+            notes=booking_create.notes,
+            region_id=booking_create.region_id,
+        )
+        db.add(appointment)
+
         plan_item.assigned_sessions = assigned_sessions + 1
         db.commit()
         db.refresh(patient_slot_booking)
         db.refresh(therapist_slot_mapping)
         db.refresh(plan_item)
+        db.refresh(appointment)
 
         return {
             "patient_slot_booking": patient_slot_booking,
             "therapist_slot_mapping": therapist_slot_mapping,
             "patient_session_plan_item": plan_item,
+            "appointment": appointment,
         }
 
     @staticmethod
@@ -230,6 +243,16 @@ class AppointmentService:
             assigned_sessions = plan_item.assigned_sessions or 0
             if assigned_sessions > 0:
                 plan_item.assigned_sessions = assigned_sessions - 1
+
+        if therapist_slot_mapping and plan_item:
+            slot = therapist_slot_mapping.slot
+            AppointmentRepository.cancel_matching_appointment(
+                db,
+                patient_id=plan_item.patient_session_plan.patient_id,
+                therapist_id=therapist_slot_mapping.therapist_id,
+                start_time=datetime.combine(therapist_slot_mapping.slot_date, slot.start_time),
+                end_time=datetime.combine(therapist_slot_mapping.slot_date, slot.end_time),
+            )
 
         db.commit()
         db.refresh(patient_slot_booking)
@@ -298,9 +321,7 @@ class AppointmentService:
             if therapist_id in leave_therapist_ids:
                 continue
 
-            therapist_name = (
-                f"{row.first_name} {row.last_name}"
-            )
+            therapist_name = row.therapist_name
 
             therapist_map[therapist_id]["therapist_id"] = therapist_id
             therapist_map[therapist_id]["therapist_name"] = therapist_name
@@ -316,12 +337,26 @@ class AppointmentService:
 
             therapist_map[therapist_id]["slots"].append({
                 "slot_mapping_id": row.slot_mapping_id,
+                "patient_slot_booking_id": row.patient_slot_booking_id,
+                "slot_id": row.slot_id,
                 "slot_time": row.start_time,
+                "start_time": row.start_time,
+                "end_time": row.end_time,
+                "duration_minutes": row.duration_minutes,
+                "therapy_id": row.therapy_id,
+                "therapy_name": row.therapy_name,
+                "patient_id": row.patient_id,
                 "patient_name": patient_name,
-                "patient_code": "CP-1029",
-                "session_no": 4,
-                "total_sessions": 10,
-                "status": "Booked" if patient_name else "Available"
+                "patient_code": f"CP-{row.patient_id}" if row.patient_id else None,
+                "session_no": None,
+                "total_sessions": None,
+                "patient_slot_booking_status": STATUS_ID_TO_CODE["patient_slot_booking"].get(
+                    row.patient_slot_booking_status_id
+                ),
+                "therapist_slot_mapping_status": STATUS_ID_TO_CODE["therapist_slot_mapping"].get(
+                    row.therapist_slot_mapping_status_id
+                ),
+                "status": "Booked" if patient_name else "Available",
             })
 
         return {
@@ -355,6 +390,7 @@ class AppointmentService:
     def list_appointments(
         db: Session,
         region_id: int = None,
+        region_ids: list[int] = None,
         therapist_id: int = None,
         patient_id: int = None,
         start_date: datetime = None,
@@ -366,6 +402,7 @@ class AppointmentService:
         return AppointmentRepository.list(
             db,
             region_id=region_id,
+            region_ids=region_ids,
             therapist_id=therapist_id,
             patient_id=patient_id,
             start_date=start_date,

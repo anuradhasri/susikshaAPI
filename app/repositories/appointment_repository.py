@@ -149,6 +149,7 @@ class AppointmentRepository:
         db: Session,
         *,
         region_id: Optional[int] = None,
+        region_ids: Optional[list[int]] = None,
         therapist_id: Optional[int] = None,
         patient_id: Optional[int] = None,
         start_date: Optional[datetime] = None,
@@ -157,7 +158,9 @@ class AppointmentRepository:
         limit: int = 100,
     ) -> tuple[list[Appointment], int]:
         query = db.query(Appointment).filter(Appointment.deleted_at.is_(None))
-        if region_id:
+        if region_ids:
+            query = query.filter(Appointment.region_id.in_(region_ids))
+        elif region_id:
             query = filter_by_region(query, region_id, Appointment)
         if therapist_id:
             query = query.filter(Appointment.therapist_id == therapist_id)
@@ -335,6 +338,34 @@ class AppointmentRepository:
         return booking
 
     @staticmethod
+    def cancel_matching_appointment(
+        db: Session,
+        *,
+        patient_id: int,
+        therapist_id: int,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> Optional[Appointment]:
+        appointment = (
+            db.query(Appointment)
+            .filter(
+                Appointment.patient_id == patient_id,
+                Appointment.therapist_id == therapist_id,
+                Appointment.start_time == start_time,
+                Appointment.end_time == end_time,
+                Appointment.status != "cancelled",
+                Appointment.deleted_at.is_(None),
+            )
+            .first()
+        )
+
+        if appointment:
+            appointment.status = "cancelled"
+            db.flush()
+
+        return appointment
+
+    @staticmethod
     def get_patient_slot_booking_for_update(
         db: Session,
         patient_slot_booking_id: int,
@@ -356,13 +387,20 @@ class AppointmentRepository:
         query = (
             db.query(
                 TherapistSlotMapping.id.label("slot_mapping_id"),
+                PatientSlotBooking.id.label("patient_slot_booking_id"),
                 Therapist.id.label("therapist_id"),
-                Therapist.first_name,
-                Therapist.last_name,
+                Therapist.name.label("therapist_name"),
+                SlotMaster.id.label("slot_id"),
                 SlotMaster.start_time,
+                SlotMaster.end_time,
+                SlotMaster.duration_minutes,
+                TherapyMaster.id.label("therapy_id"),
                 TherapyMaster.name.label("therapy_name"),
+                Patient.id.label("patient_id"),
                 Patient.first_name.label("patient_first_name"),
-                Patient.last_name.label("patient_last_name")
+                Patient.last_name.label("patient_last_name"),
+                PatientSlotBooking.status_id.label("patient_slot_booking_status_id"),
+                TherapistSlotMapping.status_id.label("therapist_slot_mapping_status_id"),
             )
             .join(
                 Therapist,
@@ -378,15 +416,27 @@ class AppointmentRepository:
             )
             .outerjoin(
                 PatientSlotBooking,
-                PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id
+                and_(
+                    PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id,
+                    PatientSlotBooking.status_id != 602,
+                )
+            )
+            .outerjoin(
+                PatientSessionPlanItem,
+                PatientSessionPlanItem.id == PatientSlotBooking.patient_session_plan_item_id
+            )
+            .outerjoin(
+                PatientSessionPlan,
+                PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id
             )
             .outerjoin(
                 Patient,
-                Patient.id == PatientSlotBooking.patient_session_plan_item_id
+                Patient.id == PatientSessionPlan.patient_id
             )
             .filter(
                 TherapistSlotMapping.slot_date == selected_date,
-                Therapist.region_id.in_(region_ids)
+                Therapist.region_id.in_(region_ids),
+                TherapistSlotMapping.status_id != 804,
             )
             .order_by(SlotMaster.start_time)
         )

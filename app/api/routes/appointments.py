@@ -264,6 +264,7 @@ async def book_slot(
         patient_slot_booking = booking["patient_slot_booking"]
         therapist_slot_mapping = booking["therapist_slot_mapping"]
         plan_item = booking["patient_session_plan_item"]
+        appointment = booking["appointment"]
         remaining_sessions = (
             plan_item.allocated_sessions
             - (plan_item.assigned_sessions or 0)
@@ -284,6 +285,7 @@ async def book_slot(
             "message": "Slot booked successfully",
             "patient_slot_booking_id": patient_slot_booking.id,
             "therapist_slot_mapping_id": therapist_slot_mapping.id,
+            "appointment_id": appointment.id,
             "patient_session_plan_item_id": plan_item.id,
             "allocated_sessions": plan_item.allocated_sessions,
             "assigned_sessions": plan_item.assigned_sessions,
@@ -469,8 +471,8 @@ async def list_appointments(
     if "therapist" in roles:
         from app.models.models import Therapist
         therapist = db.query(Therapist).filter(
-            Therapist.user_id == current_user.id,
-            Therapist.deleted_at.is_(None)
+            Therapist.name == f"{current_user.first_name} {current_user.last_name}",
+            Therapist.is_active == 1
         ).first()
         
         if therapist:
@@ -478,7 +480,7 @@ async def list_appointments(
     
     appointments, total = AppointmentService.list_appointments(
         db,
-        region_id=current_user.region_id,
+        region_ids=current_user.region_ids,
         therapist_id=therapist_id,
         patient_id=patient_id,
         start_date=start,
@@ -570,7 +572,7 @@ async def create_appointment(
 ):
     """Create a new appointment"""
     # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment_create.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=[appointment_create.region_id])
     
     try:
         appointment = AppointmentService.create_appointment(db, appointment_create)
@@ -603,7 +605,7 @@ async def get_appointment(
     db: Session = Depends(get_db)
 ):
     """Get appointment by ID"""
-    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
+    appointment = AppointmentService.get_appointment_by_id(db, appointment_id)
     
     if not appointment:
         raise HTTPException(
@@ -612,7 +614,7 @@ async def get_appointment(
         )
     
     # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=[appointment.region_id])
     
     return appointment
 
@@ -625,7 +627,7 @@ async def update_appointment(
     db: Session = Depends(get_db)
 ):
     """Update appointment"""
-    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
+    appointment = AppointmentService.get_appointment_by_id(db, appointment_id)
     
     if not appointment:
         raise HTTPException(
@@ -634,11 +636,11 @@ async def update_appointment(
         )
     
     # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=[appointment.region_id])
     
     try:
         updated_appointment = AppointmentService.update_appointment(
-            db, appointment_id, appointment_update, current_user.region_id
+            db, appointment_id, appointment_update
         )
         logger.info(
             f"Appointment updated",
@@ -660,7 +662,7 @@ async def delete_appointment(
     db: Session = Depends(get_db)
 ):
     """Delete appointment"""
-    appointment = AppointmentService.get_appointment_by_id(db, appointment_id, current_user.region_id)
+    appointment = AppointmentService.get_appointment_by_id(db, appointment_id)
     
     if not appointment:
         raise HTTPException(
@@ -669,7 +671,7 @@ async def delete_appointment(
         )
     
     # Check region access
-    await check_region_access(current_user=current_user, db=db, target_region_id=appointment.region_id)
+    await check_region_access(current_user=current_user, db=db, target_region_id=[appointment.region_id])
     
     try:
         AppointmentService.delete_appointment(db, appointment_id)

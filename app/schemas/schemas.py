@@ -261,6 +261,7 @@ class AppointmentResponse(AppointmentBase):
 class SlotBookingResponse(BaseModel):
     success: bool
     message: str
+    appointment_id: Optional[int] = None
     patient_slot_booking_id: int
     therapist_slot_mapping_id: int
     patient_session_plan_item_id: int

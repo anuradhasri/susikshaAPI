@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.models import STATUS_MASTER_DATA, StatusMaster
+from app.models.models import MASTER_LOOKUP_DATA
 
 
 PATIENT_ASSESSMENT_COLUMNS = {
@@ -36,6 +36,17 @@ PATIENT_ASSESSMENT_COLUMNS = {
     "assessment_attention_processing": "TEXT NULL",
     "assessment_recommendations": "TEXT NULL",
     "assessment_report_notes": "TEXT NULL",
+}
+
+LOOKUP_TABLES = {
+    "invoice": "invoice_status_master",
+    "patient_session_plan": "patient_session_plan_status_master",
+    "patient_assessment": "patient_assessment_status_master",
+    "patient_slot_booking": "patient_slot_booking_status_master",
+    "patient_therapy": "patient_therapy_status_master",
+    "therapist_slot_mapping": "therapist_slot_mapping_status_master",
+    "assessment_type": "assessment_type_master",
+    "question_type": "question_type_master",
 }
 
 
@@ -91,47 +102,43 @@ def _foreign_key_exists(db: Session, table_name: str, constraint_name: str) -> b
     ).first())
 
 
-def _ensure_status_master_table(db: Session):
-    if _table_exists(db, "master_status") and not _table_exists(db, "status_master"):
-        db.execute(text("RENAME TABLE master_status TO status_master"))
-
-    if not _table_exists(db, "status_master"):
+def _ensure_lookup_table(db: Session, table_name: str):
+    if not _table_exists(db, table_name):
         db.execute(text(
-            """
-            CREATE TABLE status_master (
+            f"""
+            CREATE TABLE {table_name} (
                 id INT NOT NULL PRIMARY KEY,
-                category VARCHAR(100) NOT NULL,
                 code VARCHAR(100) NOT NULL,
                 name VARCHAR(100) NOT NULL,
                 is_active TINYINT(1) NOT NULL DEFAULT 1,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY uq_status_master_category_code (category, code),
-                KEY idx_status_master_category (category),
-                KEY idx_status_master_active (is_active)
+                UNIQUE KEY uq_{table_name}_code (code),
+                KEY idx_{table_name}_active (is_active)
             )
             """
         ))
 
 
-def _seed_status_master(db: Session):
-    _ensure_status_master_table(db)
-    for category, statuses in STATUS_MASTER_DATA.items():
+def _seed_master_lookups(db: Session):
+    for category, statuses in MASTER_LOOKUP_DATA.items():
+        table_name = LOOKUP_TABLES[category]
+        _ensure_lookup_table(db, table_name)
         for code, status_id in statuses.items():
-            existing = db.query(StatusMaster).filter(StatusMaster.id == status_id).first()
-            if existing:
-                existing.category = category
-                existing.code = code
-                existing.name = _format_status_name(code)
-                existing.is_active = True
-            else:
-                db.add(StatusMaster(
-                    id=status_id,
-                    category=category,
-                    code=code,
-                    name=_format_status_name(code),
-                    is_active=True,
-                ))
+            db.execute(text(
+                f"""
+                INSERT INTO {table_name} (id, code, name, is_active)
+                VALUES (:id, :code, :name, 1)
+                ON DUPLICATE KEY UPDATE
+                    code = VALUES(code),
+                    name = VALUES(name),
+                    is_active = VALUES(is_active)
+                """
+            ), {
+                "id": status_id,
+                "code": code,
+                "name": _format_status_name(code),
+            })
     db.commit()
 
 
@@ -144,7 +151,8 @@ def _migrate_lookup_column(
     default_code: str,
     constraint_name: str,
 ):
-    default_id = STATUS_MASTER_DATA[category][default_code]
+    default_id = MASTER_LOOKUP_DATA[category][default_code]
+    lookup_table = LOOKUP_TABLES[category]
 
     if not _table_exists(db, table_name):
         return
@@ -155,7 +163,7 @@ def _migrate_lookup_column(
     if _column_exists(db, table_name, old_column):
         cases = " ".join(
             f"WHEN UPPER({old_column}) = '{code.upper()}' THEN {status_id}"
-            for code, status_id in STATUS_MASTER_DATA[category].items()
+            for code, status_id in MASTER_LOOKUP_DATA[category].items()
         )
         db.execute(text(
             f"""
@@ -177,7 +185,7 @@ def _migrate_lookup_column(
             f"""
             ALTER TABLE {table_name}
             ADD CONSTRAINT {constraint_name}
-            FOREIGN KEY ({new_column}) REFERENCES status_master(id)
+            FOREIGN KEY ({new_column}) REFERENCES {lookup_table}(id)
             """
         ))
 
@@ -189,8 +197,8 @@ def _ensure_patient_assessment_columns(db: Session):
     db.commit()
 
 
-def migrate_enums_to_status_master(db: Session):
-    _seed_status_master(db)
+def migrate_enums_to_master_lookups(db: Session):
+    _seed_master_lookups(db)
     _migrate_lookup_column(db, "invoices", "status", "status_id", "invoice", "draft", "fk_invoices_status_id")
     _migrate_lookup_column(db, "patient_session_plan", "status", "status_id", "patient_session_plan", "ACTIVE", "fk_patient_session_plan_status_id")
     _migrate_lookup_column(db, "patient_assessment", "status", "status_id", "patient_assessment", "PENDING", "fk_patient_assessment_status_id")
@@ -205,7 +213,7 @@ def migrate_enums_to_status_master(db: Session):
 def align_database_schema():
     db = SessionLocal()
     try:
-        migrate_enums_to_status_master(db)
+        migrate_enums_to_master_lookups(db)
         _ensure_patient_assessment_columns(db)
         print("[OK] Database schema aligned")
     finally:

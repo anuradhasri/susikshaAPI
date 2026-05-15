@@ -130,6 +130,14 @@ class PatientTherapyStatusMaster(MasterLookupBase, Base):
     __tablename__ = "patient_therapy_status_master"
 
 
+class PatientSlotBookingStatusMaster(MasterLookupBase, Base):
+    __tablename__ = "patient_slot_booking_status_master"
+
+
+class TherapistSlotMappingStatusMaster(MasterLookupBase, Base):
+    __tablename__ = "therapist_slot_mapping_status_master"
+
+
 class AssessmentTypeMaster(MasterLookupBase, Base):
     __tablename__ = "assessment_type_master"
 
@@ -142,11 +150,12 @@ MASTER_LOOKUP_MODELS = {
     "invoice": InvoiceStatusMaster,
     "patient_session_plan": PatientSessionPlanStatusMaster,
     "patient_assessment": PatientAssessmentStatusMaster,
+    "patient_slot_booking": PatientSlotBookingStatusMaster,
     "patient_therapy": PatientTherapyStatusMaster,
+    "therapist_slot_mapping": TherapistSlotMappingStatusMaster,
     "assessment_type": AssessmentTypeMaster,
     "question_type": QuestionTypeMaster,
 }
-
 
 class StatusIdMixin:
     _status_category = None
@@ -1060,14 +1069,14 @@ class TherapistSlotMapping(StatusIdMixin, Base):
     slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=False)
     slot_date = Column(Date, nullable=False)
     therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=802, server_default="802")
+    status_id = Column(Integer, ForeignKey("therapist_slot_mapping_status_master.id"), nullable=False, default=802, server_default="802")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     therapist = relationship("Therapist")
     slot = relationship("SlotMaster")
     therapy = relationship("TherapyMaster")
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
+    therapist_slot_mapping_status_master = relationship("TherapistSlotMappingStatusMaster", foreign_keys=[status_id])
     patient_slot_bookings = relationship(
         "PatientSlotBooking",
         back_populates="therapist_slot_mapping"
@@ -1090,11 +1099,11 @@ class PatientSlotBooking(StatusIdMixin, Base):
         ForeignKey("patient_session_plan_item.id"),
         nullable=True
     )
-    status_id = Column(Integer, ForeignKey("status_master.id"), nullable=False, default=601, server_default="601")
+    status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=601, server_default="601")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    status_master = relationship("StatusMaster", foreign_keys=[status_id])
+    patient_slot_booking_status_master = relationship("PatientSlotBookingStatusMaster", foreign_keys=[status_id])
     therapist_slot_mapping = relationship(
         "TherapistSlotMapping",
         back_populates="patient_slot_bookings"
