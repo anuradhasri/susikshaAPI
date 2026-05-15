@@ -292,12 +292,14 @@ class Patient(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(Integer, nullable=True)
     updated_by = Column(Integer, nullable=True)
+    assessment_answers = Column(JSON, nullable=True)  
 
     region = relationship("Region", back_populates="patients")
     patient_packages = relationship("PatientPackage", back_populates="patient")
     invoices = relationship("Invoice", back_populates="patient")
     payments = relationship("Payment", back_populates="patient")
     documents = relationship("Document", back_populates="patient")
+
     session_plans = relationship(
         "PatientSessionPlan",
         back_populates="patient"
