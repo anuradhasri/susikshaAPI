@@ -303,10 +303,7 @@ class AppointmentService:
             selected_date=selected_date
         )
 
-        leave_therapist_ids = {
-            leave.therapist_id
-            for leave in leaves
-        }
+        leaves_by_therapist = {leave.therapist_id: leave for leave in leaves}
 
         therapist_map = defaultdict(lambda: {
             "therapist_id": None,
@@ -316,8 +313,6 @@ class AppointmentService:
         })
 
         for therapist in AppointmentRepository.get_active_therapists_for_calendar(db, region_ids):
-            if therapist.id in leave_therapist_ids:
-                continue
             therapist_map[therapist.id]["therapist_id"] = therapist.id
             therapist_map[therapist.id]["therapist_name"] = therapist.name
             therapist_map[therapist.id]["therapy_name"] = None
@@ -326,10 +321,13 @@ class AppointmentService:
 
             therapist_id = row.therapist_id
 
-            if therapist_id in leave_therapist_ids:
-                continue
-
             therapist_name = row.therapist_name
+            leave = leaves_by_therapist.get(therapist_id)
+            is_leave_slot = AppointmentService._leave_blocks_slot(leave, row.start_time)
+            assigned_sessions = row.assigned_sessions or 0
+            completed_sessions = row.completed_sessions or 0
+            allocated_sessions = row.allocated_sessions or 0
+            remaining_sessions = max(0, allocated_sessions - assigned_sessions - completed_sessions)
 
             therapist_map[therapist_id]["therapist_id"] = therapist_id
             therapist_map[therapist_id]["therapist_name"] = therapist_name
@@ -347,6 +345,7 @@ class AppointmentService:
                 "slot_mapping_id": row.slot_mapping_id,
                 "patient_slot_booking_id": row.patient_slot_booking_id,
                 "slot_id": row.slot_id,
+                "slot_date": str(selected_date),
                 "slot_time": row.start_time,
                 "start_time": row.start_time,
                 "end_time": row.end_time,
@@ -356,16 +355,78 @@ class AppointmentService:
                 "patient_id": row.patient_id,
                 "patient_name": patient_name,
                 "patient_code": f"CP-{row.patient_id}" if row.patient_id else None,
-                "session_no": None,
-                "total_sessions": None,
+                "patient_phone": row.patient_phone,
+                "patient_session_plan_id": row.patient_session_plan_id,
+                "patient_session_plan_item_id": row.patient_session_plan_item_id,
+                "plan_name": row.plan_name,
+                "session_no": assigned_sessions + completed_sessions,
+                "total_sessions": row.plan_total_sessions,
+                "allocated_sessions": allocated_sessions,
+                "assigned_sessions": assigned_sessions,
+                "completed_sessions": completed_sessions,
+                "remaining_sessions": remaining_sessions,
+                "amount_per_session": float(row.amount_per_session or 0),
+                "package_warning": remaining_sessions <= 0,
+                "leave_session": leave.leave_session if leave and is_leave_slot else None,
+                "leave_reason": leave.reason if leave and is_leave_slot else None,
                 "patient_slot_booking_status": STATUS_ID_TO_CODE["patient_slot_booking"].get(
                     row.patient_slot_booking_status_id
                 ),
                 "therapist_slot_mapping_status": STATUS_ID_TO_CODE["therapist_slot_mapping"].get(
                     row.therapist_slot_mapping_status_id
                 ),
-                "status": "Booked" if patient_name else "Available",
+                "status": "Leave" if is_leave_slot else ("Booked" if patient_name else "Available"),
             })
+
+        calendar_slots = db.query(SlotMaster).filter(SlotMaster.is_active == 1).all()
+        for therapist in AppointmentRepository.get_active_therapists_for_calendar(db, region_ids):
+            leave = leaves_by_therapist.get(therapist.id)
+            if not leave:
+                continue
+            existing_leave_keys = {
+                (slot["slot_id"], slot["status"])
+                for slot in therapist_map[therapist.id]["slots"]
+            }
+            for slot in calendar_slots:
+                if not AppointmentService._leave_blocks_slot(leave, slot.start_time):
+                    continue
+                if (slot.id, "Leave") in existing_leave_keys:
+                    continue
+                therapist_map[therapist.id]["slots"].append({
+                    "slot_mapping_id": None,
+                    "patient_slot_booking_id": None,
+                    "slot_id": slot.id,
+                    "slot_date": str(selected_date),
+                    "slot_time": slot.start_time,
+                    "start_time": slot.start_time,
+                    "end_time": slot.end_time,
+                    "duration_minutes": slot.duration_minutes,
+                    "therapy_id": None,
+                    "therapy_name": None,
+                    "patient_id": None,
+                    "patient_name": None,
+                    "patient_code": None,
+                    "patient_phone": None,
+                    "patient_session_plan_id": None,
+                    "patient_session_plan_item_id": None,
+                    "plan_name": None,
+                    "session_no": None,
+                    "total_sessions": None,
+                    "allocated_sessions": None,
+                    "assigned_sessions": None,
+                    "completed_sessions": None,
+                    "remaining_sessions": None,
+                    "amount_per_session": 0,
+                    "package_warning": False,
+                    "leave_session": leave.leave_session,
+                    "leave_reason": leave.reason,
+                    "patient_slot_booking_status": None,
+                    "therapist_slot_mapping_status": None,
+                    "status": "Leave",
+                })
+
+        for therapist in therapist_map.values():
+            therapist["slots"].sort(key=lambda slot: slot["start_time"])
 
         return {
             "date": str(selected_date),

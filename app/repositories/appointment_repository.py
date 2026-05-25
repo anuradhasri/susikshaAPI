@@ -44,7 +44,10 @@ class AppointmentRepository:
         response = [
             {
                 "id": plan.id,
-                "plan_name": plan.plan_name
+                "plan_name": plan.plan_name,
+                "total_sessions": plan.total_sessions,
+                "start_date": plan.start_date.isoformat() if plan.start_date else None,
+                "end_date": plan.end_date.isoformat() if plan.end_date else None,
             }
             for plan in plans
         ]
@@ -64,7 +67,11 @@ class AppointmentRepository:
             db.query(
                 PatientSessionPlanItem.id,
                 TherapyMaster.id.label("therapy_id"),
-                TherapyMaster.name.label("therapy_name")
+                TherapyMaster.name.label("therapy_name"),
+                PatientSessionPlanItem.allocated_sessions,
+                PatientSessionPlanItem.assigned_sessions,
+                PatientSessionPlanItem.completed_sessions,
+                PatientSessionPlanItem.amount_per_session,
             )
             .join(
                 TherapyMaster,
@@ -81,7 +88,17 @@ class AppointmentRepository:
             {
                 "id": therapy.id,
                 "therapy_id": therapy.therapy_id,
-                "therapy_name": therapy.therapy_name
+                "therapy_name": therapy.therapy_name,
+                "allocated_sessions": therapy.allocated_sessions,
+                "assigned_sessions": therapy.assigned_sessions or 0,
+                "completed_sessions": therapy.completed_sessions or 0,
+                "remaining_sessions": max(
+                    0,
+                    (therapy.allocated_sessions or 0)
+                    - (therapy.assigned_sessions or 0)
+                    - (therapy.completed_sessions or 0),
+                ),
+                "amount_per_session": float(therapy.amount_per_session or 0),
             }
             for therapy in therapies
         ]
@@ -410,6 +427,15 @@ class AppointmentRepository:
                 Patient.id.label("patient_id"),
                 Patient.first_name.label("patient_first_name"),
                 Patient.last_name.label("patient_last_name"),
+                Patient.phone.label("patient_phone"),
+                PatientSessionPlan.id.label("patient_session_plan_id"),
+                PatientSessionPlan.plan_name.label("plan_name"),
+                PatientSessionPlan.total_sessions.label("plan_total_sessions"),
+                PatientSessionPlanItem.id.label("patient_session_plan_item_id"),
+                PatientSessionPlanItem.allocated_sessions,
+                PatientSessionPlanItem.assigned_sessions,
+                PatientSessionPlanItem.completed_sessions,
+                PatientSessionPlanItem.amount_per_session,
                 PatientSlotBooking.status_id.label("patient_slot_booking_status_id"),
                 TherapistSlotMapping.status_id.label("therapist_slot_mapping_status_id"),
             )
@@ -460,6 +486,8 @@ class AppointmentRepository:
         region_ids: Optional[list[int]] = None,
     ):
         query = db.query(Therapist).filter(Therapist.is_active == 1)
+        if region_ids:
+            query = query.filter(Therapist.region_id.in_(region_ids))
         return query.order_by(Therapist.name.asc()).all()
 
 
