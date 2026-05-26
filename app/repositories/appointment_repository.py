@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.models.models import (
@@ -14,6 +14,7 @@ from app.models.models import (
     PatientSlotBooking,
     SlotMaster,
     Therapist,
+    TherapistAvailability,
     TherapistLeave,
     TherapistSlotMapping,
     TherapistTherapyMapping,
@@ -502,6 +503,26 @@ class AppointmentRepository:
             .filter(TherapistLeave.leave_date == selected_date)
             .all()
         )    
+
+    @staticmethod
+    def get_unavailable_therapist_availability(
+        db: Session,
+        selected_date,
+        region_ids: Optional[list[int]] = None,
+    ):
+        normalized_status = func.lower(func.replace(TherapistAvailability.status, " ", "_"))
+        query = (
+            db.query(TherapistAvailability)
+            .join(Therapist, Therapist.id == TherapistAvailability.therapist_id)
+            .filter(
+                TherapistAvailability.availability_date == selected_date,
+                TherapistAvailability.deleted_at.is_(None),
+                normalized_status.in_(["leave", "off_day", "offday", "full_day", "full"]),
+            )
+        )
+        if region_ids:
+            query = query.filter(Therapist.region_id.in_(region_ids))
+        return query.all()
 
     @staticmethod
     def has_active_patient_booking_for_mapping(

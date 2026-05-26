@@ -158,6 +158,7 @@ class PaymentService:
         query = (
             db.query(
                 Payment.id.label("payment_id"),
+                Payment.patient_id.label("patient_id"),
 
                 Patient.first_name.label("first_name"),
                 Patient.last_name.label("last_name"),

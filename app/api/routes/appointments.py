@@ -315,6 +315,70 @@ async def book_slot(
 
 
 @router.patch(
+    "/slot-booking/{patient_slot_booking_id}",
+    response_model=SlotBookingResponse,
+    status_code=status.HTTP_200_OK
+)
+async def reschedule_slot(
+    patient_slot_booking_id: int,
+    booking_create: SlotBookingCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Edit a booked slot without changing the plan session count."""
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
+    try:
+        booking = AppointmentService.reschedule_slot(db, patient_slot_booking_id, booking_create)
+        patient_slot_booking = booking["patient_slot_booking"]
+        therapist_slot_mapping = booking["therapist_slot_mapping"]
+        plan_item = booking["patient_session_plan_item"]
+        appointment = booking["appointment"]
+        remaining_sessions = (
+            plan_item.allocated_sessions
+            - (plan_item.assigned_sessions or 0)
+            - (plan_item.completed_sessions or 0)
+        )
+
+        return {
+            "success": True,
+            "message": "Slot updated successfully",
+            "patient_slot_booking_id": patient_slot_booking.id,
+            "therapist_slot_mapping_id": therapist_slot_mapping.id,
+            "appointment_id": appointment.id if appointment else None,
+            "patient_session_plan_item_id": plan_item.id,
+            "allocated_sessions": plan_item.allocated_sessions,
+            "assigned_sessions": plan_item.assigned_sessions,
+            "completed_sessions": plan_item.completed_sessions,
+            "remaining_sessions": remaining_sessions
+        }
+
+    except ValueError as e:
+        logger.warning(
+            f"Error updating slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error updating slot: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error updating slot"
+        )
+
+
+@router.patch(
     "/slot-cancel/{patient_slot_booking_id}",
     response_model=SlotCancelResponse,
     status_code=status.HTTP_200_OK
