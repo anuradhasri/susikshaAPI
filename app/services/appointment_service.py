@@ -551,6 +551,103 @@ class AppointmentService:
             "date": str(selected_date),
             "therapists": list(therapist_map.values())
         }    
+
+    @staticmethod
+    def get_calendar_range_view(
+        db,
+        start_date,
+        end_date,
+        region_ids
+    ):
+
+        records = AppointmentRepository.get_calendar_data_range(
+            db=db,
+            start_date=start_date,
+            end_date=end_date,
+            region_ids=region_ids
+        )
+
+        leaves_by_therapist_date = {}
+
+        therapist_map = defaultdict(lambda: {
+            "therapist_id": None,
+            "therapist_name": None,
+            "therapy_name": None,
+            "slots": []
+        })
+
+        active_therapists = AppointmentRepository.get_active_therapists_for_calendar(db, region_ids)
+        for therapist in active_therapists:
+            therapist_map[therapist.id]["therapist_id"] = therapist.id
+            therapist_map[therapist.id]["therapist_name"] = therapist.name
+            therapist_map[therapist.id]["therapy_name"] = None
+
+        for row in records:
+            therapist_id = row.therapist_id
+            slot_date = row.slot_date
+            leave = leaves_by_therapist_date.get((therapist_id, slot_date))
+            is_leave_slot = AppointmentService._leave_blocks_slot(leave, row.start_time)
+            assigned_sessions = row.assigned_sessions or 0
+            completed_sessions = row.completed_sessions or 0
+            allocated_sessions = row.allocated_sessions or 0
+            remaining_sessions = max(0, allocated_sessions - assigned_sessions - completed_sessions)
+
+            therapist_map[therapist_id]["therapist_id"] = therapist_id
+            therapist_map[therapist_id]["therapist_name"] = row.therapist_name
+            therapist_map[therapist_id]["therapy_name"] = row.therapy_name
+
+            patient_name = None
+            if row.patient_first_name:
+                patient_name = (
+                    f"{row.patient_first_name} "
+                    f"{row.patient_last_name}"
+                )
+
+            therapist_map[therapist_id]["slots"].append({
+                "slot_mapping_id": row.slot_mapping_id,
+                "patient_slot_booking_id": row.patient_slot_booking_id,
+                "slot_id": row.slot_id,
+                "slot_date": str(slot_date),
+                "slot_time": row.start_time,
+                "start_time": row.start_time,
+                "end_time": row.end_time,
+                "duration_minutes": row.duration_minutes,
+                "therapy_id": row.therapy_id,
+                "therapy_name": row.therapy_name,
+                "patient_id": row.patient_id,
+                "patient_name": patient_name,
+                "patient_code": f"CP-{row.patient_id}" if row.patient_id else None,
+                "patient_phone": row.patient_phone,
+                "patient_session_plan_id": row.patient_session_plan_id,
+                "patient_session_plan_item_id": row.patient_session_plan_item_id,
+                "plan_name": row.plan_name,
+                "session_no": assigned_sessions + completed_sessions,
+                "total_sessions": row.plan_total_sessions,
+                "allocated_sessions": allocated_sessions,
+                "assigned_sessions": assigned_sessions,
+                "completed_sessions": completed_sessions,
+                "remaining_sessions": remaining_sessions,
+                "amount_per_session": float(row.amount_per_session or 0),
+                "package_warning": remaining_sessions <= 0,
+                "leave_session": getattr(leave, "leave_session", "full_day") if leave and is_leave_slot else None,
+                "leave_reason": (getattr(leave, "reason", None) or getattr(leave, "notes", None)) if leave and is_leave_slot else None,
+                "patient_slot_booking_status": STATUS_ID_TO_CODE["patient_slot_booking"].get(
+                    row.patient_slot_booking_status_id
+                ),
+                "therapist_slot_mapping_status": STATUS_ID_TO_CODE["therapist_slot_mapping"].get(
+                    row.therapist_slot_mapping_status_id
+                ),
+                "status": "Leave" if is_leave_slot else ("Booked" if patient_name else "Available"),
+            })
+
+        for therapist in therapist_map.values():
+            therapist["slots"].sort(key=lambda slot: (slot["slot_date"], slot["start_time"]))
+
+        return {
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+            "therapists": list(therapist_map.values())
+        }
     
     @staticmethod
     def get_appointment_by_id(db: Session, appointment_id: int, region_id: int = None) -> Appointment:

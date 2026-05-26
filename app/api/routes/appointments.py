@@ -454,12 +454,14 @@ async def cancel_slot(
 
 @router.get("/calendar")
 async def get_appointment_calendar(
-    selected_date: date,
+    selected_date: date = Query(None),
+    start_date: date = Query(None),
+    end_date: date = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Fetch appointment calendar data for the selected date.
+    Fetch appointment calendar data for a selected date or date range.
     """
 
     # Check region access
@@ -470,17 +472,35 @@ async def get_appointment_calendar(
     )
 
     try:
-        response = AppointmentService.get_calendar_view(
-            db=db,
-            selected_date=selected_date,
-            region_ids=current_user.region_ids
-        )
+        if start_date or end_date:
+            if not start_date or not end_date:
+                raise ValueError("Both start_date and end_date are required for calendar range")
+            if start_date > end_date:
+                raise ValueError("start_date cannot be after end_date")
+
+            response = AppointmentService.get_calendar_range_view(
+                db=db,
+                start_date=start_date,
+                end_date=end_date,
+                region_ids=current_user.region_ids
+            )
+        else:
+            if not selected_date:
+                raise ValueError("selected_date is required")
+
+            response = AppointmentService.get_calendar_view(
+                db=db,
+                selected_date=selected_date,
+                region_ids=current_user.region_ids
+            )
 
         logger.info(
             "Appointment calendar fetched successfully",
             extra={
                 "user_id": current_user.id,
                 "selected_date": str(selected_date),
+                "start_date": str(start_date) if start_date else None,
+                "end_date": str(end_date) if end_date else None,
                 "total_records": response.get("total", 0)
             }
         )
@@ -492,7 +512,9 @@ async def get_appointment_calendar(
             f"Validation error while fetching appointment calendar: {str(e)}",
             extra={
                 "user_id": current_user.id,
-                "selected_date": str(selected_date)
+                "selected_date": str(selected_date),
+                "start_date": str(start_date) if start_date else None,
+                "end_date": str(end_date) if end_date else None,
             }
         )
 
@@ -506,7 +528,9 @@ async def get_appointment_calendar(
             f"Unexpected error while fetching appointment calendar: {str(e)}",
             extra={
                 "user_id": current_user.id,
-                "selected_date": str(selected_date)
+                "selected_date": str(selected_date),
+                "start_date": str(start_date) if start_date else None,
+                "end_date": str(end_date) if end_date else None,
             }
         )
 

@@ -482,6 +482,84 @@ class AppointmentRepository:
         return query.all()
 
     @staticmethod
+    def get_calendar_data_range(
+        db: Session,
+        start_date: date,
+        end_date: date,
+        region_ids
+    ):
+
+        query = (
+            db.query(
+                TherapistSlotMapping.id.label("slot_mapping_id"),
+                TherapistSlotMapping.slot_date.label("slot_date"),
+                PatientSlotBooking.id.label("patient_slot_booking_id"),
+                Therapist.id.label("therapist_id"),
+                Therapist.name.label("therapist_name"),
+                SlotMaster.id.label("slot_id"),
+                SlotMaster.start_time,
+                SlotMaster.end_time,
+                SlotMaster.duration_minutes,
+                TherapyMaster.id.label("therapy_id"),
+                TherapyMaster.name.label("therapy_name"),
+                Patient.id.label("patient_id"),
+                Patient.first_name.label("patient_first_name"),
+                Patient.last_name.label("patient_last_name"),
+                Patient.phone.label("patient_phone"),
+                PatientSessionPlan.id.label("patient_session_plan_id"),
+                PatientSessionPlan.plan_name.label("plan_name"),
+                PatientSessionPlan.total_sessions.label("plan_total_sessions"),
+                PatientSessionPlanItem.id.label("patient_session_plan_item_id"),
+                PatientSessionPlanItem.allocated_sessions,
+                PatientSessionPlanItem.assigned_sessions,
+                PatientSessionPlanItem.completed_sessions,
+                PatientSessionPlanItem.amount_per_session,
+                PatientSlotBooking.status_id.label("patient_slot_booking_status_id"),
+                TherapistSlotMapping.status_id.label("therapist_slot_mapping_status_id"),
+            )
+            .join(
+                Therapist,
+                Therapist.id == TherapistSlotMapping.therapist_id
+            )
+            .join(
+                SlotMaster,
+                SlotMaster.id == TherapistSlotMapping.slot_id
+            )
+            .outerjoin(
+                TherapyMaster,
+                TherapyMaster.id == TherapistSlotMapping.therapy_id
+            )
+            .outerjoin(
+                PatientSlotBooking,
+                and_(
+                    PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id,
+                    PatientSlotBooking.status_id != 602,
+                )
+            )
+            .outerjoin(
+                PatientSessionPlanItem,
+                PatientSessionPlanItem.id == PatientSlotBooking.patient_session_plan_item_id
+            )
+            .outerjoin(
+                PatientSessionPlan,
+                PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id
+            )
+            .outerjoin(
+                Patient,
+                Patient.id == PatientSessionPlan.patient_id
+            )
+            .filter(
+                TherapistSlotMapping.slot_date >= start_date,
+                TherapistSlotMapping.slot_date <= end_date,
+                Therapist.region_id.in_(region_ids),
+                TherapistSlotMapping.status_id != 804,
+            )
+            .order_by(TherapistSlotMapping.slot_date, SlotMaster.start_time)
+        )
+
+        return query.all()
+
+    @staticmethod
     def get_active_therapists_for_calendar(
         db: Session,
         region_ids: Optional[list[int]] = None,
@@ -505,6 +583,22 @@ class AppointmentRepository:
         )    
 
     @staticmethod
+    def get_therapist_leaves_range(
+        db: Session,
+        start_date: date,
+        end_date: date
+    ):
+
+        return (
+            db.query(TherapistLeave)
+            .filter(
+                TherapistLeave.leave_date >= start_date,
+                TherapistLeave.leave_date <= end_date,
+            )
+            .all()
+        )
+
+    @staticmethod
     def get_unavailable_therapist_availability(
         db: Session,
         selected_date,
@@ -516,6 +610,28 @@ class AppointmentRepository:
             .join(Therapist, Therapist.id == TherapistAvailability.therapist_id)
             .filter(
                 TherapistAvailability.availability_date == selected_date,
+                TherapistAvailability.deleted_at.is_(None),
+                normalized_status.in_(["leave", "off_day", "offday", "full_day", "full"]),
+            )
+        )
+        if region_ids:
+            query = query.filter(Therapist.region_id.in_(region_ids))
+        return query.all()
+
+    @staticmethod
+    def get_unavailable_therapist_availability_range(
+        db: Session,
+        start_date: date,
+        end_date: date,
+        region_ids: Optional[list[int]] = None,
+    ):
+        normalized_status = func.lower(func.replace(TherapistAvailability.status, " ", "_"))
+        query = (
+            db.query(TherapistAvailability)
+            .join(Therapist, Therapist.id == TherapistAvailability.therapist_id)
+            .filter(
+                TherapistAvailability.availability_date >= start_date,
+                TherapistAvailability.availability_date <= end_date,
                 TherapistAvailability.deleted_at.is_(None),
                 normalized_status.in_(["leave", "off_day", "offday", "full_day", "full"]),
             )
