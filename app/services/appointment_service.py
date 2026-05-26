@@ -4,7 +4,7 @@ from fastapi import HTTPException
 from grpc import Status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage, STATUS_ID_TO_CODE, PatientSlotBooking, TherapistSlotMapping
 from app.repositories.appointment_repository import AppointmentRepository
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate, SlotBookingCreate
@@ -567,7 +567,15 @@ class AppointmentService:
             region_ids=region_ids
         )
 
-        leaves_by_therapist_date = {}
+        leaves = AppointmentRepository.get_therapist_leaves_range(
+            db=db,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        leaves_by_therapist_date = {
+            (leave.therapist_id, leave.leave_date): leave
+            for leave in leaves
+        }
 
         therapist_map = defaultdict(lambda: {
             "therapist_id": None,
@@ -639,6 +647,57 @@ class AppointmentService:
                 ),
                 "status": "Leave" if is_leave_slot else ("Booked" if patient_name else "Available"),
             })
+
+        calendar_slots = db.query(SlotMaster).filter(SlotMaster.is_active == 1).all()
+        current_date = start_date
+        while current_date <= end_date:
+            for therapist in active_therapists:
+                leave = leaves_by_therapist_date.get((therapist.id, current_date))
+                if not leave:
+                    continue
+                existing_leave_keys = {
+                    (slot["slot_date"], slot["slot_id"], slot["status"])
+                    for slot in therapist_map[therapist.id]["slots"]
+                }
+                for slot in calendar_slots:
+                    if not AppointmentService._leave_blocks_slot(leave, slot.start_time):
+                        continue
+                    slot_key = (str(current_date), slot.id, "Leave")
+                    if slot_key in existing_leave_keys:
+                        continue
+                    therapist_map[therapist.id]["slots"].append({
+                        "slot_mapping_id": None,
+                        "patient_slot_booking_id": None,
+                        "slot_id": slot.id,
+                        "slot_date": str(current_date),
+                        "slot_time": slot.start_time,
+                        "start_time": slot.start_time,
+                        "end_time": slot.end_time,
+                        "duration_minutes": slot.duration_minutes,
+                        "therapy_id": None,
+                        "therapy_name": None,
+                        "patient_id": None,
+                        "patient_name": None,
+                        "patient_code": None,
+                        "patient_phone": None,
+                        "patient_session_plan_id": None,
+                        "patient_session_plan_item_id": None,
+                        "plan_name": None,
+                        "session_no": None,
+                        "total_sessions": None,
+                        "allocated_sessions": None,
+                        "assigned_sessions": None,
+                        "completed_sessions": None,
+                        "remaining_sessions": None,
+                        "amount_per_session": 0,
+                        "package_warning": False,
+                        "leave_session": getattr(leave, "leave_session", "full_day"),
+                        "leave_reason": getattr(leave, "reason", None) or getattr(leave, "notes", None),
+                        "patient_slot_booking_status": None,
+                        "therapist_slot_mapping_status": None,
+                        "status": "Leave",
+                    })
+            current_date += timedelta(days=1)
 
         for therapist in therapist_map.values():
             therapist["slots"].sort(key=lambda slot: (slot["slot_date"], slot["start_time"]))

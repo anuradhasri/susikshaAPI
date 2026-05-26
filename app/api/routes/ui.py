@@ -34,6 +34,7 @@ from app.models.models import (
     Role,
     Therapist,
     TherapistAvailability,
+    TherapistLeave,
     Session as TherapySession,
     SessionNote,
     User,
@@ -488,6 +489,22 @@ def _availability_shape(row: TherapistAvailability) -> dict:
     }
 
 
+def _therapist_leave_shape(row: TherapistLeave) -> dict:
+    therapist = row.therapist
+    return {
+        "id": row.id,
+        "therapist_id": row.therapist_id,
+        "leave_date": _iso(row.leave_date),
+        "leave_session": row.leave_session,
+        "reason": row.reason,
+        "created_at": _iso(row.created_at),
+        "updated_at": _iso(row.updated_at),
+        "created_by": row.created_by,
+        "updated_by": row.updated_by,
+        "therapists": _therapist_shape(therapist) if therapist else None,
+    }
+
+
 def _appointment_shape(appointment: Any) -> dict:
     duration = max(0, int((appointment.end_time - appointment.start_time).total_seconds() / 60))
     return {
@@ -768,6 +785,7 @@ SHAPERS = {
     "patients": _patient_shape,
     "therapists": _therapist_shape,
     "therapist_availability": _availability_shape,
+    "therapist_leaves": _therapist_leave_shape,
     "appointments": _appointment_shape,
     "sessions": _session_shape,
     "patient_packages": _package_shape,
@@ -789,6 +807,7 @@ ALLOWED_UI_TABLES = {
     "patients",
     "therapists",
     "therapist_availability",
+    "therapist_leaves",
     "appointments",
     "sessions",
     "patient_packages",
@@ -860,6 +879,13 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         elif region_ids:
             query = query.join(Therapist, Therapist.id == TherapistAvailability.therapist_id).filter(Therapist.region_id.in_(region_ids))
         return query
+    if table == "therapist_leaves":
+        query = db.query(TherapistLeave).options(joinedload(TherapistLeave.therapist))
+        if current_therapist:
+            query = query.filter(TherapistLeave.therapist_id == current_therapist.id)
+        elif region_ids:
+            query = query.join(Therapist, Therapist.id == TherapistLeave.therapist_id).filter(Therapist.region_id.in_(region_ids))
+        return query
     if table == "appointments":
         query = (
             db.query(Appointment)
@@ -917,6 +943,7 @@ FIELD_MAP = {
     "table_name": AuditLog.entity_type,
     "record_id": AuditLog.entity_id,
     "payment_date": Payment.payment_date,
+    "leave_date": TherapistLeave.leave_date,
 }
 
 
@@ -933,6 +960,7 @@ def _column_for(table: str, field: str):
         "patients": Patient,
         "therapists": Therapist,
         "therapist_availability": TherapistAvailability,
+        "therapist_leaves": TherapistLeave,
         "patient_packages": PatientPackage,
         "invoices": Invoice,
         "payments": Payment,
@@ -1978,6 +2006,21 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             status=item.get("status") or "available",
             notes=item.get("notes"),
         )
+    elif table == "therapist_leaves":
+        therapist_id = item.get("therapist_id")
+        current_therapist = _current_therapist(db, user)
+        if current_therapist:
+            therapist_id = current_therapist.id
+        if not therapist_id:
+            raise HTTPException(status_code=400, detail="therapist_id is required")
+        row = TherapistLeave(
+            therapist_id=therapist_id,
+            leave_date=_parse_date(item.get("leave_date")) or date.today(),
+            leave_session=item.get("leave_session") or "full_day",
+            reason=item.get("reason"),
+            created_by=user_id,
+            updated_by=user_id,
+        )
     elif table == "users":
         first, last = _split_name(item.get("full_name", ""))
         row = User(
@@ -2119,6 +2162,12 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
             if key in item:
                 setattr(row, key, _parse_time(item[key]))
         for key in ["status", "notes"]:
+            if key in item:
+                setattr(row, key, item[key])
+    elif table == "therapist_leaves":
+        if "leave_date" in item:
+            row.leave_date = _parse_date(item["leave_date"]) or row.leave_date
+        for key in ["leave_session", "reason"]:
             if key in item:
                 setattr(row, key, item[key])
     elif table == "users":
