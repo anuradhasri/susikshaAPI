@@ -1095,6 +1095,7 @@ class PatientSlotBooking(StatusIdMixin, Base):
     _default_status = "BOOKED"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=True)
     therapist_slot_mapping_id = Column(
         Integer,
         ForeignKey("therapist_slot_mapping.id"),
@@ -1116,6 +1117,7 @@ class PatientSlotBooking(StatusIdMixin, Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     patient_slot_booking_status_master = relationship("PatientSlotBookingStatusMaster", foreign_keys=[status_id])
+    patient = relationship("Patient")
     therapist_slot_mapping = relationship(
         "TherapistSlotMapping",
         back_populates="patient_slot_bookings"

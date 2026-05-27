@@ -11,6 +11,7 @@ from app.models.models import (
     MASTER_LOOKUP_DATA,
     Package,
     Patient,
+    PatientPackage,
     PatientSessionPlan,
     PatientSessionPlanItem,
     PatientSlotBooking,
@@ -330,16 +331,8 @@ class AppointmentRepository:
                 TherapistSlotMapping,
                 TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id,
             )
-            .join(
-                PatientSessionPlanItem,
-                PatientSessionPlanItem.id == PatientSlotBooking.patient_session_plan_item_id,
-            )
-            .join(
-                PatientSessionPlan,
-                PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id,
-            )
             .filter(
-                PatientSessionPlan.patient_id == patient_id,
+                PatientSlotBooking.patient_id == patient_id,
                 TherapistSlotMapping.slot_id == slot_id,
                 TherapistSlotMapping.slot_date == slot_date,
                 TherapistSlotMapping.therapy_id == therapy_id,
@@ -371,6 +364,7 @@ class AppointmentRepository:
     @staticmethod
     def create_patient_slot_booking(
         db: Session,
+        patient_id: int,
         therapist_slot_mapping_id: int,
         patient_session_plan_item_id: Optional[int],
         patient_package_id: Optional[int] = None,
@@ -381,6 +375,7 @@ class AppointmentRepository:
         payment_status: str = "UNPAID",
     ) -> PatientSlotBooking:
         booking = PatientSlotBooking(
+            patient_id=patient_id,
             therapist_slot_mapping_id=therapist_slot_mapping_id,
             patient_session_plan_item_id=patient_session_plan_item_id,
             patient_package_id=patient_package_id,
@@ -441,7 +436,8 @@ class AppointmentRepository:
         selected_date,
         region_ids
     ):
-        AppointmentPatient = aliased(Patient)
+        DirectPatient = aliased(Patient)
+        PlanPatient = aliased(Patient)
 
         query = (
             db.query(
@@ -455,14 +451,10 @@ class AppointmentRepository:
                 SlotMaster.duration_minutes,
                 TherapyMaster.id.label("therapy_id"),
                 TherapyMaster.name.label("therapy_name"),
-                Patient.id.label("patient_id"),
-                Patient.first_name.label("patient_first_name"),
-                Patient.last_name.label("patient_last_name"),
-                Patient.phone.label("patient_phone"),
-                Appointment.patient_id.label("appointment_patient_id"),
-                AppointmentPatient.first_name.label("appointment_patient_first_name"),
-                AppointmentPatient.last_name.label("appointment_patient_last_name"),
-                AppointmentPatient.phone.label("appointment_patient_phone"),
+                func.coalesce(DirectPatient.id, PlanPatient.id).label("patient_id"),
+                func.coalesce(DirectPatient.first_name, PlanPatient.first_name).label("patient_first_name"),
+                func.coalesce(DirectPatient.last_name, PlanPatient.last_name).label("patient_last_name"),
+                func.coalesce(DirectPatient.phone, PlanPatient.phone).label("patient_phone"),
                 PatientSessionPlan.id.label("patient_session_plan_id"),
                 PatientSessionPlan.plan_name.label("plan_name"),
                 PatientSessionPlan.total_sessions.label("plan_total_sessions"),
@@ -478,6 +470,10 @@ class AppointmentRepository:
                 PatientSlotBooking.paid_amount,
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
+                PatientPackage.total_amount.label("package_total_amount"),
+                PatientPackage.paid_amount.label("package_paid_amount"),
+                PatientPackage.due_amount.label("package_due_amount"),
+                PatientPackage.payment_status.label("package_payment_status"),
                 Package.name.label("package_name"),
                 TherapistSlotMapping.status_id.label("therapist_slot_mapping_status_id"),
             )
@@ -509,26 +505,20 @@ class AppointmentRepository:
                 PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id
             )
             .outerjoin(
-                Patient,
-                Patient.id == PatientSessionPlan.patient_id
+                DirectPatient,
+                DirectPatient.id == PatientSlotBooking.patient_id
             )
             .outerjoin(
-                Appointment,
-                and_(
-                    Appointment.therapist_id == TherapistSlotMapping.therapist_id,
-                    func.date(Appointment.start_time) == TherapistSlotMapping.slot_date,
-                    func.time(Appointment.start_time) == SlotMaster.start_time,
-                    Appointment.deleted_at.is_(None),
-                    Appointment.status != "cancelled",
-                )
+                PlanPatient,
+                PlanPatient.id == PatientSessionPlan.patient_id
             )
             .outerjoin(
-                AppointmentPatient,
-                AppointmentPatient.id == Appointment.patient_id
+                PatientPackage,
+                PatientPackage.id == PatientSlotBooking.patient_package_id
             )
             .outerjoin(
                 Package,
-                Package.id == PatientSlotBooking.patient_package_id
+                Package.id == PatientPackage.package_id
             )
             .filter(
                 TherapistSlotMapping.slot_date == selected_date,
@@ -547,7 +537,8 @@ class AppointmentRepository:
         end_date: date,
         region_ids
     ):
-        AppointmentPatient = aliased(Patient)
+        DirectPatient = aliased(Patient)
+        PlanPatient = aliased(Patient)
 
         query = (
             db.query(
@@ -562,14 +553,10 @@ class AppointmentRepository:
                 SlotMaster.duration_minutes,
                 TherapyMaster.id.label("therapy_id"),
                 TherapyMaster.name.label("therapy_name"),
-                Patient.id.label("patient_id"),
-                Patient.first_name.label("patient_first_name"),
-                Patient.last_name.label("patient_last_name"),
-                Patient.phone.label("patient_phone"),
-                Appointment.patient_id.label("appointment_patient_id"),
-                AppointmentPatient.first_name.label("appointment_patient_first_name"),
-                AppointmentPatient.last_name.label("appointment_patient_last_name"),
-                AppointmentPatient.phone.label("appointment_patient_phone"),
+                func.coalesce(DirectPatient.id, PlanPatient.id).label("patient_id"),
+                func.coalesce(DirectPatient.first_name, PlanPatient.first_name).label("patient_first_name"),
+                func.coalesce(DirectPatient.last_name, PlanPatient.last_name).label("patient_last_name"),
+                func.coalesce(DirectPatient.phone, PlanPatient.phone).label("patient_phone"),
                 PatientSessionPlan.id.label("patient_session_plan_id"),
                 PatientSessionPlan.plan_name.label("plan_name"),
                 PatientSessionPlan.total_sessions.label("plan_total_sessions"),
@@ -585,6 +572,10 @@ class AppointmentRepository:
                 PatientSlotBooking.paid_amount,
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
+                PatientPackage.total_amount.label("package_total_amount"),
+                PatientPackage.paid_amount.label("package_paid_amount"),
+                PatientPackage.due_amount.label("package_due_amount"),
+                PatientPackage.payment_status.label("package_payment_status"),
                 Package.name.label("package_name"),
                 TherapistSlotMapping.status_id.label("therapist_slot_mapping_status_id"),
             )
@@ -616,26 +607,20 @@ class AppointmentRepository:
                 PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id
             )
             .outerjoin(
-                Patient,
-                Patient.id == PatientSessionPlan.patient_id
+                DirectPatient,
+                DirectPatient.id == PatientSlotBooking.patient_id
             )
             .outerjoin(
-                Appointment,
-                and_(
-                    Appointment.therapist_id == TherapistSlotMapping.therapist_id,
-                    func.date(Appointment.start_time) == TherapistSlotMapping.slot_date,
-                    func.time(Appointment.start_time) == SlotMaster.start_time,
-                    Appointment.deleted_at.is_(None),
-                    Appointment.status != "cancelled",
-                )
+                PlanPatient,
+                PlanPatient.id == PatientSessionPlan.patient_id
             )
             .outerjoin(
-                AppointmentPatient,
-                AppointmentPatient.id == Appointment.patient_id
+                PatientPackage,
+                PatientPackage.id == PatientSlotBooking.patient_package_id
             )
             .outerjoin(
                 Package,
-                Package.id == PatientSlotBooking.patient_package_id
+                Package.id == PatientPackage.package_id
             )
             .filter(
                 TherapistSlotMapping.slot_date >= start_date,

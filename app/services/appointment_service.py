@@ -30,6 +30,7 @@ class AppointmentService:
             return
         slot_columns = {col["name"] for col in inspect(db.bind).get_columns("patient_slot_booking")}
         for name, definition in {
+            "patient_id": "INT NULL",
             "patient_package_id": "INT NULL",
             "is_package_session": "BOOLEAN NOT NULL DEFAULT 0",
             "amount": "FLOAT NOT NULL DEFAULT 0",
@@ -39,6 +40,22 @@ class AppointmentService:
         }.items():
             if name not in slot_columns:
                 db.execute(text(f"ALTER TABLE patient_slot_booking ADD COLUMN {name} {definition}"))
+        if "patient_id" not in slot_columns:
+            db.execute(text("""
+                UPDATE patient_slot_booking psb
+                JOIN patient_session_plan_item pspi ON pspi.id = psb.patient_session_plan_item_id
+                JOIN patient_session_plan psp ON psp.id = pspi.patient_session_plan_id
+                SET psb.patient_id = psp.patient_id
+                WHERE psb.patient_id IS NULL
+            """))
+        else:
+            db.execute(text("""
+                UPDATE patient_slot_booking psb
+                JOIN patient_session_plan_item pspi ON pspi.id = psb.patient_session_plan_item_id
+                JOIN patient_session_plan psp ON psp.id = pspi.patient_session_plan_id
+                SET psb.patient_id = psp.patient_id
+                WHERE psb.patient_id IS NULL
+            """))
         package_columns = {col["name"] for col in inspect(db.bind).get_columns("patient_packages")}
         for name, definition in {
             "total_amount": "FLOAT NOT NULL DEFAULT 0",
@@ -255,6 +272,7 @@ class AppointmentService:
 
         patient_slot_booking = AppointmentRepository.create_patient_slot_booking(
             db,
+            patient_id=booking_create.patient_id,
             therapist_slot_mapping_id=therapist_slot_mapping.id,
             patient_session_plan_item_id=plan_item.id if plan_item else None,
             patient_package_id=active_package.id if active_package else None,
@@ -264,17 +282,6 @@ class AppointmentService:
             due_amount=booking_due_amount,
             payment_status=booking_payment_status,
         )
-
-        appointment = Appointment(
-            patient_id=booking_create.patient_id,
-            therapist_id=booking_create.therapist_id,
-            start_time=datetime.combine(booking_create.slot_date, slot.start_time),
-            end_time=datetime.combine(booking_create.slot_date, slot.end_time),
-            status="scheduled",
-            notes=booking_create.notes,
-            region_id=booking_create.region_id,
-        )
-        db.add(appointment)
 
         if plan_item:
             plan_item.assigned_sessions = assigned_sessions + 1
@@ -290,13 +297,11 @@ class AppointmentService:
             db.refresh(plan_item)
         if active_package:
             db.refresh(active_package)
-        db.refresh(appointment)
 
         return {
             "patient_slot_booking": patient_slot_booking,
             "therapist_slot_mapping": therapist_slot_mapping,
             "patient_session_plan_item": plan_item,
-            "appointment": appointment,
         }
 
     @staticmethod
@@ -336,16 +341,6 @@ class AppointmentService:
             assigned_sessions = plan_item.assigned_sessions or 0
             if assigned_sessions > 0:
                 plan_item.assigned_sessions = assigned_sessions - 1
-
-        if therapist_slot_mapping and plan_item:
-            slot = therapist_slot_mapping.slot
-            AppointmentRepository.cancel_matching_appointment(
-                db,
-                patient_id=plan_item.patient_session_plan.patient_id,
-                therapist_id=therapist_slot_mapping.therapist_id,
-                start_time=datetime.combine(therapist_slot_mapping.slot_date, slot.start_time),
-                end_time=datetime.combine(therapist_slot_mapping.slot_date, slot.end_time),
-            )
 
         db.commit()
         db.refresh(patient_slot_booking)
@@ -416,50 +411,20 @@ class AppointmentService:
         if occupied_mapping:
             raise ValueError("Slot already booked for selected therapist and slot")
 
-        patient_id = plan_item.patient_session_plan.patient_id
-        old_slot = current_mapping.slot
-        old_start = datetime.combine(current_mapping.slot_date, old_slot.start_time)
-        old_end = datetime.combine(current_mapping.slot_date, old_slot.end_time)
-        new_start = datetime.combine(booking_create.slot_date, slot.start_time)
-        new_end = datetime.combine(booking_create.slot_date, slot.end_time)
-
-        appointment = (
-            db.query(Appointment)
-            .filter(
-                Appointment.patient_id == patient_id,
-                Appointment.therapist_id == current_mapping.therapist_id,
-                Appointment.start_time == old_start,
-                Appointment.end_time == old_end,
-                Appointment.status != "cancelled",
-                Appointment.deleted_at.is_(None),
-            )
-            .first()
-        )
-
         current_mapping.therapist_id = booking_create.therapist_id
         current_mapping.slot_id = booking_create.slot_id
         current_mapping.slot_date = booking_create.slot_date
         current_mapping.therapy_id = booking_create.therapy_id
 
-        if appointment:
-            appointment.therapist_id = booking_create.therapist_id
-            appointment.start_time = new_start
-            appointment.end_time = new_end
-            appointment.notes = booking_create.notes
-            appointment.region_id = booking_create.region_id
-
         db.commit()
         db.refresh(patient_slot_booking)
         db.refresh(current_mapping)
         db.refresh(plan_item)
-        if appointment:
-            db.refresh(appointment)
 
         return {
             "patient_slot_booking": patient_slot_booking,
             "therapist_slot_mapping": current_mapping,
             "patient_session_plan_item": plan_item,
-            "appointment": appointment,
         }
 
     @staticmethod
@@ -535,10 +500,10 @@ class AppointmentService:
             therapist_map[therapist_id]["therapist_name"] = therapist_name
             therapist_map[therapist_id]["therapy_name"] = row.therapy_name
 
-            patient_id = row.patient_id or row.appointment_patient_id
-            patient_first_name = row.patient_first_name or row.appointment_patient_first_name
-            patient_last_name = row.patient_last_name or row.appointment_patient_last_name
-            patient_phone = row.patient_phone or row.appointment_patient_phone
+            patient_id = row.patient_id
+            patient_first_name = row.patient_first_name
+            patient_last_name = row.patient_last_name
+            patient_phone = row.patient_phone
             patient_name = None
 
             if patient_first_name:
@@ -575,6 +540,10 @@ class AppointmentService:
                 "patient_package_id": row.patient_package_id,
                 "is_package_session": bool(row.is_package_session),
                 "package_name": row.package_name,
+                "package_total_amount": float(row.package_total_amount or 0),
+                "package_paid_amount": float(row.package_paid_amount or 0),
+                "package_due_amount": float(row.package_due_amount or 0),
+                "package_payment_status": row.package_payment_status,
                 "amount": float(row.amount or 0),
                 "paid_amount": float(row.paid_amount or 0),
                 "due_amount": float(row.due_amount or 0),
@@ -588,7 +557,7 @@ class AppointmentService:
                 "therapist_slot_mapping_status": STATUS_ID_TO_CODE["therapist_slot_mapping"].get(
                     row.therapist_slot_mapping_status_id
                 ),
-                "status": "Leave" if is_leave_slot else ("Booked" if patient_name else "Available"),
+                "status": "Leave" if is_leave_slot else ("Booked" if row.patient_slot_booking_id else "Available"),
             })
 
         calendar_slots = db.query(SlotMaster).filter(SlotMaster.is_active == 1).all()
@@ -631,6 +600,10 @@ class AppointmentService:
                     "remaining_sessions": None,
                     "amount_per_session": 0,
                     "package_warning": False,
+                    "package_total_amount": 0,
+                    "package_paid_amount": 0,
+                    "package_due_amount": 0,
+                    "package_payment_status": None,
                     "leave_session": getattr(leave, "leave_session", "full_day"),
                     "leave_reason": getattr(leave, "reason", None) or getattr(leave, "notes", None),
                     "patient_slot_booking_status": None,
@@ -699,10 +672,10 @@ class AppointmentService:
             therapist_map[therapist_id]["therapist_name"] = row.therapist_name
             therapist_map[therapist_id]["therapy_name"] = row.therapy_name
 
-            patient_id = row.patient_id or row.appointment_patient_id
-            patient_first_name = row.patient_first_name or row.appointment_patient_first_name
-            patient_last_name = row.patient_last_name or row.appointment_patient_last_name
-            patient_phone = row.patient_phone or row.appointment_patient_phone
+            patient_id = row.patient_id
+            patient_first_name = row.patient_first_name
+            patient_last_name = row.patient_last_name
+            patient_phone = row.patient_phone
             patient_name = None
             if patient_first_name:
                 patient_name = (
@@ -738,6 +711,10 @@ class AppointmentService:
                 "patient_package_id": row.patient_package_id,
                 "is_package_session": bool(row.is_package_session),
                 "package_name": row.package_name,
+                "package_total_amount": float(row.package_total_amount or 0),
+                "package_paid_amount": float(row.package_paid_amount or 0),
+                "package_due_amount": float(row.package_due_amount or 0),
+                "package_payment_status": row.package_payment_status,
                 "amount": float(row.amount or 0),
                 "paid_amount": float(row.paid_amount or 0),
                 "due_amount": float(row.due_amount or 0),
@@ -751,7 +728,7 @@ class AppointmentService:
                 "therapist_slot_mapping_status": STATUS_ID_TO_CODE["therapist_slot_mapping"].get(
                     row.therapist_slot_mapping_status_id
                 ),
-                "status": "Leave" if is_leave_slot else ("Booked" if patient_name else "Available"),
+                "status": "Leave" if is_leave_slot else ("Booked" if row.patient_slot_booking_id else "Available"),
             })
 
         calendar_slots = db.query(SlotMaster).filter(SlotMaster.is_active == 1).all()
@@ -797,6 +774,10 @@ class AppointmentService:
                         "remaining_sessions": None,
                         "amount_per_session": 0,
                         "package_warning": False,
+                        "package_total_amount": 0,
+                        "package_paid_amount": 0,
+                        "package_due_amount": 0,
+                        "package_payment_status": None,
                         "leave_session": getattr(leave, "leave_session", "full_day"),
                         "leave_reason": getattr(leave, "reason", None) or getattr(leave, "notes", None),
                         "patient_slot_booking_status": None,
@@ -848,24 +829,6 @@ class AppointmentService:
         if normalized_action == "complete" and current_status == "COMPLETED":
             raise ValueError("Slot booking already completed")
 
-        appointment = None
-        patient_id = None
-        if therapist_slot_mapping and plan_item and therapist_slot_mapping.slot:
-            patient_id = plan_item.patient_session_plan.patient_id
-            slot = therapist_slot_mapping.slot
-            appointment = (
-                db.query(Appointment)
-                .filter(
-                    Appointment.patient_id == patient_id,
-                    Appointment.therapist_id == therapist_slot_mapping.therapist_id,
-                    Appointment.start_time == datetime.combine(therapist_slot_mapping.slot_date, slot.start_time),
-                    Appointment.end_time == datetime.combine(therapist_slot_mapping.slot_date, slot.end_time),
-                    Appointment.deleted_at.is_(None),
-                )
-                .with_for_update()
-                .first()
-            )
-
         if normalized_action == "complete":
             patient_slot_booking.status = "COMPLETED"
             if therapist_slot_mapping:
@@ -876,9 +839,6 @@ class AppointmentService:
                 if assigned_sessions > 0:
                     plan_item.assigned_sessions = assigned_sessions - 1
                 plan_item.completed_sessions = completed_sessions + 1
-            if appointment:
-                appointment.status = "completed"
-                appointment.cancelled_reason = None
         else:
             normalized_cancel_type = str(cancel_type or "unpaid").strip().lower()
             patient_slot_booking.status = "PAID_CANCELLED" if normalized_cancel_type == "paid" else "UNPAID_CANCELLED"
@@ -897,9 +857,6 @@ class AppointmentService:
                 assigned_sessions = plan_item.assigned_sessions or 0
                 if assigned_sessions > 0:
                     plan_item.assigned_sessions = assigned_sessions - 1
-            if appointment:
-                appointment.status = "cancelled"
-                appointment.cancelled_reason = f"{normalized_cancel_type}_cancel"
 
         db.commit()
         db.refresh(patient_slot_booking)
@@ -909,8 +866,6 @@ class AppointmentService:
             db.refresh(plan_item)
         if package:
             db.refresh(package)
-        if appointment:
-            db.refresh(appointment)
 
         remaining_sessions = None
         if plan_item:
@@ -923,8 +878,8 @@ class AppointmentService:
         return {
             "success": True,
             "message": "Slot marked as completed successfully" if normalized_action == "complete" else "Slot cancelled successfully",
-            "appointment_id": appointment.id if appointment else None,
-            "appointment_status": appointment.status if appointment else None,
+            "appointment_id": None,
+            "appointment_status": None,
             "patient_slot_booking_id": patient_slot_booking.id,
             "patient_slot_booking_status": patient_slot_booking.status,
             "therapist_slot_mapping_id": therapist_slot_mapping.id if therapist_slot_mapping else None,
