@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import and_, func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models.models import (
     Appointment,
@@ -259,9 +259,12 @@ class AppointmentRepository:
     def get_plan_item_for_booking(
         db: Session,
         patient_id: int,
-        patient_session_plan_id: int,
+        patient_session_plan_id: Optional[int],
         therapy_id: int,
     ) -> Optional[PatientSessionPlanItem]:
+        if not patient_session_plan_id:
+            return None
+
         return (
             db.query(PatientSessionPlanItem)
             .join(
@@ -438,6 +441,7 @@ class AppointmentRepository:
         selected_date,
         region_ids
     ):
+        AppointmentPatient = aliased(Patient)
 
         query = (
             db.query(
@@ -455,6 +459,10 @@ class AppointmentRepository:
                 Patient.first_name.label("patient_first_name"),
                 Patient.last_name.label("patient_last_name"),
                 Patient.phone.label("patient_phone"),
+                Appointment.patient_id.label("appointment_patient_id"),
+                AppointmentPatient.first_name.label("appointment_patient_first_name"),
+                AppointmentPatient.last_name.label("appointment_patient_last_name"),
+                AppointmentPatient.phone.label("appointment_patient_phone"),
                 PatientSessionPlan.id.label("patient_session_plan_id"),
                 PatientSessionPlan.plan_name.label("plan_name"),
                 PatientSessionPlan.total_sessions.label("plan_total_sessions"),
@@ -503,6 +511,20 @@ class AppointmentRepository:
             .outerjoin(
                 Patient,
                 Patient.id == PatientSessionPlan.patient_id
+            )
+            .outerjoin(
+                Appointment,
+                and_(
+                    Appointment.therapist_id == TherapistSlotMapping.therapist_id,
+                    func.date(Appointment.start_time) == TherapistSlotMapping.slot_date,
+                    func.time(Appointment.start_time) == SlotMaster.start_time,
+                    Appointment.deleted_at.is_(None),
+                    Appointment.status != "cancelled",
+                )
+            )
+            .outerjoin(
+                AppointmentPatient,
+                AppointmentPatient.id == Appointment.patient_id
             )
             .outerjoin(
                 Package,
@@ -525,6 +547,7 @@ class AppointmentRepository:
         end_date: date,
         region_ids
     ):
+        AppointmentPatient = aliased(Patient)
 
         query = (
             db.query(
@@ -543,6 +566,10 @@ class AppointmentRepository:
                 Patient.first_name.label("patient_first_name"),
                 Patient.last_name.label("patient_last_name"),
                 Patient.phone.label("patient_phone"),
+                Appointment.patient_id.label("appointment_patient_id"),
+                AppointmentPatient.first_name.label("appointment_patient_first_name"),
+                AppointmentPatient.last_name.label("appointment_patient_last_name"),
+                AppointmentPatient.phone.label("appointment_patient_phone"),
                 PatientSessionPlan.id.label("patient_session_plan_id"),
                 PatientSessionPlan.plan_name.label("plan_name"),
                 PatientSessionPlan.total_sessions.label("plan_total_sessions"),
@@ -591,6 +618,20 @@ class AppointmentRepository:
             .outerjoin(
                 Patient,
                 Patient.id == PatientSessionPlan.patient_id
+            )
+            .outerjoin(
+                Appointment,
+                and_(
+                    Appointment.therapist_id == TherapistSlotMapping.therapist_id,
+                    func.date(Appointment.start_time) == TherapistSlotMapping.slot_date,
+                    func.time(Appointment.start_time) == SlotMaster.start_time,
+                    Appointment.deleted_at.is_(None),
+                    Appointment.status != "cancelled",
+                )
+            )
+            .outerjoin(
+                AppointmentPatient,
+                AppointmentPatient.id == Appointment.patient_id
             )
             .outerjoin(
                 Package,

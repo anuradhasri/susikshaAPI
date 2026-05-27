@@ -234,7 +234,11 @@ class AppointmentService:
         )
         assigned_sessions = plan_item.assigned_sessions or 0 if plan_item else 0
         amount_per_session = float(plan_item.amount_per_session or 0) if plan_item else 0
-        active_package = AppointmentService._active_patient_package(db, booking_create.patient_id)
+        active_package = (
+            AppointmentService._active_patient_package(db, booking_create.patient_id)
+            if booking_create.use_package
+            else None
+        )
         is_package_session = active_package is not None
         booking_amount = 0 if is_package_session else amount_per_session
         booking_paid_amount = 0
@@ -531,12 +535,16 @@ class AppointmentService:
             therapist_map[therapist_id]["therapist_name"] = therapist_name
             therapist_map[therapist_id]["therapy_name"] = row.therapy_name
 
+            patient_id = row.patient_id or row.appointment_patient_id
+            patient_first_name = row.patient_first_name or row.appointment_patient_first_name
+            patient_last_name = row.patient_last_name or row.appointment_patient_last_name
+            patient_phone = row.patient_phone or row.appointment_patient_phone
             patient_name = None
 
-            if row.patient_first_name:
+            if patient_first_name:
                 patient_name = (
-                    f"{row.patient_first_name} "
-                    f"{row.patient_last_name}"
+                    f"{patient_first_name} "
+                    f"{patient_last_name or ''}"
                 )
 
             therapist_map[therapist_id]["slots"].append({
@@ -550,10 +558,10 @@ class AppointmentService:
                 "duration_minutes": row.duration_minutes,
                 "therapy_id": row.therapy_id,
                 "therapy_name": row.therapy_name,
-                "patient_id": row.patient_id,
+                "patient_id": patient_id,
                 "patient_name": patient_name,
-                "patient_code": f"CP-{row.patient_id}" if row.patient_id else None,
-                "patient_phone": row.patient_phone,
+                "patient_code": f"CP-{patient_id}" if patient_id else None,
+                "patient_phone": patient_phone,
                 "patient_session_plan_id": row.patient_session_plan_id,
                 "patient_session_plan_item_id": row.patient_session_plan_item_id,
                 "plan_name": row.plan_name,
@@ -691,11 +699,15 @@ class AppointmentService:
             therapist_map[therapist_id]["therapist_name"] = row.therapist_name
             therapist_map[therapist_id]["therapy_name"] = row.therapy_name
 
+            patient_id = row.patient_id or row.appointment_patient_id
+            patient_first_name = row.patient_first_name or row.appointment_patient_first_name
+            patient_last_name = row.patient_last_name or row.appointment_patient_last_name
+            patient_phone = row.patient_phone or row.appointment_patient_phone
             patient_name = None
-            if row.patient_first_name:
+            if patient_first_name:
                 patient_name = (
-                    f"{row.patient_first_name} "
-                    f"{row.patient_last_name}"
+                    f"{patient_first_name} "
+                    f"{patient_last_name or ''}"
                 )
 
             therapist_map[therapist_id]["slots"].append({
@@ -709,10 +721,10 @@ class AppointmentService:
                 "duration_minutes": row.duration_minutes,
                 "therapy_id": row.therapy_id,
                 "therapy_name": row.therapy_name,
-                "patient_id": row.patient_id,
+                "patient_id": patient_id,
                 "patient_name": patient_name,
-                "patient_code": f"CP-{row.patient_id}" if row.patient_id else None,
-                "patient_phone": row.patient_phone,
+                "patient_code": f"CP-{patient_id}" if patient_id else None,
+                "patient_phone": patient_phone,
                 "patient_session_plan_id": row.patient_session_plan_id,
                 "patient_session_plan_item_id": row.patient_session_plan_item_id,
                 "plan_name": row.plan_name,
