@@ -264,11 +264,11 @@ class SlotBookingResponse(BaseModel):
     appointment_id: Optional[int] = None
     patient_slot_booking_id: int
     therapist_slot_mapping_id: int
-    patient_session_plan_item_id: int
-    allocated_sessions: int
-    assigned_sessions: int
-    completed_sessions: int
-    remaining_sessions: int
+    patient_session_plan_item_id: Optional[int] = None
+    allocated_sessions: Optional[int] = None
+    assigned_sessions: Optional[int] = None
+    completed_sessions: Optional[int] = None
+    remaining_sessions: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -288,6 +288,30 @@ class SlotCancelResponse(BaseModel):
     assigned_sessions: Optional[int] = None
     completed_sessions: Optional[int] = None
     remaining_sessions: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SlotStatusActionRequest(BaseModel):
+    action: str
+    cancel_type: Optional[str] = None
+
+
+class SlotStatusActionResponse(BaseModel):
+    success: bool
+    message: str
+    appointment_id: Optional[int] = None
+    patient_slot_booking_id: int
+    therapist_slot_mapping_id: Optional[int] = None
+    patient_session_plan_item_id: Optional[int] = None
+    allocated_sessions: Optional[int] = None
+    assigned_sessions: Optional[int] = None
+    completed_sessions: Optional[int] = None
+    remaining_sessions: Optional[int] = None
+    appointment_status: Optional[str] = None
+    patient_slot_booking_status: Optional[str] = None
+    therapist_slot_mapping_status: Optional[str] = None
 
     class Config:
         from_attributes = True

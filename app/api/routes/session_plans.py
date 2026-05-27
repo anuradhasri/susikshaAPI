@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.models import (
+    MASTER_LOOKUP_DATA,
     Patient,
     PatientSessionPlan,
     PatientSessionPlanItem,
@@ -16,6 +17,10 @@ from app.models.models import (
 from app.schemas.schemas import PatientSessionPlanCreate, PatientSessionPlanUpdate
 
 router = APIRouter(prefix="/api/v1/session-plans", tags=["session-plans"])
+
+PLAN_STATUS_ACTIVE_ID = MASTER_LOOKUP_DATA["patient_session_plan"]["ACTIVE"]
+PLAN_STATUS_CANCELLED_ID = MASTER_LOOKUP_DATA["patient_session_plan"]["CANCELLED"]
+PLAN_STATUS_COMPLETED_ID = MASTER_LOOKUP_DATA["patient_session_plan"]["COMPLETED"]
 
 
 def _plan_name(start_date: date, end_date: date) -> str:
@@ -27,7 +32,11 @@ def _plan_name(start_date: date, end_date: date) -> str:
 
 
 def _status_label(status_id: Optional[int]) -> str:
-    return {401: "ACTIVE", 402: "CANCELLED", 403: "COMPLETED"}.get(status_id or 401, "ACTIVE")
+    return {
+        PLAN_STATUS_ACTIVE_ID: "ACTIVE",
+        PLAN_STATUS_CANCELLED_ID: "CANCELLED",
+        PLAN_STATUS_COMPLETED_ID: "COMPLETED",
+    }.get(status_id or PLAN_STATUS_ACTIVE_ID, "ACTIVE")
 
 
 def _shape_plan(plan: PatientSessionPlan) -> dict:
@@ -149,7 +158,7 @@ async def create_session_plan(
         start_date=payload.start_date,
         end_date=payload.end_date,
         notes=payload.notes,
-        status_id=401,
+        status_id=PLAN_STATUS_ACTIVE_ID,
     )
     db.add(plan)
     db.flush()
@@ -274,7 +283,11 @@ async def update_session_plan(
     if payload.notes is not None:
         plan.notes = payload.notes
     if payload.status is not None:
-        status_id = {"ACTIVE": 401, "CANCELLED": 402, "COMPLETED": 403}.get(payload.status.upper())
+        status_id = {
+            "ACTIVE": PLAN_STATUS_ACTIVE_ID,
+            "CANCELLED": PLAN_STATUS_CANCELLED_ID,
+            "COMPLETED": PLAN_STATUS_COMPLETED_ID,
+        }.get(payload.status.upper())
         if not status_id:
             raise HTTPException(status_code=400, detail="Invalid plan status")
         plan.status_id = status_id

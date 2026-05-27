@@ -8,7 +8,8 @@ from app.dependencies.auth import get_current_user, check_region_access, get_use
 from app.schemas.schemas import (
     AppointmentCreate, AppointmentUpdate, AppointmentResponse,
     AppointmentDetailResponse, PaginatedResponse, SlotBookingCreate,
-    SlotBookingResponse, SlotCancelRequest, SlotCancelResponse, SlotMasterResponse
+    SlotBookingResponse, SlotCancelRequest, SlotCancelResponse, SlotMasterResponse,
+    SlotStatusActionRequest, SlotStatusActionResponse
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
 from app.models.models import User
@@ -269,7 +270,7 @@ async def book_slot(
             plan_item.allocated_sessions
             - (plan_item.assigned_sessions or 0)
             - (plan_item.completed_sessions or 0)
-        )
+        ) if plan_item else None
         logger.info(
             "Slot booked successfully",
             extra={
@@ -286,10 +287,10 @@ async def book_slot(
             "patient_slot_booking_id": patient_slot_booking.id,
             "therapist_slot_mapping_id": therapist_slot_mapping.id,
             "appointment_id": appointment.id,
-            "patient_session_plan_item_id": plan_item.id,
-            "allocated_sessions": plan_item.allocated_sessions,
-            "assigned_sessions": plan_item.assigned_sessions,
-            "completed_sessions": plan_item.completed_sessions,
+            "patient_session_plan_item_id": plan_item.id if plan_item else None,
+            "allocated_sessions": plan_item.allocated_sessions if plan_item else None,
+            "assigned_sessions": plan_item.assigned_sessions if plan_item else None,
+            "completed_sessions": plan_item.completed_sessions if plan_item else None,
             "remaining_sessions": remaining_sessions
         }
 
@@ -375,6 +376,51 @@ async def reschedule_slot(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error updating slot"
+        )
+
+
+@router.patch(
+    "/slot-status/{patient_slot_booking_id}",
+    response_model=SlotStatusActionResponse,
+    status_code=status.HTTP_200_OK
+)
+async def update_slot_status(
+    patient_slot_booking_id: int,
+    payload: SlotStatusActionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
+    try:
+        response = AppointmentService.update_slot_status(
+            db,
+            patient_slot_booking_id,
+            payload.action,
+            payload.cancel_type,
+        )
+        return response
+    except ValueError as e:
+        logger.warning(
+            f"Error updating slot status: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(
+            f"Error updating slot status: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error updating slot status"
         )
 
 

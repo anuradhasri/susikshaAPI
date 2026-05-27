@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import (
     Appointment,
+    MASTER_LOOKUP_DATA,
     Patient,
     PatientSessionPlan,
     PatientSessionPlanItem,
@@ -23,6 +24,18 @@ from app.models.models import (
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate
 from app.utils.query_utils import filter_by_region, soft_delete
 
+PLAN_STATUS_ACTIVE_ID = MASTER_LOOKUP_DATA["patient_session_plan"]["ACTIVE"]
+PLAN_STATUS_COMPLETED_ID = MASTER_LOOKUP_DATA["patient_session_plan"]["COMPLETED"]
+PATIENT_SLOT_BOOKING_BOOKED_ID = MASTER_LOOKUP_DATA["patient_slot_booking"]["BOOKED"]
+PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID = MASTER_LOOKUP_DATA["patient_slot_booking"]["UNPAID_CANCELLED"]
+PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID = MASTER_LOOKUP_DATA["patient_slot_booking"]["PAID_CANCELLED"]
+PATIENT_SLOT_BOOKING_CANCELLED_IDS = [
+    PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+    PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
+]
+THERAPIST_SLOT_MAPPING_BOOKED_ID = MASTER_LOOKUP_DATA["therapist_slot_mapping"]["BOOKED"]
+THERAPIST_SLOT_MAPPING_CANCELLED_ID = MASTER_LOOKUP_DATA["therapist_slot_mapping"]["CANCELLED"]
+
 
 class AppointmentRepository:
     """Database access for calendar appointments."""
@@ -37,7 +50,7 @@ class AppointmentRepository:
             db.query(PatientSessionPlan)
             .filter(
                 PatientSessionPlan.patient_id == patient_id,
-                PatientSessionPlan.status_id == 401
+                PatientSessionPlan.status_id == PLAN_STATUS_ACTIVE_ID
             )
             .all()
         )
@@ -257,7 +270,7 @@ class AppointmentRepository:
             .filter(
                 PatientSessionPlan.id == patient_session_plan_id,
                 PatientSessionPlan.patient_id == patient_id,
-                PatientSessionPlan.status_id.in_([401, 403]),
+                PatientSessionPlan.status_id.in_([PLAN_STATUS_ACTIVE_ID, PLAN_STATUS_COMPLETED_ID]),
                 PatientSessionPlanItem.therapy_id == therapy_id,
             )
             .with_for_update()
@@ -294,7 +307,7 @@ class AppointmentRepository:
                 TherapistSlotMapping.slot_id == slot_id,
                 TherapistSlotMapping.slot_date == slot_date,
                 TherapistSlotMapping.therapy_id == therapy_id,
-                TherapistSlotMapping.status_id != 804,
+                TherapistSlotMapping.status_id != THERAPIST_SLOT_MAPPING_CANCELLED_ID,
             )
             .first()
         )
@@ -326,7 +339,7 @@ class AppointmentRepository:
                 TherapistSlotMapping.slot_id == slot_id,
                 TherapistSlotMapping.slot_date == slot_date,
                 TherapistSlotMapping.therapy_id == therapy_id,
-                PatientSlotBooking.status_id != 602,
+                PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
             )
             .first()
             is not None
@@ -345,7 +358,7 @@ class AppointmentRepository:
             slot_id=slot_id,
             slot_date=slot_date,
             therapy_id=therapy_id,
-            status_id=802,
+            status_id=THERAPIST_SLOT_MAPPING_BOOKED_ID,
         )
         db.add(mapping)
         db.flush()
@@ -355,12 +368,12 @@ class AppointmentRepository:
     def create_patient_slot_booking(
         db: Session,
         therapist_slot_mapping_id: int,
-        patient_session_plan_item_id: int,
+        patient_session_plan_item_id: Optional[int],
     ) -> PatientSlotBooking:
         booking = PatientSlotBooking(
             therapist_slot_mapping_id=therapist_slot_mapping_id,
             patient_session_plan_item_id=patient_session_plan_item_id,
-            status_id=601,
+            status_id=PATIENT_SLOT_BOOKING_BOOKED_ID,
         )
         db.add(booking)
         db.flush()
@@ -456,7 +469,7 @@ class AppointmentRepository:
                 PatientSlotBooking,
                 and_(
                     PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id,
-                    PatientSlotBooking.status_id != 602,
+                    PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
                 )
             )
             .outerjoin(
@@ -474,7 +487,7 @@ class AppointmentRepository:
             .filter(
                 TherapistSlotMapping.slot_date == selected_date,
                 Therapist.region_id.in_(region_ids),
-                TherapistSlotMapping.status_id != 804,
+                TherapistSlotMapping.status_id != THERAPIST_SLOT_MAPPING_CANCELLED_ID,
             )
             .order_by(SlotMaster.start_time)
         )
@@ -533,7 +546,7 @@ class AppointmentRepository:
                 PatientSlotBooking,
                 and_(
                     PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id,
-                    PatientSlotBooking.status_id != 602,
+                    PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
                 )
             )
             .outerjoin(
@@ -552,7 +565,7 @@ class AppointmentRepository:
                 TherapistSlotMapping.slot_date >= start_date,
                 TherapistSlotMapping.slot_date <= end_date,
                 Therapist.region_id.in_(region_ids),
-                TherapistSlotMapping.status_id != 804,
+                TherapistSlotMapping.status_id != THERAPIST_SLOT_MAPPING_CANCELLED_ID,
             )
             .order_by(TherapistSlotMapping.slot_date, SlotMaster.start_time)
         )
@@ -648,7 +661,7 @@ class AppointmentRepository:
     ) -> bool:
         query = db.query(PatientSlotBooking).filter(
             PatientSlotBooking.therapist_slot_mapping_id == therapist_slot_mapping_id,
-            PatientSlotBooking.status_id != 602,
+            PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
         )
 
         if exclude_patient_slot_booking_id:

@@ -27,51 +27,50 @@ class DocumentTypeEnum(str, enum.Enum):
 
 MASTER_LOOKUP_DATA = {
     "invoice": {
-        "draft": 301,
-        "issued": 302,
-        "overdue": 303,
-        "paid": 304,
-        "cancelled": 305,
+        "draft": 1,
+        "issued": 2,
+        "overdue": 3,
+        "paid": 4,
+        "cancelled": 5,
     },
     "patient_session_plan": {
-        "ACTIVE": 401,
-        "CANCELLED": 402,
-        "COMPLETED": 403,
+        "ACTIVE": 1,
+        "CANCELLED": 2,
+        "COMPLETED": 3,
     },
     "patient_assessment": {
-        "PENDING": 501,
-        "IN_PROGRESS": 502,
-        "COMPLETED": 503,
-        "CANCELLED": 504,
+        "PENDING": 1,
+        "IN_PROGRESS": 2,
+        "COMPLETED": 3,
+        "CANCELLED": 4,
     },
     "patient_slot_booking": {
-        "BOOKED": 601,
-        "CANCELLED": 602,
-        "COMPLETED": 603,
-        "NO_SHOW": 604,
+        "BOOKED": 1,
+        "UNPAID_CANCELLED": 2,
+        "COMPLETED": 3,
+        "PAID_CANCELLED": 4,
     },
     "patient_therapy": {
-        "ACTIVE": 701,
-        "COMPLETED": 702,
-        "ON_HOLD": 703,
-        "CANCELLED": 704,
+        "ACTIVE": 1,
+        "COMPLETED": 2,
+        "ON_HOLD": 3,
+        "CANCELLED": 4,
     },
     "therapist_slot_mapping": {
-        "ASSIGNED": 801,
-        "BOOKED": 802,
-        "COMPLETED": 803,
-        "CANCELLED": 804,
+        "BOOKED": 1,
+        "COMPLETED": 2,
+        "CANCELLED": 3,
     },
     "assessment_type": {
-        "STRUCTURED": 901,
-        "UNSTRUCTURED": 902,
+        "STRUCTURED": 1,
+        "UNSTRUCTURED": 2,
     },
     "question_type": {
-        "TEXT": 1001,
-        "MCQ": 1002,
-        "FILE_UPLOAD": 1003,
-        "RATING": 1004,
-        "YES_NO": 1005,
+        "TEXT": 1,
+        "MCQ": 2,
+        "FILE_UPLOAD": 3,
+        "RATING": 4,
+        "YES_NO": 5,
     },
 }
 
@@ -242,7 +241,7 @@ class UserRole(Base):
         Index("idx_user_role_user_id", "user_id"),
         Index("idx_user_role_role_id", "role_id"),
     )
-
+    
 
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
@@ -780,7 +779,7 @@ class PatientSessionPlan(StatusIdMixin, Base):
 
     notes = Column(Text, nullable=True)
     
-    status_id = Column(Integer, ForeignKey("patient_session_plan_status_master.id"), nullable=False, default=401, server_default="401")
+    status_id = Column(Integer, ForeignKey("patient_session_plan_status_master.id"), nullable=False, default=1, server_default="1")
 
     created_at = Column(
         DateTime(timezone=True),
@@ -1010,7 +1009,7 @@ class PatientAssessmentDetail(Base):
 #     id = Column(Integer, primary_key=True, index=True)
 #     therapist_slot_mapping_id = Column(Integer, ForeignKey("therapist_slot_mapping.id"), nullable=False)
 #     patient_session_plan_item_id = Column(Integer, ForeignKey("patient_session_plan_item.id"), nullable=True)
-#     status_id = Column(Integer, nullable=False, default=601, server_default="601")
+#     status_id = Column(Integer, nullable=False, default=1, server_default="1")
 #     created_at = Column(DateTime, server_default=func.now())
 #     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1072,7 +1071,7 @@ class TherapistSlotMapping(StatusIdMixin, Base):
     slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=False)
     slot_date = Column(Date, nullable=False)
     therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
-    status_id = Column(Integer, ForeignKey("therapist_slot_mapping_status_master.id"), nullable=False, default=802, server_default="802")
+    status_id = Column(Integer, ForeignKey("therapist_slot_mapping_status_master.id"), nullable=False, default=1, server_default="1")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -1102,7 +1101,7 @@ class PatientSlotBooking(StatusIdMixin, Base):
         ForeignKey("patient_session_plan_item.id"),
         nullable=True
     )
-    status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=601, server_default="601")
+    status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=1, server_default="1")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -5,7 +5,7 @@ from grpc import Status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from datetime import datetime, date, timedelta
-from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage, STATUS_ID_TO_CODE, PatientSlotBooking, TherapistSlotMapping
+from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage, STATUS_ID_TO_CODE, MASTER_LOOKUP_DATA, PatientSlotBooking, TherapistSlotMapping
 from app.repositories.appointment_repository import AppointmentRepository
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate, SlotBookingCreate
 from app.utils.query_utils import soft_delete, filter_by_region
@@ -17,6 +17,11 @@ class AppointmentService:
     """Service for appointment operations"""
     BREAK_START_MINUTES = 13 * 60 + 30
     BREAK_END_MINUTES = 14 * 60
+    PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID = MASTER_LOOKUP_DATA["patient_slot_booking"]["UNPAID_CANCELLED"]
+    PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID = MASTER_LOOKUP_DATA["patient_slot_booking"]["PAID_CANCELLED"]
+    PATIENT_SLOT_BOOKING_COMPLETED_ID = MASTER_LOOKUP_DATA["patient_slot_booking"]["COMPLETED"]
+    THERAPIST_SLOT_MAPPING_CANCELLED_ID = MASTER_LOOKUP_DATA["therapist_slot_mapping"]["CANCELLED"]
+    THERAPIST_SLOT_MAPPING_COMPLETED_ID = MASTER_LOOKUP_DATA["therapist_slot_mapping"]["COMPLETED"]
 
     @staticmethod
     def _time_to_minutes(value):
@@ -57,6 +62,8 @@ class AppointmentService:
                 "region_id": patient.region_id,
                 "is_available": patient.is_available
             })
+
+        response.sort(key=lambda patient: (patient["full_name"] or "").strip().lower())
 
         return {
             "success": True,
@@ -180,14 +187,7 @@ class AppointmentService:
             booking_create.patient_session_plan_id,
             booking_create.therapy_id,
         )
-        if not plan_item:
-            raise ValueError("No session left for selected therapy")
-
-        assigned_sessions = plan_item.assigned_sessions or 0
-        completed_sessions = plan_item.completed_sessions or 0
-        used_sessions = assigned_sessions + completed_sessions
-        if used_sessions >= plan_item.allocated_sessions:
-            raise ValueError("No session left for selected therapy")
+        assigned_sessions = plan_item.assigned_sessions or 0 if plan_item else 0
 
         therapist_slot_mapping = AppointmentRepository.create_therapist_slot_mapping(
             db,
@@ -200,7 +200,7 @@ class AppointmentService:
         patient_slot_booking = AppointmentRepository.create_patient_slot_booking(
             db,
             therapist_slot_mapping_id=therapist_slot_mapping.id,
-            patient_session_plan_item_id=plan_item.id,
+            patient_session_plan_item_id=plan_item.id if plan_item else None,
         )
 
         appointment = Appointment(
@@ -214,11 +214,13 @@ class AppointmentService:
         )
         db.add(appointment)
 
-        plan_item.assigned_sessions = assigned_sessions + 1
+        if plan_item:
+            plan_item.assigned_sessions = assigned_sessions + 1
         db.commit()
         db.refresh(patient_slot_booking)
         db.refresh(therapist_slot_mapping)
-        db.refresh(plan_item)
+        if plan_item:
+            db.refresh(plan_item)
         db.refresh(appointment)
 
         return {
@@ -237,7 +239,7 @@ class AppointmentService:
         if not patient_slot_booking:
             raise ValueError("Slot booking not found")
 
-        if patient_slot_booking.status == "CANCELLED":
+        if patient_slot_booking.status in {"UNPAID_CANCELLED", "PAID_CANCELLED"}:
             raise ValueError("Slot booking already cancelled")
 
         if patient_slot_booking.status == "COMPLETED":
@@ -246,7 +248,7 @@ class AppointmentService:
         therapist_slot_mapping = patient_slot_booking.therapist_slot_mapping
         plan_item = patient_slot_booking.patient_session_plan_item
 
-        patient_slot_booking.status = "CANCELLED"
+        patient_slot_booking.status = "UNPAID_CANCELLED"
 
         if therapist_slot_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
             db,
@@ -325,8 +327,11 @@ class AppointmentService:
                 TherapistSlotMapping.slot_id == booking_create.slot_id,
                 TherapistSlotMapping.slot_date == booking_create.slot_date,
                 TherapistSlotMapping.therapy_id == booking_create.therapy_id,
-                TherapistSlotMapping.status_id != 804,
-                PatientSlotBooking.status_id != 602,
+                TherapistSlotMapping.status_id != AppointmentService.THERAPIST_SLOT_MAPPING_CANCELLED_ID,
+                PatientSlotBooking.status_id.notin_([
+                    AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+                    AppointmentService.PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
+                ]),
                 PatientSlotBooking.id != patient_slot_booking_id,
             )
             .first()
@@ -712,6 +717,115 @@ class AppointmentService:
     def get_appointment_by_id(db: Session, appointment_id: int, region_id: int = None) -> Appointment:
         """Get appointment by ID with region filtering"""
         return AppointmentRepository.get_by_id(db, appointment_id, region_id)
+
+    @staticmethod
+    def update_slot_status(
+        db: Session,
+        patient_slot_booking_id: int,
+        action: str,
+        cancel_type: str | None = None,
+    ):
+        patient_slot_booking = AppointmentRepository.get_patient_slot_booking_for_update(
+            db,
+            patient_slot_booking_id,
+        )
+        if not patient_slot_booking:
+            raise ValueError("Slot booking not found")
+
+        normalized_action = str(action or "").strip().lower()
+        if normalized_action not in {"complete", "cancel"}:
+            raise ValueError("Invalid slot action")
+
+        current_status = str(patient_slot_booking.status or "").upper()
+        therapist_slot_mapping = patient_slot_booking.therapist_slot_mapping
+        plan_item = patient_slot_booking.patient_session_plan_item
+
+        if current_status in {"UNPAID_CANCELLED", "PAID_CANCELLED"}:
+            raise ValueError("Slot booking already cancelled")
+
+        if normalized_action == "complete" and current_status == "COMPLETED":
+            raise ValueError("Slot booking already completed")
+
+        appointment = None
+        patient_id = None
+        if therapist_slot_mapping and plan_item and therapist_slot_mapping.slot:
+            patient_id = plan_item.patient_session_plan.patient_id
+            slot = therapist_slot_mapping.slot
+            appointment = (
+                db.query(Appointment)
+                .filter(
+                    Appointment.patient_id == patient_id,
+                    Appointment.therapist_id == therapist_slot_mapping.therapist_id,
+                    Appointment.start_time == datetime.combine(therapist_slot_mapping.slot_date, slot.start_time),
+                    Appointment.end_time == datetime.combine(therapist_slot_mapping.slot_date, slot.end_time),
+                    Appointment.deleted_at.is_(None),
+                )
+                .with_for_update()
+                .first()
+            )
+
+        if normalized_action == "complete":
+            patient_slot_booking.status = "COMPLETED"
+            if therapist_slot_mapping:
+                therapist_slot_mapping.status = "COMPLETED"
+            if plan_item:
+                assigned_sessions = plan_item.assigned_sessions or 0
+                completed_sessions = plan_item.completed_sessions or 0
+                if assigned_sessions > 0:
+                    plan_item.assigned_sessions = assigned_sessions - 1
+                plan_item.completed_sessions = completed_sessions + 1
+            if appointment:
+                appointment.status = "completed"
+                appointment.cancelled_reason = None
+        else:
+            normalized_cancel_type = str(cancel_type or "unpaid").strip().lower()
+            patient_slot_booking.status = "PAID_CANCELLED" if normalized_cancel_type == "paid" else "UNPAID_CANCELLED"
+            if therapist_slot_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
+                db,
+                therapist_slot_mapping.id,
+                exclude_patient_slot_booking_id=patient_slot_booking.id,
+            ):
+                therapist_slot_mapping.status = "CANCELLED"
+            if plan_item and normalized_cancel_type != "paid":
+                assigned_sessions = plan_item.assigned_sessions or 0
+                if assigned_sessions > 0:
+                    plan_item.assigned_sessions = assigned_sessions - 1
+            if appointment:
+                appointment.status = "cancelled"
+                appointment.cancelled_reason = f"{normalized_cancel_type}_cancel"
+
+        db.commit()
+        db.refresh(patient_slot_booking)
+        if therapist_slot_mapping:
+            db.refresh(therapist_slot_mapping)
+        if plan_item:
+            db.refresh(plan_item)
+        if appointment:
+            db.refresh(appointment)
+
+        remaining_sessions = None
+        if plan_item:
+            remaining_sessions = (
+                (plan_item.allocated_sessions or 0)
+                - (plan_item.assigned_sessions or 0)
+                - (plan_item.completed_sessions or 0)
+            )
+
+        return {
+            "success": True,
+            "message": "Slot marked as completed successfully" if normalized_action == "complete" else "Slot cancelled successfully",
+            "appointment_id": appointment.id if appointment else None,
+            "appointment_status": appointment.status if appointment else None,
+            "patient_slot_booking_id": patient_slot_booking.id,
+            "patient_slot_booking_status": patient_slot_booking.status,
+            "therapist_slot_mapping_id": therapist_slot_mapping.id if therapist_slot_mapping else None,
+            "therapist_slot_mapping_status": therapist_slot_mapping.status if therapist_slot_mapping else None,
+            "patient_session_plan_item_id": plan_item.id if plan_item else None,
+            "allocated_sessions": plan_item.allocated_sessions if plan_item else None,
+            "assigned_sessions": plan_item.assigned_sessions if plan_item else None,
+            "completed_sessions": plan_item.completed_sessions if plan_item else None,
+            "remaining_sessions": remaining_sessions,
+        }
     
     @staticmethod
     def update_appointment(db: Session, appointment_id: int, appointment_update: AppointmentUpdate, region_id: int = None) -> Appointment:

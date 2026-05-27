@@ -113,6 +113,6 @@ class UserRepository:
                 Patient.status == True,
                 Patient.region_id.in_(current_user.region_ids)
             )
-            .order_by(Patient.id.desc())
+            .order_by(Patient.first_name.asc(), Patient.last_name.asc(), Patient.id.asc())
             .all()
         )
