@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.models import (
     Appointment,
     MASTER_LOOKUP_DATA,
+    Package,
     Patient,
     PatientSessionPlan,
     PatientSessionPlanItem,
@@ -369,10 +370,22 @@ class AppointmentRepository:
         db: Session,
         therapist_slot_mapping_id: int,
         patient_session_plan_item_id: Optional[int],
+        patient_package_id: Optional[int] = None,
+        is_package_session: bool = False,
+        amount: float = 0,
+        paid_amount: float = 0,
+        due_amount: float = 0,
+        payment_status: str = "UNPAID",
     ) -> PatientSlotBooking:
         booking = PatientSlotBooking(
             therapist_slot_mapping_id=therapist_slot_mapping_id,
             patient_session_plan_item_id=patient_session_plan_item_id,
+            patient_package_id=patient_package_id,
+            is_package_session=is_package_session,
+            amount=amount,
+            paid_amount=paid_amount,
+            due_amount=due_amount,
+            payment_status=payment_status,
             status_id=PATIENT_SLOT_BOOKING_BOOKED_ID,
         )
         db.add(booking)
@@ -451,6 +464,13 @@ class AppointmentRepository:
                 PatientSessionPlanItem.completed_sessions,
                 PatientSessionPlanItem.amount_per_session,
                 PatientSlotBooking.status_id.label("patient_slot_booking_status_id"),
+                PatientSlotBooking.patient_package_id,
+                PatientSlotBooking.is_package_session,
+                PatientSlotBooking.amount,
+                PatientSlotBooking.paid_amount,
+                PatientSlotBooking.due_amount,
+                PatientSlotBooking.payment_status,
+                Package.name.label("package_name"),
                 TherapistSlotMapping.status_id.label("therapist_slot_mapping_status_id"),
             )
             .join(
@@ -483,6 +503,10 @@ class AppointmentRepository:
             .outerjoin(
                 Patient,
                 Patient.id == PatientSessionPlan.patient_id
+            )
+            .outerjoin(
+                Package,
+                Package.id == PatientSlotBooking.patient_package_id
             )
             .filter(
                 TherapistSlotMapping.slot_date == selected_date,
@@ -528,6 +552,13 @@ class AppointmentRepository:
                 PatientSessionPlanItem.completed_sessions,
                 PatientSessionPlanItem.amount_per_session,
                 PatientSlotBooking.status_id.label("patient_slot_booking_status_id"),
+                PatientSlotBooking.patient_package_id,
+                PatientSlotBooking.is_package_session,
+                PatientSlotBooking.amount,
+                PatientSlotBooking.paid_amount,
+                PatientSlotBooking.due_amount,
+                PatientSlotBooking.payment_status,
+                Package.name.label("package_name"),
                 TherapistSlotMapping.status_id.label("therapist_slot_mapping_status_id"),
             )
             .join(
@@ -560,6 +591,10 @@ class AppointmentRepository:
             .outerjoin(
                 Patient,
                 Patient.id == PatientSessionPlan.patient_id
+            )
+            .outerjoin(
+                Package,
+                Package.id == PatientSlotBooking.patient_package_id
             )
             .filter(
                 TherapistSlotMapping.slot_date >= start_date,

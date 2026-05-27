@@ -24,9 +24,14 @@ from app.models.models import (
     Document,
     DocumentTypeMaster,
     Invoice,
+    Package,
     Patient,
     PatientDuplicate,
     PatientPackage,
+    PatientSessionPlan,
+    PatientSessionPlanItem,
+    PatientSlotBooking,
+    TherapistSlotMapping,
     PasswordResetToken,
     Payment,
     PaymentModeMaster,
@@ -54,6 +59,7 @@ ALLOWED_DOCUMENT_EXTENSIONS = {
     if ext.strip()
 }
 _PATIENT_PROFILE_SCHEMA_READY = False
+_PACKAGE_BILLING_SCHEMA_READY = False
 REMOVED_DB_TABLES = {
     "alerts",
     "waitlist_entries",
@@ -88,6 +94,41 @@ def _ensure_patient_profile_schema(db: Session) -> None:
             db.execute(text(f"ALTER TABLE patients ADD COLUMN {name} {definition} NULL"))
     db.commit()
     _PATIENT_PROFILE_SCHEMA_READY = True
+
+
+def _ensure_package_billing_schema(db: Session) -> None:
+    global _PACKAGE_BILLING_SCHEMA_READY
+    if _PACKAGE_BILLING_SCHEMA_READY:
+        return
+
+    dialect = db.bind.dialect.name if db.bind else ""
+
+    def add_columns(table: str, definitions: dict[str, str]) -> None:
+        existing = {col["name"] for col in inspect(db.bind).get_columns(table)}
+        for name, definition in definitions.items():
+            if name in existing:
+                continue
+            if dialect == "sqlite":
+                db.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
+            else:
+                db.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
+
+    add_columns("patient_packages", {
+        "total_amount": "FLOAT NOT NULL DEFAULT 0",
+        "paid_amount": "FLOAT NOT NULL DEFAULT 0",
+        "due_amount": "FLOAT NOT NULL DEFAULT 0",
+        "payment_status": "VARCHAR(50) NOT NULL DEFAULT 'UNPAID'",
+    })
+    add_columns("patient_slot_booking", {
+        "patient_package_id": "INT NULL",
+        "is_package_session": "BOOLEAN NOT NULL DEFAULT 0",
+        "amount": "FLOAT NOT NULL DEFAULT 0",
+        "paid_amount": "FLOAT NOT NULL DEFAULT 0",
+        "due_amount": "FLOAT NOT NULL DEFAULT 0",
+        "payment_status": "VARCHAR(50) NOT NULL DEFAULT 'UNPAID'",
+    })
+    db.commit()
+    _PACKAGE_BILLING_SCHEMA_READY = True
 
 
 def _now() -> datetime:
@@ -572,21 +613,109 @@ def _package_session_stats(patient_package: PatientPackage) -> dict:
     }
 
 
+def _today_unpaid_completed_slot_query(db: Session, patient_id: int):
+    _ensure_package_billing_schema(db)
+    return (
+        db.query(PatientSlotBooking)
+        .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
+        .join(PatientSessionPlanItem, PatientSessionPlanItem.id == PatientSlotBooking.patient_session_plan_item_id)
+        .join(PatientSessionPlan, PatientSessionPlan.id == PatientSessionPlanItem.patient_session_plan_id)
+        .filter(
+            PatientSessionPlan.patient_id == patient_id,
+            TherapistSlotMapping.slot_date == date.today(),
+            PatientSlotBooking.patient_package_id.is_(None),
+            PatientSlotBooking.status == "COMPLETED",
+            PatientSlotBooking.payment_status.in_(["UNPAID", "PENDING", "PARTIAL"]),
+        )
+        .order_by(PatientSlotBooking.created_at.asc(), PatientSlotBooking.id.asc())
+    )
+
+
+def _slot_amount(slot_booking: PatientSlotBooking) -> float:
+    if slot_booking.amount:
+        return float(slot_booking.amount or 0)
+    plan_item = slot_booking.patient_session_plan_item
+    return float(plan_item.amount_per_session or 0) if plan_item else 0
+
+
+def _patient_package_preview(db: Session, patient_id: int, package_id: int) -> dict:
+    _ensure_default_packages(db)
+    package = db.query(Package).filter(Package.id == package_id, Package.deleted_at.is_(None)).first()
+    if not package:
+        raise HTTPException(status_code=404, detail="Package not found")
+
+    today_unpaid_sessions = _today_unpaid_completed_slot_query(db, patient_id).all()
+    today_count = len(today_unpaid_sessions)
+    package_sessions = int(package.total_sessions or 0)
+    sessions_adjusted = min(today_count, package_sessions)
+    sessions_still_unpaid = max(0, today_count - sessions_adjusted)
+    package_remaining = max(0, package_sessions - sessions_adjusted)
+    total_unpaid_amount = sum(_slot_amount(row) for row in today_unpaid_sessions)
+
+    return {
+        "patient_id": patient_id,
+        "package_id": package_id,
+        "package_name": package.name,
+        "today_unpaid_sessions": today_count,
+        "old_unpaid_sessions": today_count,
+        "total_unpaid_amount": total_unpaid_amount,
+        "package_sessions": package_sessions,
+        "sessions_adjusted": sessions_adjusted,
+        "today_sessions_still_unpaid": sessions_still_unpaid,
+        "sessions_still_unpaid": sessions_still_unpaid,
+        "package_remaining_sessions": package_remaining,
+    }
+
+
 def _package_shape(patient_package: PatientPackage) -> dict:
     stats = _package_session_stats(patient_package)
     return {
         "id": patient_package.id,
         "patient_id": patient_package.patient_id,
         "package_id": patient_package.package_id,
+        "package_name": patient_package.package.name if patient_package.package else None,
         "total_sessions": stats["total"],
         "sessions_used": stats["completed"],
         "sessions_completed": stats["completed"],
         "sessions_remaining": stats["remaining"],
+        "remaining_sessions": stats["remaining"],
+        "total_amount": float(patient_package.total_amount or 0),
+        "paid_amount": float(patient_package.paid_amount or 0),
+        "due_amount": float(patient_package.due_amount or 0),
+        "payment_status": patient_package.payment_status,
         "status": patient_package.status,
         "created_at": _iso(patient_package.created_at),
         "updated_at": _iso(patient_package.updated_at),
         "deleted_at": _iso(patient_package.deleted_at),
     }
+
+
+def _master_package_shape(package: Package) -> dict:
+    return {
+        "id": package.id,
+        "name": package.name,
+        "description": package.description,
+        "total_sessions": package.total_sessions,
+        "price": float(package.price or 0),
+        "duration_days": package.duration_days,
+        "is_active": package.is_active,
+        "created_at": _iso(package.created_at),
+        "updated_at": _iso(package.updated_at),
+        "deleted_at": _iso(package.deleted_at),
+    }
+
+
+def _ensure_default_packages(db: Session) -> None:
+    existing = db.query(Package).filter(Package.deleted_at.is_(None), Package.is_active.is_(True)).first()
+    if existing:
+        return
+    defaults = [
+        Package(name="Therapy Package - 12 Sessions", description="Standard therapy package", total_sessions=12, price=12000, duration_days=90, is_active=True),
+        Package(name="Therapy Package - 8 Sessions", description="Short therapy package", total_sessions=8, price=8000, duration_days=60, is_active=True),
+        Package(name="Therapy Package - 16 Sessions", description="Extended therapy package", total_sessions=16, price=16000, duration_days=120, is_active=True),
+    ]
+    db.add_all(defaults)
+    db.commit()
 
 
 def _invoice_shape(invoice: Invoice) -> dict:
@@ -788,6 +917,7 @@ SHAPERS = {
     "therapist_leaves": _therapist_leave_shape,
     "appointments": _appointment_shape,
     "sessions": _session_shape,
+    "packages": _master_package_shape,
     "patient_packages": _package_shape,
     "invoices": _invoice_shape,
     "payments": _payment_shape,
@@ -810,6 +940,7 @@ ALLOWED_UI_TABLES = {
     "therapist_leaves",
     "appointments",
     "sessions",
+    "packages",
     "patient_packages",
     "invoices",
     "payments",
@@ -908,7 +1039,11 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         elif region_ids:
             query = query.join(Patient, Patient.id == TherapySession.patient_id).filter(Patient.region_id.in_(region_ids))
         return query
+    if table == "packages":
+        _ensure_default_packages(db)
+        return db.query(Package).filter(Package.deleted_at.is_(None), Package.is_active.is_(True))
     if table == "patient_packages":
+        _ensure_package_billing_schema(db)
         query = db.query(PatientPackage).options(joinedload(PatientPackage.package)).filter(PatientPackage.deleted_at.is_(None))
         if region_ids:
             query = query.join(Patient, Patient.id == PatientPackage.patient_id).filter(Patient.region_id.in_(region_ids))
@@ -1856,6 +1991,15 @@ def inline_document_file(
     )
 
 
+@router.get("/package-adjustment-preview")
+def package_adjustment_preview(
+    patient_id: int = Query(...),
+    package_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    return {"data": _patient_package_preview(db, patient_id, package_id)}
+
+
 @router.get("/{table}")
 async def list_rows(
     table: str,
@@ -1972,6 +2116,48 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             progress_notes=item.get("notes") or item.get("progress_notes"),
             billing_status=item.get("billing_status") or "pending",
         )
+    elif table == "patient_packages":
+        _ensure_package_billing_schema(db)
+        package = db.query(Package).filter(Package.id == item["package_id"], Package.deleted_at.is_(None)).first()
+        if not package:
+            raise HTTPException(status_code=404, detail="Package not found")
+
+        total_sessions = int(item.get("total_sessions") or package.total_sessions or 0)
+        total_amount = float(item.get("total_amount") if item.get("total_amount") is not None else package.price or 0)
+        paid_amount = float(item.get("paid_amount") or 0)
+        due_amount = max(0, total_amount - paid_amount)
+        payment_status = item.get("payment_status") or ("PAID" if due_amount == 0 and total_amount > 0 else ("PARTIAL" if paid_amount > 0 else "UNPAID"))
+        adjust_old = bool(item.get("adjust_old_unpaid_sessions"))
+        adjustment_preview = _patient_package_preview(db, item["patient_id"], package.id)
+        sessions_to_adjust = adjustment_preview["sessions_adjusted"] if adjust_old else 0
+
+        row = PatientPackage(
+            patient_id=item["patient_id"],
+            package_id=package.id,
+            start_date=_parse_date(item.get("start_date")) or date.today(),
+            end_date=_parse_date(item.get("end_date")),
+            sessions_completed=sessions_to_adjust,
+            sessions_remaining=max(0, total_sessions - sessions_to_adjust),
+            total_amount=total_amount,
+            paid_amount=paid_amount,
+            due_amount=due_amount,
+            payment_status=payment_status,
+            status="completed" if sessions_to_adjust >= total_sessions and total_sessions > 0 else (item.get("status") or "active"),
+        )
+        db.add(row)
+        db.flush()
+
+        if adjust_old and sessions_to_adjust:
+            today_sessions = _today_unpaid_completed_slot_query(db, item["patient_id"]).limit(sessions_to_adjust).all()
+            for slot_booking in today_sessions:
+                slot_booking.patient_package_id = row.id
+                slot_booking.is_package_session = True
+                slot_booking.amount = 0
+                slot_booking.paid_amount = 0
+                slot_booking.due_amount = 0
+                slot_booking.payment_status = "PACKAGE_COVERED"
+            db.flush()
+        return row
     elif table == "session_notes":
         row = SessionNote(
             session_id=item["session_id"],

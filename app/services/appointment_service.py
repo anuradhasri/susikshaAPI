@@ -3,7 +3,7 @@ from collections import defaultdict
 from fastapi import HTTPException
 from grpc import Status
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, inspect, or_, text
 from datetime import datetime, date, timedelta
 from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, PatientPackage, STATUS_ID_TO_CODE, MASTER_LOOKUP_DATA, PatientSlotBooking, TherapistSlotMapping
 from app.repositories.appointment_repository import AppointmentRepository
@@ -22,6 +22,50 @@ class AppointmentService:
     PATIENT_SLOT_BOOKING_COMPLETED_ID = MASTER_LOOKUP_DATA["patient_slot_booking"]["COMPLETED"]
     THERAPIST_SLOT_MAPPING_CANCELLED_ID = MASTER_LOOKUP_DATA["therapist_slot_mapping"]["CANCELLED"]
     THERAPIST_SLOT_MAPPING_COMPLETED_ID = MASTER_LOOKUP_DATA["therapist_slot_mapping"]["COMPLETED"]
+    _PACKAGE_BILLING_SCHEMA_READY = False
+
+    @staticmethod
+    def _ensure_package_billing_schema(db: Session) -> None:
+        if AppointmentService._PACKAGE_BILLING_SCHEMA_READY:
+            return
+        slot_columns = {col["name"] for col in inspect(db.bind).get_columns("patient_slot_booking")}
+        for name, definition in {
+            "patient_package_id": "INT NULL",
+            "is_package_session": "BOOLEAN NOT NULL DEFAULT 0",
+            "amount": "FLOAT NOT NULL DEFAULT 0",
+            "paid_amount": "FLOAT NOT NULL DEFAULT 0",
+            "due_amount": "FLOAT NOT NULL DEFAULT 0",
+            "payment_status": "VARCHAR(50) NOT NULL DEFAULT 'UNPAID'",
+        }.items():
+            if name not in slot_columns:
+                db.execute(text(f"ALTER TABLE patient_slot_booking ADD COLUMN {name} {definition}"))
+        package_columns = {col["name"] for col in inspect(db.bind).get_columns("patient_packages")}
+        for name, definition in {
+            "total_amount": "FLOAT NOT NULL DEFAULT 0",
+            "paid_amount": "FLOAT NOT NULL DEFAULT 0",
+            "due_amount": "FLOAT NOT NULL DEFAULT 0",
+            "payment_status": "VARCHAR(50) NOT NULL DEFAULT 'UNPAID'",
+        }.items():
+            if name not in package_columns:
+                db.execute(text(f"ALTER TABLE patient_packages ADD COLUMN {name} {definition}"))
+        db.commit()
+        AppointmentService._PACKAGE_BILLING_SCHEMA_READY = True
+
+    @staticmethod
+    def _active_patient_package(db: Session, patient_id: int) -> PatientPackage | None:
+        AppointmentService._ensure_package_billing_schema(db)
+        return (
+            db.query(PatientPackage)
+            .filter(
+                PatientPackage.patient_id == patient_id,
+                PatientPackage.status == "active",
+                PatientPackage.deleted_at.is_(None),
+                PatientPackage.sessions_remaining > 0,
+            )
+            .order_by(PatientPackage.start_date.asc(), PatientPackage.id.asc())
+            .with_for_update()
+            .first()
+        )
 
     @staticmethod
     def _time_to_minutes(value):
@@ -137,6 +181,7 @@ class AppointmentService:
 
     @staticmethod
     def book_slot(db: Session, booking_create: SlotBookingCreate):
+        AppointmentService._ensure_package_billing_schema(db)
         # """Book a patient slot using therapist leave, slot mapping, and plan item balance."""
         # therapist = AppointmentRepository.get_therapist(db, booking_create.therapist_id)
         # if not therapist or not therapist.is_active:
@@ -188,6 +233,13 @@ class AppointmentService:
             booking_create.therapy_id,
         )
         assigned_sessions = plan_item.assigned_sessions or 0 if plan_item else 0
+        amount_per_session = float(plan_item.amount_per_session or 0) if plan_item else 0
+        active_package = AppointmentService._active_patient_package(db, booking_create.patient_id)
+        is_package_session = active_package is not None
+        booking_amount = 0 if is_package_session else amount_per_session
+        booking_paid_amount = 0
+        booking_due_amount = 0 if is_package_session else booking_amount
+        booking_payment_status = "PACKAGE_COVERED" if is_package_session else "UNPAID"
 
         therapist_slot_mapping = AppointmentRepository.create_therapist_slot_mapping(
             db,
@@ -201,6 +253,12 @@ class AppointmentService:
             db,
             therapist_slot_mapping_id=therapist_slot_mapping.id,
             patient_session_plan_item_id=plan_item.id if plan_item else None,
+            patient_package_id=active_package.id if active_package else None,
+            is_package_session=is_package_session,
+            amount=booking_amount,
+            paid_amount=booking_paid_amount,
+            due_amount=booking_due_amount,
+            payment_status=booking_payment_status,
         )
 
         appointment = Appointment(
@@ -216,11 +274,18 @@ class AppointmentService:
 
         if plan_item:
             plan_item.assigned_sessions = assigned_sessions + 1
+        if active_package:
+            active_package.sessions_completed = (active_package.sessions_completed or 0) + 1
+            active_package.sessions_remaining = max(0, (active_package.sessions_remaining or 0) - 1)
+            if active_package.sessions_remaining == 0:
+                active_package.status = "completed"
         db.commit()
         db.refresh(patient_slot_booking)
         db.refresh(therapist_slot_mapping)
         if plan_item:
             db.refresh(plan_item)
+        if active_package:
+            db.refresh(active_package)
         db.refresh(appointment)
 
         return {
@@ -247,8 +312,14 @@ class AppointmentService:
 
         therapist_slot_mapping = patient_slot_booking.therapist_slot_mapping
         plan_item = patient_slot_booking.patient_session_plan_item
+        package = patient_slot_booking.patient_package
 
         patient_slot_booking.status = "UNPAID_CANCELLED"
+        if package and patient_slot_booking.is_package_session:
+            package.sessions_completed = max(0, (package.sessions_completed or 0) - 1)
+            package.sessions_remaining = (package.sessions_remaining or 0) + 1
+            if package.status == "completed":
+                package.status = "active"
 
         if therapist_slot_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
             db,
@@ -278,6 +349,8 @@ class AppointmentService:
             db.refresh(therapist_slot_mapping)
         if plan_item:
             db.refresh(plan_item)
+        if package:
+            db.refresh(package)
 
         return {
             "patient_slot_booking": patient_slot_booking,
@@ -408,6 +481,7 @@ class AppointmentService:
         selected_date,
         region_ids
     ):
+        AppointmentService._ensure_package_billing_schema(db)
 
         records = AppointmentRepository.get_calendar_data(
             db=db,
@@ -490,6 +564,13 @@ class AppointmentService:
                 "completed_sessions": completed_sessions,
                 "remaining_sessions": remaining_sessions,
                 "amount_per_session": float(row.amount_per_session or 0),
+                "patient_package_id": row.patient_package_id,
+                "is_package_session": bool(row.is_package_session),
+                "package_name": row.package_name,
+                "amount": float(row.amount or 0),
+                "paid_amount": float(row.paid_amount or 0),
+                "due_amount": float(row.due_amount or 0),
+                "payment_status": row.payment_status,
                 "package_warning": remaining_sessions <= 0,
                 "leave_session": getattr(leave, "leave_session", "full_day") if leave and is_leave_slot else None,
                 "leave_reason": (getattr(leave, "reason", None) or getattr(leave, "notes", None)) if leave and is_leave_slot else None,
@@ -564,6 +645,7 @@ class AppointmentService:
         end_date,
         region_ids
     ):
+        AppointmentService._ensure_package_billing_schema(db)
 
         records = AppointmentRepository.get_calendar_data_range(
             db=db,
@@ -641,6 +723,13 @@ class AppointmentService:
                 "completed_sessions": completed_sessions,
                 "remaining_sessions": remaining_sessions,
                 "amount_per_session": float(row.amount_per_session or 0),
+                "patient_package_id": row.patient_package_id,
+                "is_package_session": bool(row.is_package_session),
+                "package_name": row.package_name,
+                "amount": float(row.amount or 0),
+                "paid_amount": float(row.paid_amount or 0),
+                "due_amount": float(row.due_amount or 0),
+                "payment_status": row.payment_status,
                 "package_warning": remaining_sessions <= 0,
                 "leave_session": getattr(leave, "leave_session", "full_day") if leave and is_leave_slot else None,
                 "leave_reason": (getattr(leave, "reason", None) or getattr(leave, "notes", None)) if leave and is_leave_slot else None,
@@ -739,6 +828,7 @@ class AppointmentService:
         current_status = str(patient_slot_booking.status or "").upper()
         therapist_slot_mapping = patient_slot_booking.therapist_slot_mapping
         plan_item = patient_slot_booking.patient_session_plan_item
+        package = patient_slot_booking.patient_package
 
         if current_status in {"UNPAID_CANCELLED", "PAID_CANCELLED"}:
             raise ValueError("Slot booking already cancelled")
@@ -780,6 +870,11 @@ class AppointmentService:
         else:
             normalized_cancel_type = str(cancel_type or "unpaid").strip().lower()
             patient_slot_booking.status = "PAID_CANCELLED" if normalized_cancel_type == "paid" else "UNPAID_CANCELLED"
+            if package and patient_slot_booking.is_package_session:
+                package.sessions_completed = max(0, (package.sessions_completed or 0) - 1)
+                package.sessions_remaining = (package.sessions_remaining or 0) + 1
+                if package.status == "completed":
+                    package.status = "active"
             if therapist_slot_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
                 db,
                 therapist_slot_mapping.id,
@@ -800,6 +895,8 @@ class AppointmentService:
             db.refresh(therapist_slot_mapping)
         if plan_item:
             db.refresh(plan_item)
+        if package:
+            db.refresh(package)
         if appointment:
             db.refresh(appointment)
 
@@ -825,6 +922,12 @@ class AppointmentService:
             "assigned_sessions": plan_item.assigned_sessions if plan_item else None,
             "completed_sessions": plan_item.completed_sessions if plan_item else None,
             "remaining_sessions": remaining_sessions,
+            "patient_package_id": patient_slot_booking.patient_package_id,
+            "is_package_session": bool(patient_slot_booking.is_package_session),
+            "amount": float(patient_slot_booking.amount or 0),
+            "paid_amount": float(patient_slot_booking.paid_amount or 0),
+            "due_amount": float(patient_slot_booking.due_amount or 0),
+            "payment_status": patient_slot_booking.payment_status,
         }
     
     @staticmethod

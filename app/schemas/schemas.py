@@ -240,6 +240,7 @@ class SlotBookingCreate(BaseModel):
     slot_date: date
     region_id: int
     notes: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class AppointmentUpdate(BaseModel):
@@ -269,6 +270,12 @@ class SlotBookingResponse(BaseModel):
     assigned_sessions: Optional[int] = None
     completed_sessions: Optional[int] = None
     remaining_sessions: Optional[int] = None
+    patient_package_id: Optional[int] = None
+    is_package_session: bool = False
+    amount: float = 0
+    paid_amount: float = 0
+    due_amount: float = 0
+    payment_status: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -427,11 +434,15 @@ class PatientPackageBase(BaseModel):
     end_date: Optional[date] = None
     sessions_completed: int = 0
     sessions_remaining: int
+    total_amount: float = 0
+    paid_amount: float = 0
+    due_amount: float = 0
+    payment_status: str = "UNPAID"
     status: Optional[str] = "active"
 
 
 class PatientPackageCreate(PatientPackageBase):
-    pass
+    adjust_old_unpaid_sessions: bool = False
 
 
 class PatientPackageUpdate(BaseModel):

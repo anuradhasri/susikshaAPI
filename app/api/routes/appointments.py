@@ -291,7 +291,13 @@ async def book_slot(
             "allocated_sessions": plan_item.allocated_sessions if plan_item else None,
             "assigned_sessions": plan_item.assigned_sessions if plan_item else None,
             "completed_sessions": plan_item.completed_sessions if plan_item else None,
-            "remaining_sessions": remaining_sessions
+            "remaining_sessions": remaining_sessions,
+            "patient_package_id": patient_slot_booking.patient_package_id,
+            "is_package_session": bool(patient_slot_booking.is_package_session),
+            "amount": float(patient_slot_booking.amount or 0),
+            "paid_amount": float(patient_slot_booking.paid_amount or 0),
+            "due_amount": float(patient_slot_booking.due_amount or 0),
+            "payment_status": patient_slot_booking.payment_status,
         }
 
     except ValueError as e:

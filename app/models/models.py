@@ -504,6 +504,10 @@ class PatientPackage(Base):
     end_date = Column(Date, nullable=True)
     sessions_completed = Column(Integer, default=0)
     sessions_remaining = Column(Integer, nullable=False)
+    total_amount = Column(Float, nullable=False, default=0, server_default="0")
+    paid_amount = Column(Float, nullable=False, default=0, server_default="0")
+    due_amount = Column(Float, nullable=False, default=0, server_default="0")
+    payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")
     status = Column(String(50), default="active")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1101,6 +1105,12 @@ class PatientSlotBooking(StatusIdMixin, Base):
         ForeignKey("patient_session_plan_item.id"),
         nullable=True
     )
+    patient_package_id = Column(Integer, ForeignKey("patient_packages.id"), nullable=True)
+    is_package_session = Column(Boolean, nullable=False, default=False, server_default="0")
+    amount = Column(Float, nullable=False, default=0, server_default="0")
+    paid_amount = Column(Float, nullable=False, default=0, server_default="0")
+    due_amount = Column(Float, nullable=False, default=0, server_default="0")
+    payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")
     status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=1, server_default="1")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -1114,3 +1124,4 @@ class PatientSlotBooking(StatusIdMixin, Base):
         "PatientSessionPlanItem",
         back_populates="patient_slot_bookings"
     )
+    patient_package = relationship("PatientPackage")
