@@ -242,6 +242,7 @@ class SlotBookingCreate(BaseModel):
     notes: Optional[str] = None
     phone: Optional[str] = None
     use_package: bool = True
+    patient_package_id: Optional[int] = None
 
 
 class AppointmentUpdate(BaseModel):
@@ -443,7 +444,7 @@ class PatientPackageBase(BaseModel):
 
 
 class PatientPackageCreate(PatientPackageBase):
-    adjust_old_unpaid_sessions: bool = False
+    adjust_today_unpaid_sessions: bool = False
 
 
 class PatientPackageUpdate(BaseModel):

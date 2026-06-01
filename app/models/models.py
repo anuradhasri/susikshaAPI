@@ -483,6 +483,7 @@ class Package(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
     total_sessions = Column(Integer, nullable=False)
     price = Column(Float, nullable=False)
     duration_days = Column(Integer, nullable=True)
@@ -492,6 +493,28 @@ class Package(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     patient_packages = relationship("PatientPackage", back_populates="package")
+    region = relationship("Region")
+
+
+class Program(Base):
+    __tablename__ = "programs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
+    program_name = Column(String(100), nullable=False)
+    per_session_amount = Column(Float, nullable=False, default=0, server_default="0")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    region = relationship("Region")
+
+    __table_args__ = (
+        UniqueConstraint("region_id", "program_name", name="uq_program_region_name"),
+        Index("idx_program_region_id", "region_id"),
+        Index("idx_program_active", "is_active"),
+    )
 
 
 class PatientPackage(Base):

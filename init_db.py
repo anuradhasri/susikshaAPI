@@ -241,6 +241,84 @@ def _ensure_session_plan_columns(db: Session):
     db.commit()
 
 
+def _ensure_program_table(db: Session):
+    if not _table_exists(db, "programs"):
+        db.execute(text("""
+            CREATE TABLE programs (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                region_id INT NOT NULL,
+                program_name VARCHAR(100) NOT NULL,
+                per_session_amount FLOAT NOT NULL DEFAULT 1200,
+                is_active TINYINT(1) NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                deleted_at DATETIME NULL,
+                UNIQUE KEY uq_program_region_name (region_id, program_name),
+                KEY idx_program_region_id (region_id),
+                KEY idx_program_active (is_active),
+                CONSTRAINT fk_programs_region_id FOREIGN KEY (region_id) REFERENCES regions(id)
+            )
+        """))
+
+    for column_name, definition in {
+        "region_id": "INT NOT NULL",
+        "program_name": "VARCHAR(100) NOT NULL DEFAULT 'General'",
+        "per_session_amount": "FLOAT NOT NULL DEFAULT 1200",
+        "is_active": "TINYINT(1) NOT NULL DEFAULT 1",
+        "created_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+        "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
+        "deleted_at": "DATETIME NULL",
+    }.items():
+        if not _column_exists(db, "programs", column_name):
+            db.execute(text(f"ALTER TABLE programs ADD COLUMN {column_name} {definition}"))
+
+    db.execute(text("""
+        INSERT INTO programs (region_id, program_name, per_session_amount, is_active)
+        SELECT r.id, 'General', 1200, 1
+        FROM regions r
+        WHERE r.deleted_at IS NULL
+        ON DUPLICATE KEY UPDATE
+            is_active = VALUES(is_active),
+            per_session_amount = programs.per_session_amount
+    """))
+    db.commit()
+
+
+def _ensure_package_region_rows(db: Session):
+    if not _table_exists(db, "packages"):
+        return
+
+    if not _column_exists(db, "packages", "region_id"):
+        db.execute(text("ALTER TABLE packages ADD COLUMN region_id INT NULL"))
+
+    defaults = [
+        ("Therapy Package - 12 Sessions", "Standard therapy package", 12, 12000, 90),
+        ("Therapy Package - 8 Sessions", "Short therapy package", 8, 8000, 60),
+        ("Therapy Package - 16 Sessions", "Extended therapy package", 16, 16000, 120),
+    ]
+    for name, description, total_sessions, price, duration_days in defaults:
+        db.execute(text("""
+            INSERT INTO packages (region_id, name, description, total_sessions, price, duration_days, is_active)
+            SELECT r.id, :name, :description, :total_sessions, :price, :duration_days, 1
+            FROM regions r
+            WHERE r.deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM packages p
+                  WHERE p.region_id = r.id
+                    AND p.name = :name
+                    AND p.deleted_at IS NULL
+              )
+        """), {
+            "name": name,
+            "description": description,
+            "total_sessions": total_sessions,
+            "price": price,
+            "duration_days": duration_days,
+        })
+    db.commit()
+
+
 def _ensure_legacy_region_rows(db: Session):
     if not _table_exists(db, "regions"):
         return
@@ -279,7 +357,7 @@ def migrate_enums_to_master_lookups(db: Session):
     _migrate_lookup_column(db, "patient_assessment", "status", "status_id", "patient_assessment", "PENDING", "fk_patient_assessment_status_id")
     _migrate_lookup_column(db, "patient_slot_booking", "status", "status_id", "patient_slot_booking", "BOOKED", "fk_patient_slot_booking_status_id")
     _migrate_lookup_column(db, "patient_therapy", "status", "status_id", "patient_therapy", "ACTIVE", "fk_patient_therapy_status_id")
-    _migrate_lookup_column(db, "therapist_slot_mapping", "status", "status_id", "therapist_slot_mapping", "ASSIGNED", "fk_therapist_slot_mapping_status_id")
+    _migrate_lookup_column(db, "therapist_slot_mapping", "status", "status_id", "therapist_slot_mapping", "BOOKED", "fk_therapist_slot_mapping_status_id")
     _migrate_lookup_column(db, "assessment_master", "type", "type_id", "assessment_type", "STRUCTURED", "fk_assessment_master_type_id")
     _migrate_lookup_column(db, "question_master", "question_type", "question_type_id", "question_type", "TEXT", "fk_question_master_question_type_id")
     db.commit()
@@ -292,6 +370,8 @@ def align_database_schema():
         migrate_enums_to_master_lookups(db)
         _ensure_patient_assessment_columns(db)
         _ensure_session_plan_columns(db)
+        _ensure_program_table(db)
+        _ensure_package_region_rows(db)
         print("[OK] Database schema aligned")
     finally:
         db.close()
