@@ -319,6 +319,97 @@ def _ensure_package_region_rows(db: Session):
     db.commit()
 
 
+def _ensure_enquiries_table(db: Session):
+    required_columns = {
+        "id", "first_name", "last_name", "gender", "phone",
+        "referred_by", "enquiry_source", "region_id", "is_active",
+    }
+    existing_columns = set()
+    if _table_exists(db, "enquiries"):
+        existing_columns = {
+            row[0]
+            for row in db.execute(text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE()
+                  AND table_name = 'enquiries'
+            """)).all()
+        }
+        if existing_columns == required_columns:
+            return
+
+    db.execute(text("DROP TABLE IF EXISTS enquiries_new"))
+    db.execute(text("""
+        CREATE TABLE enquiries_new (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            first_name VARCHAR(100) NOT NULL,
+            last_name VARCHAR(100) NULL,
+            gender VARCHAR(20) NULL,
+            phone VARCHAR(20) NOT NULL,
+            referred_by VARCHAR(255) NULL,
+            enquiry_source VARCHAR(100) NULL,
+            region_id INT NOT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            KEY idx_enquiry_region_id (region_id),
+            KEY idx_enquiry_phone (phone),
+            KEY idx_enquiry_is_active (is_active)
+        )
+    """))
+
+    if existing_columns:
+        name_column = next(
+            (name for name in ("child_name", "child_full_name", "first_name") if name in existing_columns),
+            None,
+        )
+        phone_column = "phone" if "phone" in existing_columns else (
+            "phone_number" if "phone_number" in existing_columns else None
+        )
+        if name_column and phone_column:
+            first_name_expr = (
+                "first_name"
+                if name_column == "first_name"
+                else f"SUBSTRING_INDEX(TRIM({name_column}), ' ', 1)"
+            )
+            last_name_expr = (
+                "last_name"
+                if "last_name" in existing_columns
+                else (
+                    f"NULLIF(TRIM(SUBSTRING(TRIM({name_column}), "
+                    f"LENGTH(SUBSTRING_INDEX(TRIM({name_column}), ' ', 1)) + 1)), '')"
+                )
+            )
+            gender_expr = "gender" if "gender" in existing_columns else "NULL"
+            referred_expr = next(
+                (name for name in ("referred_by", "reference") if name in existing_columns),
+                "NULL",
+            )
+            source_expr = "enquiry_source" if "enquiry_source" in existing_columns else "NULL"
+            region_expr = "region_id" if "region_id" in existing_columns else "1"
+            active_expr = "is_active" if "is_active" in existing_columns else "1"
+            db.execute(text(f"""
+                INSERT INTO enquiries_new (
+                    id, first_name, last_name, gender, phone,
+                    referred_by, enquiry_source, region_id, is_active
+                )
+                SELECT
+                    id,
+                    COALESCE(NULLIF({first_name_expr}, ''), 'Unknown'),
+                    {last_name_expr},
+                    {gender_expr},
+                    COALESCE(NULLIF({phone_column}, ''), ''),
+                    {referred_expr},
+                    {source_expr},
+                    COALESCE({region_expr}, 1),
+                    COALESCE({active_expr}, 1)
+                FROM enquiries
+            """))
+
+        db.execute(text("DROP TABLE enquiries"))
+
+    db.execute(text("RENAME TABLE enquiries_new TO enquiries"))
+    db.commit()
+
+
 def _ensure_legacy_region_rows(db: Session):
     if not _table_exists(db, "regions"):
         return
@@ -372,6 +463,7 @@ def align_database_schema():
         _ensure_session_plan_columns(db)
         _ensure_program_table(db)
         _ensure_package_region_rows(db)
+        _ensure_enquiries_table(db)
         print("[OK] Database schema aligned")
     finally:
         db.close()

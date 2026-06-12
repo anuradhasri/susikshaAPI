@@ -235,10 +235,12 @@ class SlotBookingCreate(BaseModel):
     patient_id: int
     therapist_id: int
     therapy_id: int
+    program_id: Optional[int] = None
     patient_session_plan_id: Optional[int] = None
     slot_id: int
     slot_date: date
     region_id: int
+    duration_minutes: Optional[int] = None
     notes: Optional[str] = None
     phone: Optional[str] = None
     use_package: bool = True

@@ -4,6 +4,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session, aliased
 
 from app.models.models import (
@@ -15,6 +16,7 @@ from app.models.models import (
     PatientSessionPlan,
     PatientSessionPlanItem,
     PatientSlotBooking,
+    Program,
     SlotMaster,
     Therapist,
     TherapistAvailability,
@@ -318,6 +320,31 @@ class AppointmentRepository:
         )
 
     @staticmethod
+    def get_active_therapist_slot_mappings_for_date(
+        db: Session,
+        therapist_id: int,
+        slot_date: date,
+    ):
+        return (
+            db.query(TherapistSlotMapping, PatientSlotBooking, SlotMaster, Program)
+            .join(SlotMaster, SlotMaster.id == TherapistSlotMapping.slot_id)
+            .outerjoin(
+                PatientSlotBooking,
+                and_(
+                    PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id,
+                    PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
+                ),
+            )
+            .outerjoin(Program, Program.id == PatientSlotBooking.program_id)
+            .filter(
+                TherapistSlotMapping.therapist_id == therapist_id,
+                TherapistSlotMapping.slot_date == slot_date,
+                TherapistSlotMapping.status_id != THERAPIST_SLOT_MAPPING_CANCELLED_ID,
+            )
+            .all()
+        )
+
+    @staticmethod
     def patient_has_slot_booking(
         db: Session,
         patient_id: int,
@@ -340,6 +367,29 @@ class AppointmentRepository:
             )
             .first()
             is not None
+        )
+
+    @staticmethod
+    def get_active_patient_slot_bookings_for_date(
+        db: Session,
+        patient_id: int,
+        slot_date: date,
+    ):
+        return (
+            db.query(PatientSlotBooking, TherapistSlotMapping, SlotMaster, Program)
+            .join(
+                TherapistSlotMapping,
+                TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id,
+            )
+            .join(SlotMaster, SlotMaster.id == TherapistSlotMapping.slot_id)
+            .outerjoin(Program, Program.id == PatientSlotBooking.program_id)
+            .filter(
+                PatientSlotBooking.patient_id == patient_id,
+                TherapistSlotMapping.slot_date == slot_date,
+                PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
+                TherapistSlotMapping.status_id != THERAPIST_SLOT_MAPPING_CANCELLED_ID,
+            )
+            .all()
         )
 
     @staticmethod
@@ -368,6 +418,8 @@ class AppointmentRepository:
         therapist_slot_mapping_id: int,
         patient_session_plan_item_id: Optional[int],
         patient_package_id: Optional[int] = None,
+        program_id: Optional[int] = None,
+        duration_minutes: Optional[int] = None,
         is_package_session: bool = False,
         amount: float = 0,
         paid_amount: float = 0,
@@ -379,6 +431,8 @@ class AppointmentRepository:
             therapist_slot_mapping_id=therapist_slot_mapping_id,
             patient_session_plan_item_id=patient_session_plan_item_id,
             patient_package_id=patient_package_id,
+            program_id=program_id,
+            duration_minutes=duration_minutes,
             is_package_session=is_package_session,
             amount=amount,
             paid_amount=paid_amount,
@@ -442,6 +496,7 @@ class AppointmentRepository:
         query = (
             db.query(
                 TherapistSlotMapping.id.label("slot_mapping_id"),
+                TherapistSlotMapping.slot_date.label("slot_date"),
                 PatientSlotBooking.id.label("patient_slot_booking_id"),
                 Therapist.id.label("therapist_id"),
                 Therapist.name.label("therapist_name"),
@@ -470,6 +525,12 @@ class AppointmentRepository:
                 PatientSlotBooking.paid_amount,
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
+                PatientSlotBooking.program_id,
+                PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
+                Program.program_name,
+                Program.duration_minutes.label("program_duration_minutes"),
+                Program.capacity.label("program_capacity"),
+                Program.session_type.label("program_session_type"),
                 PatientPackage.total_amount.label("package_total_amount"),
                 PatientPackage.paid_amount.label("package_paid_amount"),
                 PatientPackage.due_amount.label("package_due_amount"),
@@ -515,6 +576,10 @@ class AppointmentRepository:
             .outerjoin(
                 PatientPackage,
                 PatientPackage.id == PatientSlotBooking.patient_package_id
+            )
+            .outerjoin(
+                Program,
+                Program.id == PatientSlotBooking.program_id
             )
             .outerjoin(
                 Package,
@@ -572,6 +637,12 @@ class AppointmentRepository:
                 PatientSlotBooking.paid_amount,
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
+                PatientSlotBooking.program_id,
+                PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
+                Program.program_name,
+                Program.duration_minutes.label("program_duration_minutes"),
+                Program.capacity.label("program_capacity"),
+                Program.session_type.label("program_session_type"),
                 PatientPackage.total_amount.label("package_total_amount"),
                 PatientPackage.paid_amount.label("package_paid_amount"),
                 PatientPackage.due_amount.label("package_due_amount"),
@@ -617,6 +688,10 @@ class AppointmentRepository:
             .outerjoin(
                 PatientPackage,
                 PatientPackage.id == PatientSlotBooking.patient_package_id
+            )
+            .outerjoin(
+                Program,
+                Program.id == PatientSlotBooking.program_id
             )
             .outerjoin(
                 Package,
@@ -690,7 +765,13 @@ class AppointmentRepository:
         )
         if region_ids:
             query = query.filter(Therapist.region_id.in_(region_ids))
-        return query.all()
+        try:
+            return query.all()
+        except ProgrammingError as exc:
+            db.rollback()
+            if "therapist_availability" in str(exc).lower():
+                return []
+            raise
 
     @staticmethod
     def get_unavailable_therapist_availability_range(
@@ -712,7 +793,13 @@ class AppointmentRepository:
         )
         if region_ids:
             query = query.filter(Therapist.region_id.in_(region_ids))
-        return query.all()
+        try:
+            return query.all()
+        except ProgrammingError as exc:
+            db.rollback()
+            if "therapist_availability" in str(exc).lower():
+                return []
+            raise
 
     @staticmethod
     def has_active_patient_booking_for_mapping(

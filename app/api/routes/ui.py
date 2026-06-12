@@ -23,6 +23,7 @@ from app.models.models import (
     AuditLog,
     Document,
     DocumentTypeMaster,
+    Enquiry,
     Invoice,
     Package,
     Patient,
@@ -61,6 +62,7 @@ ALLOWED_DOCUMENT_EXTENSIONS = {
 }
 _PATIENT_PROFILE_SCHEMA_READY = False
 _PACKAGE_BILLING_SCHEMA_READY = False
+_ENQUIRY_SCHEMA_READY = False
 REMOVED_DB_TABLES = {
     "alerts",
     "waitlist_entries",
@@ -130,6 +132,72 @@ def _ensure_package_billing_schema(db: Session) -> None:
     })
     db.commit()
     _PACKAGE_BILLING_SCHEMA_READY = True
+
+
+def _ensure_enquiry_schema(db: Session) -> None:
+    global _ENQUIRY_SCHEMA_READY
+    if _ENQUIRY_SCHEMA_READY:
+        return
+
+    inspector = inspect(db.bind)
+    dialect = db.bind.dialect.name if db.bind else ""
+
+    if not inspector.has_table("enquiries"):
+        if dialect == "sqlite":
+            db.execute(text("""
+                CREATE TABLE enquiries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    first_name VARCHAR(100) NOT NULL,
+                    last_name VARCHAR(100) NULL,
+                    gender VARCHAR(20) NULL,
+                    phone VARCHAR(20) NOT NULL,
+                    referred_by VARCHAR(255) NULL,
+                    enquiry_source VARCHAR(100) NULL,
+                    region_id INTEGER NOT NULL,
+                    is_active BOOLEAN NOT NULL DEFAULT 1
+                )
+            """))
+        else:
+            db.execute(text("""
+                CREATE TABLE enquiries (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    first_name VARCHAR(100) NOT NULL,
+                    last_name VARCHAR(100) NULL,
+                    gender VARCHAR(20) NULL,
+                    phone VARCHAR(20) NOT NULL,
+                    referred_by VARCHAR(255) NULL,
+                    enquiry_source VARCHAR(100) NULL,
+                    region_id INT NOT NULL,
+                    is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    KEY idx_enquiry_region_id (region_id),
+                    KEY idx_enquiry_phone (phone),
+                    KEY idx_enquiry_is_active (is_active)
+                )
+            """))
+        db.commit()
+        _ENQUIRY_SCHEMA_READY = True
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("enquiries")}
+    definitions = {
+        "first_name": "VARCHAR(100) NULL",
+        "last_name": "VARCHAR(100) NULL",
+        "gender": "VARCHAR(20) NULL",
+        "phone": "VARCHAR(20) NULL",
+        "referred_by": "VARCHAR(255) NULL",
+        "enquiry_source": "VARCHAR(100) NULL",
+        "region_id": "INT NULL",
+        "is_active": "BOOLEAN NOT NULL DEFAULT 1",
+    }
+    sqlite_definitions = {
+        name: definition.replace("INT", "INTEGER")
+        for name, definition in definitions.items()
+    }
+    for name, definition in (sqlite_definitions if dialect == "sqlite" else definitions).items():
+        if name not in columns:
+            db.execute(text(f"ALTER TABLE enquiries ADD COLUMN {name} {definition}"))
+    db.commit()
+    _ENQUIRY_SCHEMA_READY = True
 
 
 def _now() -> datetime:
@@ -365,17 +433,23 @@ def _role(db: Session, name: str) -> Role:
     db.refresh(role)
     return role
 
-
 def _user_shape(user: User, db: Session) -> dict:
     region_ids = _user_region_ids(db, user)
+
     return {
-        "id": user.id,
+        "user_id": user.id,
         "username": user.username,
         "full_name": _full_name(user),
         "email": user.email,
         "phone": user.phone,
         "region_id": region_ids[0] if region_ids else None,
-        "region_ids": region_ids,
+        "roles": [
+            {
+                "role_id": ur.role.id,
+                "role_name": ur.role.name
+            }
+            for ur in user.user_roles
+        ]
     }
 
 
@@ -470,6 +544,20 @@ def _patient_shape(patient: Patient) -> dict:
         "created_by": patient.created_by,
         "updated_by": patient.updated_by,
         "assessment_answers": patient.assessment_answers,
+    }
+
+
+def _enquiry_shape(enquiry: Enquiry) -> dict:
+    return {
+        "id": enquiry.id,
+        "first_name": enquiry.first_name,
+        "last_name": enquiry.last_name,
+        "gender": enquiry.gender,
+        "phone": enquiry.phone,
+        "referred_by": enquiry.referred_by,
+        "enquiry_source": enquiry.enquiry_source,
+        "region_id": enquiry.region_id,
+        "is_active": enquiry.is_active,
     }
 
 
@@ -690,7 +778,49 @@ def _package_utilized_amount(patient_package: PatientPackage) -> float:
 
 
 def _package_due_amount(patient_package: PatientPackage) -> float:
-    return _package_utilized_amount(patient_package) - float(patient_package.paid_amount or 0)
+    db = object_session(patient_package)
+    if not db or not patient_package.id:
+        return _package_utilized_amount(patient_package) - float(patient_package.paid_amount or 0)
+
+    billable_status_ids = [
+        MASTER_LOOKUP_DATA["patient_slot_booking"]["COMPLETED"],
+        MASTER_LOOKUP_DATA["patient_slot_booking"]["PAID_CANCELLED"],
+    ]
+    slot_due_total = 0.0
+    slot_bookings = (
+        db.query(PatientSlotBooking)
+        .options(joinedload(PatientSlotBooking.patient_session_plan_item))
+        .filter(
+            PatientSlotBooking.patient_package_id == patient_package.id,
+            PatientSlotBooking.is_package_session.is_(True),
+            PatientSlotBooking.status_id.in_(billable_status_ids),
+        )
+        .all()
+    )
+    for slot_booking in slot_bookings:
+        amount = float(slot_booking.amount or _slot_amount(slot_booking) or 0)
+        paid = float(slot_booking.paid_amount or 0)
+        slot_due_total += max(0, amount - paid)
+    return slot_due_total - float(patient_package.paid_amount or 0)
+
+
+def _package_slot_paid_amount(patient_package: PatientPackage) -> float:
+    db = object_session(patient_package)
+    if not db or not patient_package.id:
+        return 0.0
+    total = (
+        db.query(func.coalesce(func.sum(PatientSlotBooking.paid_amount), 0))
+        .filter(
+            PatientSlotBooking.patient_package_id == patient_package.id,
+            PatientSlotBooking.is_package_session.is_(True),
+        )
+        .scalar()
+    )
+    return float(total or 0)
+
+
+def _package_effective_paid_amount(patient_package: PatientPackage) -> float:
+    return float(patient_package.paid_amount or 0) + _package_slot_paid_amount(patient_package)
 
 
 def _package_paid_balance_amount(patient_package: PatientPackage) -> float:
@@ -721,18 +851,21 @@ def _package_paid_balance_amount(patient_package: PatientPackage) -> float:
 def _package_shape(patient_package: PatientPackage) -> dict:
     stats = _package_session_stats(patient_package)
     due_amount = _package_due_amount(patient_package)
+    paid_amount = _package_effective_paid_amount(patient_package)
     return {
         "id": patient_package.id,
         "patient_id": patient_package.patient_id,
         "package_id": patient_package.package_id,
         "package_name": patient_package.package.name if patient_package.package else None,
+        "program_id": patient_package.package.program_id if patient_package.package else None,
+        "program_name": patient_package.package.program.program_name if patient_package.package and patient_package.package.program else None,
         "total_sessions": stats["total"],
         "sessions_used": stats["completed"],
         "sessions_completed": stats["completed"],
         "sessions_remaining": stats["remaining"],
         "remaining_sessions": stats["remaining"],
         "total_amount": float(patient_package.total_amount or 0),
-        "paid_amount": float(patient_package.paid_amount or 0),
+        "paid_amount": paid_amount,
         "paid_balance_amount": _package_paid_balance_amount(patient_package),
         "utilized_amount": _package_utilized_amount(patient_package),
         "per_session_rate": _package_per_session_rate(patient_package),
@@ -751,6 +884,8 @@ def _master_package_shape(package: Package) -> dict:
         "name": package.name,
         "description": package.description,
         "region_id": package.region_id,
+        "program_id": package.program_id,
+        "program_name": package.program.program_name if getattr(package, "program", None) else None,
         "total_sessions": package.total_sessions,
         "price": float(package.price or 0),
         "duration_days": package.duration_days,
@@ -765,7 +900,90 @@ def _ensure_package_master_schema(db: Session) -> None:
     package_columns = {col["name"] for col in inspect(db.bind).get_columns("packages")}
     if "region_id" not in package_columns:
         db.execute(text("ALTER TABLE packages ADD COLUMN region_id INT NULL"))
-        db.commit()
+    if "program_id" not in package_columns:
+        db.execute(text("ALTER TABLE packages ADD COLUMN program_id INT NULL"))
+    if inspect(db.bind).has_table("programs"):
+        seed_names = (
+            "General 16 Session - Package",
+            "General 12 Session - Package",
+            "CRT 6-Day Program",
+            "CRT 5-Day Program",
+            "Social Skills 12 Session",
+            "Social Skills 8 Session",
+            "Schooling 12 Session",
+            "Schooling 8 Session",
+            "Vocational 10 Session",
+            "Vocational 8 Session",
+        )
+        db.query(Package).filter(Package.program_id.isnot(None), Package.name.notin_(seed_names)).update(
+            {"is_active": False},
+            synchronize_session=False,
+        )
+        package_seed = """
+            SELECT 'General' AS program_name, 'General 16 Session - Package' AS package_name, 16 AS total_sessions, 17600 AS price, 120 AS duration_days
+            UNION ALL SELECT 'General', 'General 12 Session - Package', 12, 13200, 90
+            UNION ALL SELECT 'CRT', 'CRT 6-Day Program', 6, 40000, 45
+            UNION ALL SELECT 'CRT', 'CRT 5-Day Program', 5, 30000, 30
+            UNION ALL SELECT 'CRT (Structured Program)', 'CRT 6-Day Program', 6, 40000, 45
+            UNION ALL SELECT 'CRT (Structured Program)', 'CRT 5-Day Program', 5, 30000, 30
+            UNION ALL SELECT 'Social Group', 'Social Skills 12 Session', 12, 22000, 90
+            UNION ALL SELECT 'Social Group', 'Social Skills 8 Session', 8, 16000, 60
+            UNION ALL SELECT 'Schooling', 'Schooling 12 Session', 12, 14400, 90
+            UNION ALL SELECT 'Schooling', 'Schooling 8 Session', 8, 9600, 60
+            UNION ALL SELECT 'Vocational', 'Vocational 10 Session', 10, 25000, 75
+            UNION ALL SELECT 'Vocational', 'Vocational 8 Session', 8, 20000, 60
+        """
+        db.execute(text(f"""
+            UPDATE packages pkg
+            JOIN programs p ON p.id = pkg.program_id
+            JOIN ({package_seed}) seed
+              ON seed.program_name = p.program_name
+             AND seed.package_name = pkg.name
+            SET pkg.total_sessions = seed.total_sessions,
+                pkg.price = seed.price,
+                pkg.duration_days = seed.duration_days,
+                pkg.description = CONCAT(p.program_name, ' package'),
+                pkg.region_id = p.region_id,
+                pkg.is_active = 1
+            WHERE p.deleted_at IS NULL
+              AND p.is_active = 1
+              AND p.region_id = 1
+              AND pkg.deleted_at IS NULL
+        """))
+        db.execute(text(f"""
+            INSERT INTO packages (
+                name,
+                description,
+                region_id,
+                program_id,
+                total_sessions,
+                price,
+                duration_days,
+                is_active
+            )
+            SELECT
+                seed.package_name,
+                CONCAT(p.program_name, ' package'),
+                p.region_id,
+                p.id,
+                seed.total_sessions,
+                seed.price,
+                seed.duration_days,
+                1
+            FROM programs p
+            JOIN ({package_seed}) seed ON seed.program_name = p.program_name
+            WHERE p.deleted_at IS NULL
+              AND p.is_active = 1
+              AND p.region_id = 1
+              AND NOT EXISTS (
+                SELECT 1
+                FROM packages existing
+                WHERE existing.program_id = p.id
+                  AND existing.name = seed.package_name
+                  AND existing.deleted_at IS NULL
+              )
+        """))
+    db.commit()
 
 
 def _invoice_shape(invoice: Invoice) -> dict:
@@ -941,7 +1159,7 @@ def _transaction_slot_shape(slot_booking: PatientSlotBooking, payment: Optional[
 
 
 def _package_purchase_transaction_shape(patient_package: PatientPackage, initial_paid_amount: Optional[float] = None) -> dict:
-    paid_amount = max(0, float(initial_paid_amount if initial_paid_amount is not None else patient_package.paid_amount or 0))
+    paid_amount = max(0, float(initial_paid_amount if initial_paid_amount is not None else _package_effective_paid_amount(patient_package)))
     return {
         "id": f"package-{patient_package.id}",
         "transaction_type": "Package Purchase",
@@ -994,7 +1212,7 @@ def _payment_transaction_shape(
 
     if patient_package:
         amount = float(patient_package.total_amount or 0)
-        package_paid_total = float(cumulative_package_paid if cumulative_package_paid is not None else patient_package.paid_amount or 0)
+        package_paid_total = float(cumulative_package_paid if cumulative_package_paid is not None else _package_effective_paid_amount(patient_package))
         due_amount = _package_utilized_amount(patient_package) - package_paid_total
         return {
             "id": f"payment-{payment.id}",
@@ -1186,6 +1404,7 @@ SHAPERS = {
     "roles": _role_shape,
     "user_roles": _user_role_shape,
     "patients": _patient_shape,
+    "enquiries": _enquiry_shape,
     "therapists": _therapist_shape,
     "therapist_availability": _availability_shape,
     "therapist_leaves": _therapist_leave_shape,
@@ -1209,6 +1428,7 @@ ALLOWED_UI_TABLES = {
     "roles",
     "user_roles",
     "patients",
+    "enquiries",
     "therapists",
     "therapist_availability",
     "therapist_leaves",
@@ -1255,6 +1475,8 @@ def _base_query(table: str, db: Session, user: Optional[User]):
 
     if table in {"patients", "patient_packages", "invoices", "payments", "documents"}:
         _ensure_patient_profile_schema(db)
+    if table == "enquiries":
+        _ensure_enquiry_schema(db)
 
     region_ids = _user_region_ids(db, user)
     roles = _user_roles(db, user)
@@ -1263,6 +1485,11 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         query = db.query(Patient)
         if region_ids:
             query = query.filter(Patient.region_id.in_(region_ids))
+        return query
+    if table == "enquiries":
+        query = db.query(Enquiry).filter(Enquiry.is_active.is_(True))
+        if region_ids:
+            query = query.filter(Enquiry.region_id.in_(region_ids))
         return query
     if table == "users":
         query = db.query(User).filter(User.deleted_at.is_(None))
@@ -1319,10 +1546,9 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return query
     if table == "packages":
         _ensure_package_master_schema(db)
-        query = db.query(Package).filter(
+        query = db.query(Package).options(joinedload(Package.program)).filter(
             Package.deleted_at.is_(None),
             Package.is_active.is_(True),
-            Package.total_sessions.in_([12, 16]),
         )
         if region_ids:
             query = query.filter(Package.region_id.in_(region_ids))
@@ -1378,6 +1604,7 @@ def _column_for(table: str, field: str):
         "appointments": Appointment,
         "sessions": TherapySession,
         "patients": Patient,
+        "enquiries": Enquiry,
         "therapists": Therapist,
         "therapist_availability": TherapistAvailability,
         "therapist_leaves": TherapistLeave,
@@ -1402,6 +1629,11 @@ def _apply_filters(query, table: str, filters: list[dict]):
                 query = query.filter(expression.ilike(value.replace("*", "%")))
             elif op == "eq":
                 query = query.filter(expression == value)
+        elif field in {"full_name", "first_name"} and table == "enquiries":
+            if op == "ilike":
+                query = query.filter(Enquiry.first_name.ilike(value.replace("*", "%")))
+            elif op == "eq":
+                query = query.filter(Enquiry.first_name == value)
         elif field == "is_active" and table == "therapists":
             continue
         elif field == "is_resolved" and table == "alerts":
@@ -1440,18 +1672,27 @@ def _apply_order(query, table: str, order_by: Optional[str], ascending: bool):
         return query
     return query.order_by(col.asc() if ascending else col.desc())
 
-
 @router.post("/auth/login")
 async def login(payload: dict, db: Session = Depends(get_db)):
     email = payload.get("email")
     password = payload.get("password")
+
     user = UserService.authenticate_user(db, email, password)
+
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials"
+        )
     tokens = AuthService.create_tokens(user, db)
     AuthService.update_last_login(db, user.id)
-    return {"data": {"session": tokens, "user": _user_shape(user, db)}}
 
+    return {
+        "data": {
+            "session": tokens,
+            "user": _user_shape(user, db)
+        }
+    }
 
 @router.post("/auth/refresh")
 async def refresh_session(payload: dict, db: Session = Depends(get_db)):
@@ -2138,7 +2379,7 @@ async def get_patient_transactions(
         for package_id, payments in payments_by_package.items()
     }
     package_initial_paid = {
-        pkg.id: max(0, float(pkg.paid_amount or 0) - package_payment_totals.get(pkg.id, 0))
+        pkg.id: max(0, _package_effective_paid_amount(pkg) - package_payment_totals.get(pkg.id, 0))
         for pkg in packages
     }
 
@@ -2147,19 +2388,28 @@ async def get_patient_transactions(
 
     slots_by_id = {slot_booking.id: slot_booking for slot_booking in slots}
     packages_by_id = {pkg.id: pkg for pkg in packages}
-    package_running_used: dict[int, float] = {}
-    package_paid = {pkg.id: float(pkg.paid_amount or 0) for pkg in packages}
+    package_running_due = {pkg.id: -max(0, _package_effective_paid_amount(pkg)) for pkg in packages}
+    seen_crt_package_usage: set[tuple[int, str]] = set()
     for slot_booking in sorted(slots, key=lambda row: (row.created_at or _now(), row.id or 0)):
+        program_name = (slot_booking.program.program_name if slot_booking.program else "") or ""
+        is_crt_slot = "crt" in program_name.lower() or "structured" in program_name.lower()
+        if is_crt_slot and not slot_booking.is_package_session:
+            continue
         row = _transaction_slot_shape(slot_booking, slot_payments.get(slot_booking.id))
         if slot_booking.is_package_session and slot_booking.patient_package_id:
             package_id = int(slot_booking.patient_package_id)
-            status = str(slot_booking.status or "").upper()
-            is_billable = status in {"COMPLETED", "PAID_CANCELLED"}
+            slot_date_key = _iso(slot_booking.therapist_slot_mapping.slot_date if slot_booking.therapist_slot_mapping else None) or ""
+            crt_usage_key = (package_id, slot_date_key)
+            if is_crt_slot and crt_usage_key in seen_crt_package_usage:
+                continue
+            if is_crt_slot:
+                seen_crt_package_usage.add(crt_usage_key)
             amount = float(row["amount"] or 0)
-            if is_billable:
-                package_running_used[package_id] = package_running_used.get(package_id, 0) + amount
+            package_due_before = package_running_due.get(package_id, 0)
+            row_due = max(0, amount + package_due_before) if package_due_before < 0 else amount
+            package_running_due[package_id] = package_due_before + amount
             row["paid_amount"] = 0
-            row["due_amount"] = package_running_used.get(package_id, 0) - package_paid.get(package_id, 0)
+            row["due_amount"] = row_due
         elif not slot_booking.is_package_session:
             row["paid_amount"] = 0
             row["due_amount"] = float(row["amount"] or 0)
@@ -2582,12 +2832,32 @@ async def update_rows(table: str, request: Request, payload: dict = Body(...), f
     return {"data": data[0] if len(data) == 1 else data}
 
 
+def _mark_enquiry_converted(db: Session, enquiry_id: Any, patient_id: int, user: Optional[User]) -> None:
+    _ensure_enquiry_schema(db)
+    try:
+        source_id = int(enquiry_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid enquiry id")
+
+    enquiry = db.query(Enquiry).filter(Enquiry.id == source_id, Enquiry.is_active.is_(True)).first()
+    if not enquiry:
+        raise HTTPException(status_code=404, detail="Enquiry not found")
+
+    region_ids = _user_region_ids(db, user)
+    if region_ids and enquiry.region_id not in region_ids:
+        raise HTTPException(status_code=403, detail="Enquiry is outside your region")
+
+    enquiry.is_active = False
+
+
 def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
     if table not in ALLOWED_UI_TABLES:
         raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
 
     if table == "patients":
         _ensure_patient_profile_schema(db)
+    if table == "enquiries" or (table == "patients" and item.get("source_enquiry_id")):
+        _ensure_enquiry_schema(db)
 
     region = _default_region(db)
     user_id = user.id if user else None
@@ -2614,6 +2884,23 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             registration_at=_parse_dt(item.get("registration_at")) if item.get("registration_at") else _now(),
             clinical_observation=item.get("clinical_observation"),
             region_id=region_id,
+        )
+    elif table == "enquiries":
+        first_name = (item.get("first_name") or "").strip()
+        phone = (item.get("phone") or "").strip()
+        if not first_name:
+            raise HTTPException(status_code=400, detail="First name is required")
+        if not phone:
+            raise HTTPException(status_code=400, detail="Phone number is required")
+        row = Enquiry(
+            first_name=first_name,
+            last_name=(item.get("last_name") or "").strip() or None,
+            gender=item.get("gender"),
+            phone=phone,
+            referred_by=item.get("referred_by"),
+            enquiry_source=item.get("enquiry_source"),
+            region_id=region_id,
+            is_active=True,
         )
     elif table == "appointments":
         start = _parse_dt(item["scheduled_at"])
@@ -2829,6 +3116,8 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         raise HTTPException(status_code=404, detail=f"Unsupported table: {table}")
     db.add(row)
     db.flush()
+    if table == "patients" and item.get("source_enquiry_id"):
+        _mark_enquiry_converted(db, item.get("source_enquiry_id"), row.id, user)
     return row
 
 
@@ -2862,6 +3151,13 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
             row.gender = item["gender"]
         if "registration_at" in item:
             row.registration_at = _parse_dt(item["registration_at"]) if item["registration_at"] else row.registration_at
+    elif table == "enquiries":
+        for key in [
+            "first_name", "last_name", "gender", "phone",
+            "referred_by", "enquiry_source", "is_active",
+        ]:
+            if key in item:
+                setattr(row, key, item[key])
     elif table == "appointments":
         if "status" in item:
             row.status = item["status"]

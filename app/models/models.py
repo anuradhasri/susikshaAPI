@@ -348,6 +348,28 @@ class Patient(Base):
     )
 
 
+class Enquiry(Base):
+    __tablename__ = "enquiries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    first_name = Column(String(100), nullable=False)
+    last_name = Column(String(100), nullable=True)
+    gender = Column(String(20), nullable=True)
+    phone = Column(String(20), nullable=False)
+    referred_by = Column(String(255), nullable=True)
+    enquiry_source = Column(String(100), nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
+
+    region = relationship("Region")
+
+    __table_args__ = (
+        Index("idx_enquiry_region_id", "region_id"),
+        Index("idx_enquiry_phone", "phone"),
+        Index("idx_enquiry_is_active", "is_active"),
+    )
+
+
 # ============== THERAPISTS ==============
 
 class Therapist(Base):
@@ -424,6 +446,8 @@ class Appointment(Base):
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
     therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=True)
+    appointment_date = Column(Date, nullable=True)
     start_time = Column(DateTime(timezone=True), nullable=False)
     end_time = Column(DateTime(timezone=True), nullable=False)
     status = Column(String(50), nullable=False, default="scheduled")
@@ -436,6 +460,51 @@ class Appointment(Base):
     patient = relationship("Patient")
     therapist = relationship("Therapist")
     region = relationship("Region")
+    program = relationship("Program")
+    child_mappings = relationship("AppointmentChildMapping", back_populates="appointment")
+    therapist_slots = relationship("AppointmentTherapistSlot", back_populates="appointment")
+
+
+class AppointmentChildMapping(Base):
+    __tablename__ = "appointment_child_mapping"
+
+    id = Column(Integer, primary_key=True, index=True)
+    appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=False)
+    child_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    appointment = relationship("Appointment", back_populates="child_mappings")
+    child = relationship("Patient")
+
+    __table_args__ = (
+        UniqueConstraint("appointment_id", "child_id", name="uq_appointment_child"),
+        Index("idx_appointment_child_appointment_id", "appointment_id"),
+        Index("idx_appointment_child_child_id", "child_id"),
+    )
+
+
+class AppointmentTherapistSlot(Base):
+    __tablename__ = "appointment_therapist_slot"
+
+    id = Column(Integer, primary_key=True, index=True)
+    appointment_id = Column(Integer, ForeignKey("appointments.id"), nullable=False)
+    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False)
+    therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
+    start_time = Column(DateTime(timezone=True), nullable=False)
+    end_time = Column(DateTime(timezone=True), nullable=False)
+    duration_minutes = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    appointment = relationship("Appointment", back_populates="therapist_slots")
+    therapist = relationship("Therapist")
+    therapy = relationship("TherapyMaster")
+
+    __table_args__ = (
+        Index("idx_appointment_therapist_slot_appointment_id", "appointment_id"),
+        Index("idx_appointment_therapist_slot_therapist_time", "therapist_id", "start_time", "end_time"),
+        Index("idx_appointment_therapist_slot_therapy_id", "therapy_id"),
+    )
 
 
 class Session(Base):
@@ -484,6 +553,7 @@ class Package(Base):
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=True)
     total_sessions = Column(Integer, nullable=False)
     price = Column(Float, nullable=False)
     duration_days = Column(Integer, nullable=True)
@@ -494,6 +564,7 @@ class Package(Base):
 
     patient_packages = relationship("PatientPackage", back_populates="package")
     region = relationship("Region")
+    program = relationship("Program")
 
 
 class Program(Base):
@@ -503,17 +574,42 @@ class Program(Base):
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     program_name = Column(String(100), nullable=False)
     per_session_amount = Column(Float, nullable=False, default=0, server_default="0")
+    duration_minutes = Column(Integer, nullable=False, default=45, server_default="45")
+    capacity = Column(Integer, nullable=False, default=1, server_default="1")
+    session_type = Column(String(50), nullable=False, default="individual", server_default="individual")
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
     region = relationship("Region")
+    segments = relationship("ProgramSegment", back_populates="program", order_by="ProgramSegment.sequence_no")
 
     __table_args__ = (
         UniqueConstraint("region_id", "program_name", name="uq_program_region_name"),
         Index("idx_program_region_id", "region_id"),
         Index("idx_program_active", "is_active"),
+    )
+
+
+class ProgramSegment(Base):
+    __tablename__ = "program_segments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=False)
+    sequence_no = Column(Integer, nullable=False)
+    label = Column(String(100), nullable=False)
+    duration_minutes = Column(Integer, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    program = relationship("Program", back_populates="segments")
+
+    __table_args__ = (
+        UniqueConstraint("program_id", "sequence_no", name="uq_program_segment_sequence"),
+        Index("idx_program_segment_program_id", "program_id"),
+        Index("idx_program_segment_active", "is_active"),
     )
 
 
@@ -954,8 +1050,10 @@ class AssessmentMaster(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
-    type_id = Column(Integer, ForeignKey("assessment_type_master.id"), nullable=False, default=901, server_default="901")
+    assessment_name = Column(String(255), nullable=True)
+    type_id = Column(Integer, ForeignKey("assessment_type_master.id"), nullable=False, default=1, server_default="1")
     description = Column(Text, nullable=True)
+    display_order = Column(Integer, nullable=False, default=0, server_default="0")
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     created_date = Column(DateTime, server_default=func.now())
     updated_date = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -985,11 +1083,68 @@ class AssessmentQuestion(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     assessment_id = Column(Integer, ForeignKey("assessment_master.id"), nullable=False)
-    question_id = Column(Integer, ForeignKey("question_master.id"), nullable=False)
+    question_id = Column(Integer, ForeignKey("question_master.id"), nullable=True)
+    question_text = Column(Text, nullable=True)
+    question_type = Column(String(50), nullable=False, default="textarea", server_default="textarea")
+    display_order = Column(Integer, nullable=False, default=0, server_default="0")
     created_date = Column(DateTime, server_default=func.now())
     updated_date = Column(DateTime, server_default=func.now(), onupdate=func.now())
     updated_by = Column("UPDATED_BY", Integer, nullable=True)
     created_by = Column("CREATED_BY", Integer, nullable=True)
+
+    assessment = relationship("AssessmentMaster")
+    question = relationship("QuestionMaster")
+    options = relationship("AssessmentQuestionOption", back_populates="question")
+
+
+class AssessmentQuestionOption(Base):
+    __tablename__ = "assessment_question_option"
+
+    id = Column(Integer, primary_key=True, index=True)
+    question_id = Column(Integer, ForeignKey("assessment_question.id"), nullable=False)
+    option_text = Column(String(255), nullable=False)
+    display_order = Column(Integer, nullable=False, default=0, server_default="0")
+
+    question = relationship("AssessmentQuestion", back_populates="options")
+
+
+class TherapyAssessmentMapping(Base):
+    __tablename__ = "therapy_assessment_mapping"
+
+    id = Column(Integer, primary_key=True, index=True)
+    therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=False)
+    assessment_id = Column(Integer, ForeignKey("assessment_master.id"), nullable=False)
+    can_edit = Column(Boolean, nullable=False, default=False, server_default="0")
+
+    therapy = relationship("TherapyMaster")
+    assessment = relationship("AssessmentMaster")
+
+    __table_args__ = (
+        UniqueConstraint("therapy_id", "assessment_id", name="uq_therapy_assessment"),
+    )
+
+
+class ChildAssessmentAnswer(Base):
+    __tablename__ = "child_assessment_answer"
+
+    id = Column(Integer, primary_key=True, index=True)
+    child_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    assessment_id = Column(Integer, ForeignKey("assessment_master.id"), nullable=False)
+    question_id = Column(Integer, ForeignKey("assessment_question.id"), nullable=False)
+    answer_value = Column(Text, nullable=True)
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    child = relationship("Patient")
+    assessment = relationship("AssessmentMaster")
+    question = relationship("AssessmentQuestion")
+
+    __table_args__ = (
+        UniqueConstraint("child_id", "question_id", name="uq_child_assessment_question_answer"),
+        Index("idx_child_assessment_answer_child_id", "child_id"),
+    )
 
 
 class PatientAssessment(StatusIdMixin, Base):
@@ -1130,6 +1285,8 @@ class PatientSlotBooking(StatusIdMixin, Base):
         nullable=True
     )
     patient_package_id = Column(Integer, ForeignKey("patient_packages.id"), nullable=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=True)
+    duration_minutes = Column(Integer, nullable=True)
     is_package_session = Column(Boolean, nullable=False, default=False, server_default="0")
     amount = Column(Float, nullable=False, default=0, server_default="0")
     paid_amount = Column(Float, nullable=False, default=0, server_default="0")
@@ -1150,3 +1307,4 @@ class PatientSlotBooking(StatusIdMixin, Base):
         back_populates="patient_slot_bookings"
     )
     patient_package = relationship("PatientPackage")
+    program = relationship("Program")

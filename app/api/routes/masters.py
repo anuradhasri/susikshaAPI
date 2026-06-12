@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
-from app.models.models import MASTER_LOOKUP_MODELS, PaymentModeMaster, User
+from app.models.models import MASTER_LOOKUP_MODELS, PaymentModeMaster, Region, User
 from app.schemas.schemas import MasterOptionResponse
 
 router = APIRouter(prefix="/api/v1/masters", tags=["masters"])
@@ -70,6 +70,28 @@ async def list_payment_modes(
             "code": None,
             "name": row.payment_mode_name,
             "category": "payment_mode",
+        }
+        for row in rows
+    ]
+
+
+@router.get("/regions", response_model=List[MasterOptionResponse])
+async def list_assigned_regions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    region_ids = getattr(current_user, "region_ids", []) or []
+    query = db.query(Region).filter(Region.deleted_at.is_(None))
+    if region_ids:
+        query = query.filter(Region.id.in_(region_ids))
+
+    rows = query.order_by(Region.name.asc()).all()
+    return [
+        {
+            "id": row.id,
+            "code": row.code,
+            "name": row.name,
+            "category": "region",
         }
         for row in rows
     ]

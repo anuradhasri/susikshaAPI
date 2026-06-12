@@ -119,9 +119,8 @@ class AuthService:
         
         return {
             "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer"
-        }
+            "refresh_token": refresh_token        
+            }
 
     @staticmethod
     def rotate_refresh_token(db: Session, refresh_token: str) -> Optional[dict]:

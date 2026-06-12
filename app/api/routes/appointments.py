@@ -11,7 +11,7 @@ from app.schemas.schemas import (
     SlotStatusActionRequest, SlotStatusActionResponse
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
-from app.models.models import User
+from app.models.models import Program, ProgramSegment, User
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/appointments", tags=["appointments"])
@@ -40,10 +40,127 @@ async def get_all_slots(
         )
 
 @router.get(
+    "/programs",
+    status_code=status.HTTP_200_OK
+)
+async def get_programs(
+    region_id: int = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetch active appointment programs from the programs table for the current user's regions."""
+    await check_region_access(
+        current_user=current_user,
+        db=db,
+        target_region_id=current_user.region_ids
+    )
+
+    try:
+        AppointmentService._ensure_program_schema(db)
+        region_ids = [region_id] if region_id else current_user.region_ids
+        if isinstance(region_ids, int):
+            region_ids = [region_ids]
+
+        query = db.query(Program).filter(
+            Program.is_active.is_(True),
+            Program.deleted_at.is_(None),
+        )
+        if region_ids:
+            query = query.filter(Program.region_id.in_(region_ids))
+
+        programs = query.order_by(Program.program_name.asc(), Program.id.asc()).all()
+        program_names = {program.program_name.strip().lower() for program in programs}
+        required_programs = {"general", "crt", "vocational", "social group", "schooling"}
+        if not required_programs.issubset(program_names):
+            fallback_programs = (
+                db.query(Program)
+                .filter(
+                    Program.is_active.is_(True),
+                    Program.deleted_at.is_(None),
+                )
+                .order_by(Program.program_name.asc(), Program.id.asc())
+                .all()
+            )
+            programs = programs + [
+                program
+                for program in fallback_programs
+                if program.program_name.strip().lower() not in program_names
+            ]
+
+        order = {
+            "general": 0,
+            "crt": 1,
+            "crt (structured program)": 1,
+            "vocational": 2,
+            "vocational program": 2,
+            "social group": 3,
+            "schooling": 4,
+        }
+        deduped_programs = {}
+        for program in sorted(
+            programs,
+            key=lambda item: (
+                order.get(item.program_name.strip().lower(), 99),
+                item.program_name.lower(),
+                item.region_id,
+                item.id,
+            ),
+        ):
+            deduped_programs.setdefault(program.program_name.strip().lower(), program)
+        programs = list(deduped_programs.values())
+        segment_rows = (
+            db.query(ProgramSegment)
+            .filter(
+                ProgramSegment.program_id.in_([program.id for program in programs]),
+                ProgramSegment.is_active.is_(True),
+            )
+            .order_by(ProgramSegment.program_id.asc(), ProgramSegment.sequence_no.asc())
+            .all()
+            if programs
+            else []
+        )
+        segments_by_program = {}
+        for segment in segment_rows:
+            segments_by_program.setdefault(segment.program_id, []).append({
+                "id": segment.id,
+                "sequence_no": segment.sequence_no,
+                "label": segment.label,
+                "duration_minutes": segment.duration_minutes,
+            })
+
+        return {
+            "total": len(programs),
+            "data": [
+                {
+                    "id": program.id,
+                    "region_id": program.region_id,
+                    "program_name": program.program_name,
+                    "per_session_amount": float(program.per_session_amount or 0),
+                    "duration_minutes": int(program.duration_minutes or 45),
+                    "capacity": int(program.capacity or 1),
+                    "session_type": program.session_type or "individual",
+                    "segments": segments_by_program.get(program.id, []),
+                }
+                for program in programs
+            ],
+        }
+
+    except Exception as e:
+        logger.error(
+            f"Error fetching appointment programs: {str(e)}",
+            extra={"user_id": current_user.id}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error fetching appointment programs"
+        )
+
+@router.get(
     "/waitlist-patients",
     status_code=status.HTTP_200_OK
 )
 async def get_waitlist_patients(
+    region_id: int = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -61,7 +178,8 @@ async def get_waitlist_patients(
         
         response = AppointmentService.get_waitlist_patients(
             db=db,
-            current_user=current_user
+            current_user=current_user,
+            region_id=region_id,
         )
 
         logger.info(
@@ -503,6 +621,7 @@ async def get_appointment_calendar(
     selected_date: date = Query(None),
     start_date: date = Query(None),
     end_date: date = Query(None),
+    region_id: int = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -528,7 +647,7 @@ async def get_appointment_calendar(
                 db=db,
                 start_date=start_date,
                 end_date=end_date,
-                region_ids=current_user.region_ids
+                region_ids=[region_id] if region_id else current_user.region_ids
             )
         else:
             if not selected_date:
@@ -537,7 +656,7 @@ async def get_appointment_calendar(
             response = AppointmentService.get_calendar_view(
                 db=db,
                 selected_date=selected_date,
-                region_ids=current_user.region_ids
+                region_ids=[region_id] if region_id else current_user.region_ids
             )
 
         logger.info(
@@ -591,6 +710,7 @@ async def get_appointment_calendar(
 )
 async def get_therapists(
     therapy_id: int,
+    region_id: int = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -609,7 +729,8 @@ async def get_therapists(
         response = AppointmentService.get_therapists(
             db=db,
             therapy_id=therapy_id,
-            current_user=current_user
+            current_user=current_user,
+            region_id=region_id,
         )
 
         logger.info(

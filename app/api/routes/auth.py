@@ -50,24 +50,28 @@ async def register(user_create: UserCreate, db: Session = Depends(get_db)):
             detail=str(e)
         )
 
-
 @router.post("/login", response_model=TokenResponse)
 async def login(user_login: UserLogin, db: Session = Depends(get_db)):
-    """Login user and return tokens"""
-    user = UserService.authenticate_user(db, user_login.email, user_login.password)
-    
+    user = UserService.authenticate_user(
+        db,
+        user_login.email,
+        user_login.password
+    )
+
     if not user:
-        logger.warning(f"Failed login attempt for email: {user_login.email}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials"
         )
-    
+
     tokens = AuthService.create_tokens(user, db)
-    AuthService.update_last_login(db, user.id)
-    
-    logger.info(f"User logged in: {user.username}", extra={"user_id": user.id})
-    return tokens
+
+    roles = UserService.get_user_roles(db, user.id)
+
+    return {
+        **tokens,
+        "userRoles": roles
+    }
 
 
 @router.post("/refresh", response_model=TokenResponse)
