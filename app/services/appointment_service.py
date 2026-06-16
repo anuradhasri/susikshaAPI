@@ -5,7 +5,7 @@ from grpc import Status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, inspect, or_, text
 from datetime import datetime, date, time, timedelta
-from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, Patient, PatientPackage, Program, ProgramSegment, STATUS_ID_TO_CODE, MASTER_LOOKUP_DATA, PatientSlotBooking, TherapistSlotMapping
+from app.models.models import Appointment, Session as DBSession, SessionNote, SlotMaster, Therapist, Patient, PatientPackage, Package, Payment, Program, ProgramSegment, STATUS_ID_TO_CODE, MASTER_LOOKUP_DATA, PatientSlotBooking, TherapistSlotMapping, CrtProgramBooking
 from app.repositories.appointment_repository import AppointmentRepository
 from app.schemas.schemas import AppointmentCreate, AppointmentUpdate, SessionCreate, SessionUpdate, SlotBookingCreate
 from app.utils.query_utils import soft_delete, filter_by_region
@@ -28,21 +28,35 @@ class AppointmentService:
     @staticmethod
     def _ensure_package_billing_schema(db: Session) -> None:
         if AppointmentService._PACKAGE_BILLING_SCHEMA_READY:
+            slot_columns = {col["name"] for col in inspect(db.bind).get_columns("patient_slot_booking")}
+            if "crt_program_booking_id" not in slot_columns:
+                db.execute(text("ALTER TABLE patient_slot_booking ADD COLUMN crt_program_booking_id INT NULL"))
+            AppointmentService._ensure_crt_program_booking_schema(db)
+            AppointmentService._backfill_crt_program_bookings(db)
+            AppointmentService._ensure_group_booking_indexes(db)
+            if "fully_paid" in slot_columns:
+                db.commit()
+                return
+            db.execute(text("ALTER TABLE patient_slot_booking ADD COLUMN fully_paid BOOLEAN NOT NULL DEFAULT 0"))
+            db.commit()
             return
         slot_columns = {col["name"] for col in inspect(db.bind).get_columns("patient_slot_booking")}
         for name, definition in {
             "patient_id": "INT NULL",
             "patient_package_id": "INT NULL",
+            "crt_program_booking_id": "INT NULL",
             "program_id": "INT NULL",
             "duration_minutes": "INT NULL",
             "is_package_session": "BOOLEAN NOT NULL DEFAULT 0",
             "amount": "FLOAT NOT NULL DEFAULT 0",
             "paid_amount": "FLOAT NOT NULL DEFAULT 0",
             "due_amount": "FLOAT NOT NULL DEFAULT 0",
+            "fully_paid": "BOOLEAN NOT NULL DEFAULT 0",
             "payment_status": "VARCHAR(50) NOT NULL DEFAULT 'UNPAID'",
         }.items():
             if name not in slot_columns:
                 db.execute(text(f"ALTER TABLE patient_slot_booking ADD COLUMN {name} {definition}"))
+        AppointmentService._ensure_crt_program_booking_schema(db)
         if "patient_id" not in slot_columns:
             db.execute(text("""
                 UPDATE patient_slot_booking psb
@@ -68,8 +82,123 @@ class AppointmentService:
         }.items():
             if name not in package_columns:
                 db.execute(text(f"ALTER TABLE patient_packages ADD COLUMN {name} {definition}"))
+        AppointmentService._ensure_group_booking_indexes(db)
+        AppointmentService._backfill_crt_program_bookings(db)
         db.commit()
         AppointmentService._PACKAGE_BILLING_SCHEMA_READY = True
+
+    @staticmethod
+    def _ensure_crt_program_booking_schema(db: Session) -> None:
+        inspector = inspect(db.bind)
+        if inspector.has_table("crt_program_bookings"):
+            return
+        db.execute(text("""
+            CREATE TABLE crt_program_bookings (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                patient_id INT NOT NULL,
+                program_id INT NOT NULL,
+                patient_package_id INT NULL,
+                slot_date DATE NOT NULL,
+                total_amount FLOAT NOT NULL DEFAULT 0,
+                paid_amount FLOAT NOT NULL DEFAULT 0,
+                due_amount FLOAT NOT NULL DEFAULT 0,
+                fully_paid BOOLEAN NOT NULL DEFAULT 0,
+                is_package_session BOOLEAN NOT NULL DEFAULT 0,
+                payment_status VARCHAR(50) NOT NULL DEFAULT 'UNPAID',
+                status_id INT NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                KEY idx_crt_program_booking_patient_date (patient_id, program_id, slot_date),
+                KEY idx_crt_program_booking_package_id (patient_package_id),
+                KEY idx_crt_program_booking_status_id (status_id)
+            )
+        """))
+
+    @staticmethod
+    def _ensure_group_booking_indexes(db: Session) -> None:
+        inspector = inspect(db.bind)
+        indexes = {idx["name"] for idx in inspector.get_indexes("patient_slot_booking")}
+        unique_constraints = {idx["name"] for idx in inspector.get_unique_constraints("patient_slot_booking")}
+        existing_names = indexes | unique_constraints
+        dialect = db.bind.dialect.name if db.bind else ""
+        if "uq_one_patient_per_slot" in existing_names:
+            if dialect == "mysql":
+                if "idx_patient_slot_booking_mapping_id" not in existing_names:
+                    db.execute(text(
+                        "CREATE INDEX idx_patient_slot_booking_mapping_id "
+                        "ON patient_slot_booking (therapist_slot_mapping_id)"
+                    ))
+                    existing_names.add("idx_patient_slot_booking_mapping_id")
+                db.execute(text("ALTER TABLE patient_slot_booking DROP INDEX uq_one_patient_per_slot"))
+            else:
+                db.execute(text("DROP INDEX IF EXISTS uq_one_patient_per_slot"))
+            existing_names.discard("uq_one_patient_per_slot")
+        if "uq_patient_slot_mapping_child" not in existing_names:
+            if dialect == "sqlite":
+                db.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_patient_slot_mapping_child "
+                    "ON patient_slot_booking (therapist_slot_mapping_id, patient_id)"
+                ))
+            else:
+                db.execute(text(
+                    "ALTER TABLE patient_slot_booking "
+                    "ADD CONSTRAINT uq_patient_slot_mapping_child "
+                    "UNIQUE (therapist_slot_mapping_id, patient_id)"
+                ))
+
+    @staticmethod
+    def _backfill_crt_program_bookings(db: Session) -> None:
+        crt_slots = (
+            db.query(PatientSlotBooking)
+            .join(Program, Program.id == PatientSlotBooking.program_id)
+            .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
+            .filter(
+                PatientSlotBooking.crt_program_booking_id.is_(None),
+                PatientSlotBooking.patient_id.isnot(None),
+                or_(Program.program_name.ilike("%crt%"), Program.program_name.ilike("%structured%")),
+            )
+            .all()
+        )
+        groups: dict[tuple[int, int, date], list[PatientSlotBooking]] = defaultdict(list)
+        for slot_booking in crt_slots:
+            if slot_booking.therapist_slot_mapping and slot_booking.program_id:
+                groups[(
+                    slot_booking.patient_id,
+                    slot_booking.program_id,
+                    slot_booking.therapist_slot_mapping.slot_date,
+                )].append(slot_booking)
+
+        for (patient_id, program_id, slot_date), group_slots in groups.items():
+            amount = max(float(AppointmentService._slot_booking_amount(slot) or 0) for slot in group_slots)
+            paid = sum(float(slot.paid_amount or 0) for slot in group_slots)
+            fully_paid = any(bool(getattr(slot, "fully_paid", False)) for slot in group_slots) or (amount > 0 and paid >= amount)
+            parent = CrtProgramBooking(
+                patient_id=patient_id,
+                program_id=program_id,
+                patient_package_id=next((slot.patient_package_id for slot in group_slots if slot.patient_package_id), None),
+                slot_date=slot_date,
+                total_amount=amount,
+                paid_amount=paid,
+                due_amount=0 if fully_paid else max(0, amount - paid),
+                fully_paid=fully_paid,
+                is_package_session=any(bool(slot.is_package_session) for slot in group_slots),
+                payment_status="PAID" if fully_paid else ("PARTIAL" if paid > 0 else "UNPAID"),
+                status_id=group_slots[0].status_id,
+            )
+            db.add(parent)
+            db.flush()
+            payable_slot = max(group_slots, key=lambda slot: (float(AppointmentService._slot_booking_amount(slot) or 0), int(slot.id or 0)))
+            for slot in group_slots:
+                slot.crt_program_booking_id = parent.id
+                slot.payment_status = parent.payment_status
+                slot.fully_paid = parent.fully_paid
+                if slot.id != payable_slot.id:
+                    slot.amount = 0
+                    slot.paid_amount = 0
+                    slot.due_amount = 0
+            payable_slot.amount = amount
+            payable_slot.paid_amount = paid
+            payable_slot.due_amount = parent.due_amount
 
     @staticmethod
     def _ensure_program_schema(db: Session) -> None:
@@ -198,7 +327,14 @@ class AppointmentService:
         if slot_booking.amount:
             return float(slot_booking.amount or 0)
         plan_item = slot_booking.patient_session_plan_item
-        return float(plan_item.amount_per_session or 0) if plan_item else 0
+        if plan_item and plan_item.amount_per_session:
+            return float(plan_item.amount_per_session or 0)
+        patient_package = slot_booking.patient_package
+        if patient_package and patient_package.package and patient_package.package.total_sessions:
+            return float(patient_package.total_amount or patient_package.package.price or 0) / float(patient_package.package.total_sessions or 1)
+        if slot_booking.program and slot_booking.program.per_session_amount:
+            return float(slot_booking.program.per_session_amount or 0)
+        return 0
 
     @staticmethod
     def _set_slot_payment_from_amounts(slot_booking: PatientSlotBooking, amount: float, paid: float, due: float, package_applied: float = 0) -> None:
@@ -206,6 +342,8 @@ class AppointmentService:
         slot_booking.due_amount = due
         if due <= 0 and amount > 0 and package_applied > 0:
             slot_booking.payment_status = "PACKAGE_COVERED"
+        elif due <= 0 and amount > 0:
+            slot_booking.payment_status = "PAID"
         elif paid >= amount and amount > 0:
             slot_booking.payment_status = "PAID"
         elif paid > 0:
@@ -236,19 +374,118 @@ class AppointmentService:
 
         for slot_booking in slot_bookings:
             amount = AppointmentService._slot_booking_amount(slot_booking)
+            if bool(getattr(slot_booking, "fully_paid", False)):
+                paid = float(slot_booking.paid_amount or 0)
+                package_applied = min(package_credit, max(0, amount - paid))
+                package_credit = max(0, package_credit - package_applied)
+                AppointmentService._set_slot_payment_from_amounts(slot_booking, amount, paid, 0, package_applied)
+                continue
             if slot_booking.status_id not in billable_status_ids:
                 AppointmentService._set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, 0)
                 continue
             package_applied = min(package_credit, amount)
             package_credit = max(0, package_credit - package_applied)
-            due = max(0, amount - package_applied)
+            paid = float(slot_booking.paid_amount or 0)
+            due = max(0, amount - package_applied - paid)
             AppointmentService._set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), due, package_applied)
 
     @staticmethod
-    def _active_patient_package(db: Session, patient_id: int) -> PatientPackage | None:
-        AppointmentService._ensure_package_billing_schema(db)
-        return (
+    def _record_slot_payment_if_missing(
+        db: Session,
+        slot_booking: PatientSlotBooking,
+        *,
+        amount: float,
+        due_amount: float,
+        remark_text: str,
+    ) -> None:
+        if amount < 0:
+            return
+        patient_id = slot_booking.patient_id
+        if not patient_id and slot_booking.patient_session_plan_item and slot_booking.patient_session_plan_item.patient_session_plan:
+            patient_id = slot_booking.patient_session_plan_item.patient_session_plan.patient_id
+        if not patient_id:
+            return
+        marker = f"[slot:{slot_booking.id}]"
+        exists = (
+            db.query(Payment.id)
+            .filter(
+                Payment.patient_id == patient_id,
+                Payment.remark.like(f"{marker}%"),
+                Payment.remark.like(f"%{remark_text}%"),
+            )
+            .first()
+        )
+        if exists:
+            return
+        db.add(Payment(
+            patient_id=patient_id,
+            payment_amount=amount,
+            payment_status="PAID",
+            fully_paid=due_amount <= 0,
+            due_amount=due_amount,
+            payment_date=datetime.utcnow(),
+            remark=f"{marker} {remark_text}",
+        ))
+
+    @staticmethod
+    def _package_remaining_credit(db: Session, patient_package: PatientPackage | None) -> float:
+        if not patient_package:
+            return 0.0
+
+        billable_status_ids = [
+            AppointmentService.PATIENT_SLOT_BOOKING_COMPLETED_ID,
+            AppointmentService.PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
+        ]
+        slot_bookings = (
+            db.query(PatientSlotBooking)
+            .filter(
+                PatientSlotBooking.patient_package_id == patient_package.id,
+                PatientSlotBooking.is_package_session.is_(True),
+                PatientSlotBooking.status_id.in_(billable_status_ids),
+            )
+            .order_by(PatientSlotBooking.created_at.asc(), PatientSlotBooking.id.asc())
+            .all()
+        )
+        rows_by_crt_parent: dict[int, PatientSlotBooking] = {}
+        rows_without_crt: list[PatientSlotBooking] = []
+        for slot_booking in slot_bookings:
+            if slot_booking.crt_program_booking_id:
+                parent_id = int(slot_booking.crt_program_booking_id)
+                current = rows_by_crt_parent.get(parent_id)
+                if not current or AppointmentService._slot_booking_amount(slot_booking) > AppointmentService._slot_booking_amount(current):
+                    rows_by_crt_parent[parent_id] = slot_booking
+            else:
+                rows_without_crt.append(slot_booking)
+        utilized = sum(AppointmentService._slot_booking_amount(slot_booking) for slot_booking in [*rows_by_crt_parent.values(), *rows_without_crt])
+        return float(patient_package.paid_amount or 0) - utilized
+
+    @staticmethod
+    def _package_with_credit_for_slot(db: Session, slot_booking: PatientSlotBooking) -> PatientPackage | None:
+        if not slot_booking.patient_id or not slot_booking.program_id:
+            return None
+        packages = (
             db.query(PatientPackage)
+            .join(Package, Package.id == PatientPackage.package_id)
+            .filter(
+                PatientPackage.patient_id == slot_booking.patient_id,
+                PatientPackage.deleted_at.is_(None),
+                Package.program_id == slot_booking.program_id,
+            )
+            .order_by(PatientPackage.start_date.asc(), PatientPackage.id.asc())
+            .with_for_update()
+            .all()
+        )
+        for patient_package in packages:
+            if AppointmentService._package_remaining_credit(db, patient_package) > 0:
+                return patient_package
+        return None
+
+    @staticmethod
+    def _active_patient_package(db: Session, patient_id: int, program_type: str | None = None) -> PatientPackage | None:
+        AppointmentService._ensure_package_billing_schema(db)
+        packages = (
+            db.query(PatientPackage)
+            .join(PatientPackage.package)
             .filter(
                 PatientPackage.patient_id == patient_id,
                 PatientPackage.status == "active",
@@ -257,8 +494,17 @@ class AppointmentService:
             )
             .order_by(PatientPackage.start_date.asc(), PatientPackage.id.asc())
             .with_for_update()
-            .first()
+            .all()
         )
+        if program_type:
+            for patient_package in packages:
+                package = patient_package.package
+                package_program_name = package.program.program_name if package and package.program else None
+                package_name = package.name if package else None
+                if AppointmentService._program_type(package_program_name or package_name) == program_type:
+                    return patient_package
+            return None
+        return packages[0] if packages else None
 
     @staticmethod
     def _time_to_minutes(value):
@@ -268,6 +514,12 @@ class AppointmentService:
     def _slot_overlaps_break(slot) -> bool:
         start = AppointmentService._time_to_minutes(slot.start_time)
         end = AppointmentService._time_to_minutes(slot.end_time)
+        return start < AppointmentService.BREAK_END_MINUTES and end > AppointmentService.BREAK_START_MINUTES
+
+    @staticmethod
+    def _booking_overlaps_break(slot, duration_minutes: int | None = None) -> bool:
+        start = AppointmentService._time_to_minutes(slot.start_time)
+        end = start + int(duration_minutes or 0) if duration_minutes else AppointmentService._time_to_minutes(slot.end_time)
         return start < AppointmentService.BREAK_END_MINUTES and end > AppointmentService.BREAK_START_MINUTES
 
     @staticmethod
@@ -361,6 +613,8 @@ class AppointmentService:
     ) -> None:
         new_start = AppointmentService._time_value_to_minutes(start_time)
         new_end = new_start + duration_minutes
+        therapist = db.query(Therapist).filter(Therapist.id == therapist_id).first()
+        therapist_name = (therapist.name if therapist else None) or f"Therapist #{therapist_id}"
         for _mapping, booking, existing_slot, existing_program in AppointmentRepository.get_active_therapist_slot_mappings_for_date(
             db,
             therapist_id=therapist_id,
@@ -382,7 +636,7 @@ class AppointmentService:
                 detail = f"{AppointmentService._minutes_to_label(existing_start)} - {AppointmentService._minutes_to_label(existing_end)}"
                 if patient_name:
                     detail = f"{detail} for {patient_name}"
-                raise ValueError(f"Therapist already has an appointment in this time window: {detail}")
+                raise ValueError(f"Therapist {therapist_name} already has an appointment in this time window: {detail}")
 
     @staticmethod
     def _validate_patient_window_available(
@@ -395,6 +649,9 @@ class AppointmentService:
     ) -> None:
         new_start = AppointmentService._time_value_to_minutes(start_time)
         new_end = new_start + duration_minutes
+        patient = db.query(Patient).filter(Patient.id == patient_id).first()
+        child_name = f"{patient.first_name or ''} {patient.last_name or ''}".strip() if patient else None
+        child_name = child_name or f"Child #{patient_id}"
         for _booking, _mapping, existing_slot, existing_program in AppointmentRepository.get_active_patient_slot_bookings_for_date(
             db,
             patient_id=patient_id,
@@ -409,7 +666,7 @@ class AppointmentService:
             existing_end = existing_start + existing_duration
             if existing_start < new_end and existing_end > new_start:
                 raise ValueError(
-                    "Child already has an appointment in this time window: "
+                    f"Child {child_name} already has an appointment in this time window: "
                     f"{AppointmentService._minutes_to_label(existing_start)} - {AppointmentService._minutes_to_label(existing_end)}"
                 )
 
@@ -426,6 +683,7 @@ class AppointmentService:
                 groups[(
                     row.patient_id,
                     row.program_id,
+                    getattr(row, "crt_program_booking_id", None),
                     getattr(row, "slot_date", None),
                 )].append(row)
 
@@ -546,7 +804,7 @@ class AppointmentService:
         return db_appointment
 
     @staticmethod
-    def book_slot(db: Session, booking_create: SlotBookingCreate):
+    def book_slot(db: Session, booking_create: SlotBookingCreate, commit: bool = True):
         AppointmentService._ensure_package_billing_schema(db)
         # """Book a patient slot using therapist leave, slot mapping, and plan item balance."""
         # therapist = AppointmentRepository.get_therapist(db, booking_create.therapist_id)
@@ -563,25 +821,75 @@ class AppointmentService:
         slot = AppointmentRepository.get_slot(db, booking_create.slot_id)
         if not slot:
             raise ValueError("Selected slot is not available")
-        if AppointmentService._slot_overlaps_break(slot):
-            raise ValueError("Appointments cannot be booked during the 1:30 PM to 2:00 PM break")
 
-        therapist_leave = AppointmentRepository.get_therapist_leave(
+        if AppointmentService._therapist_unavailable_for_slot(
             db,
             booking_create.therapist_id,
             booking_create.slot_date,
-        )
-        if AppointmentService._leave_blocks_slot(therapist_leave, slot.start_time):
+            slot.start_time,
+        ):
             raise ValueError("Therapist is not available")
 
         booking_duration = int(booking_create.duration_minutes or AppointmentService._booking_duration_for_program(db, booking_create.program_id))
-        AppointmentService._validate_therapist_window_available(
-            db,
-            therapist_id=booking_create.therapist_id,
-            slot_date=booking_create.slot_date,
-            start_time=slot.start_time,
-            duration_minutes=booking_duration,
-        )
+        if AppointmentService._booking_overlaps_break(slot, booking_duration):
+            raise ValueError("Appointments cannot be booked during the 1:30 PM to 2:00 PM break")
+        program = db.query(Program).filter(Program.id == booking_create.program_id).first() if booking_create.program_id else None
+        if booking_create.program_id and not program:
+            raise ValueError("Selected program is not available")
+        if program and getattr(program, "region_id", None) and program.region_id != booking_create.region_id:
+            raise ValueError("Selected program is not available for this region")
+        program_type = AppointmentService._program_type(program.program_name if program else None)
+        group_program = program_type in {"vocational", "social"}
+        existing_group_mapping = None
+        if group_program:
+            existing_group_mapping = AppointmentRepository.get_active_therapist_slot_mapping(
+                db,
+                booking_create.therapist_id,
+                booking_create.slot_id,
+                booking_create.slot_date,
+                booking_create.therapy_id,
+            )
+            if existing_group_mapping:
+                active_count = (
+                    db.query(PatientSlotBooking)
+                    .filter(
+                        PatientSlotBooking.therapist_slot_mapping_id == existing_group_mapping.id,
+                        PatientSlotBooking.status_id.notin_([
+                            AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+                            AppointmentService.PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
+                        ]),
+                    )
+                    .count()
+                )
+                capacity = AppointmentService._program_capacity_from_row(program, program_type)
+                if active_count >= capacity:
+                    raise ValueError("Group slot is already full")
+                existing_patient_booking = (
+                    db.query(PatientSlotBooking)
+                    .filter(
+                        PatientSlotBooking.therapist_slot_mapping_id == existing_group_mapping.id,
+                        PatientSlotBooking.patient_id == booking_create.patient_id,
+                        PatientSlotBooking.status_id.notin_([
+                            AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+                            AppointmentService.PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
+                        ]),
+                    )
+                    .first()
+                )
+                if existing_patient_booking:
+                    return {
+                        "patient_slot_booking": existing_patient_booking,
+                        "therapist_slot_mapping": existing_group_mapping,
+                        "patient_session_plan_item": existing_patient_booking.patient_session_plan_item,
+                    }
+        if not group_program or not existing_group_mapping:
+            AppointmentService._validate_therapist_window_available(
+                db,
+                therapist_id=booking_create.therapist_id,
+                slot_date=booking_create.slot_date,
+                start_time=slot.start_time,
+                duration_minutes=booking_duration,
+            )
 
         AppointmentService._validate_patient_window_available(
             db,
@@ -603,23 +911,52 @@ class AppointmentService:
         if booking_create.use_package and booking_create.patient_package_id:
             active_package = (
                 db.query(PatientPackage)
+                .join(Package, Package.id == PatientPackage.package_id)
                 .filter(
                     PatientPackage.id == booking_create.patient_package_id,
                     PatientPackage.patient_id == booking_create.patient_id,
                     PatientPackage.status == "active",
                     PatientPackage.deleted_at.is_(None),
+                    Package.program_id == booking_create.program_id,
                 )
                 .first()
             )
             if not active_package:
-                raise ValueError("Selected package is not active for this child")
-        elif booking_create.use_package:
-            active_package = AppointmentService._active_patient_package(db, booking_create.patient_id)
+                raise ValueError("Selected package is not active for this child or does not match this program")
+        elif booking_create.use_package or group_program:
+            active_package = AppointmentService._active_patient_package(db, booking_create.patient_id, program_type)
         is_package_session = active_package is not None
         package_total = float(active_package.total_amount or 0) if active_package else 0
         package_paid = float(active_package.paid_amount or 0) if active_package else 0
         package_fully_paid = bool(active_package and package_total > 0 and package_paid >= package_total)
-        booking_amount = amount_per_session
+        if amount_per_session <= 0 and active_package and active_package.package and active_package.package.total_sessions:
+            amount_per_session = float(active_package.total_amount or active_package.package.price or 0) / float(active_package.package.total_sessions or 1)
+        if amount_per_session <= 0 and program:
+            amount_per_session = float(program.per_session_amount or 0)
+        booking_amount = amount_per_session if (program_type != "crt" or bool(getattr(booking_create, "is_primary", True))) else 0
+        crt_program_booking = None
+        if program_type == "crt":
+            if getattr(booking_create, "crt_program_booking_id", None):
+                crt_program_booking = db.query(CrtProgramBooking).filter(
+                    CrtProgramBooking.id == booking_create.crt_program_booking_id,
+                    CrtProgramBooking.patient_id == booking_create.patient_id,
+                ).first()
+            if not crt_program_booking:
+                crt_program_booking = CrtProgramBooking(
+                    patient_id=booking_create.patient_id,
+                    program_id=booking_create.program_id,
+                    patient_package_id=active_package.id if active_package else None,
+                    slot_date=booking_create.slot_date,
+                    total_amount=amount_per_session,
+                    paid_amount=0,
+                    due_amount=max(0, amount_per_session),
+                    is_package_session=is_package_session,
+                    payment_status="UNPAID",
+                    status_id=MASTER_LOOKUP_DATA["patient_slot_booking"]["BOOKED"],
+                )
+                db.add(crt_program_booking)
+                db.flush()
+            booking_amount = amount_per_session if bool(getattr(booking_create, "is_primary", True)) else 0
         booking_paid_amount = 0
         existing_package_usage = 0
         if active_package:
@@ -639,31 +976,71 @@ class AppointmentService:
             )
         available_package_credit = max(0, package_paid - existing_package_usage)
         booking_package_applied = min(available_package_credit, booking_amount) if is_package_session else 0
-        booking_due_amount = 0 if is_package_session else max(0, booking_amount - booking_package_applied)
-        booking_payment_status = "PACKAGE_COVERED" if is_package_session and package_fully_paid else "UNPAID"
+        booking_due_amount = max(0, booking_amount - booking_package_applied)
+        booking_payment_status = "PACKAGE_COVERED" if is_package_session and booking_due_amount <= 0 else "UNPAID"
+        if crt_program_booking and bool(getattr(booking_create, "is_primary", True)):
+            crt_program_booking.total_amount = booking_amount
+            crt_program_booking.due_amount = booking_due_amount
+            crt_program_booking.is_package_session = is_package_session
+            crt_program_booking.patient_package_id = active_package.id if active_package else None
+            crt_program_booking.payment_status = booking_payment_status
 
-        therapist_slot_mapping = AppointmentRepository.create_therapist_slot_mapping(
+        therapist_slot_mapping = existing_group_mapping or AppointmentRepository.get_therapist_slot_mapping(
             db,
             therapist_id=booking_create.therapist_id,
             slot_id=booking_create.slot_id,
             slot_date=booking_create.slot_date,
-            therapy_id=booking_create.therapy_id,
         )
+        if therapist_slot_mapping:
+            therapist_slot_mapping.status_id = MASTER_LOOKUP_DATA["therapist_slot_mapping"]["BOOKED"]
+            therapist_slot_mapping.therapy_id = booking_create.therapy_id
+            db.flush()
+        else:
+            therapist_slot_mapping = AppointmentRepository.create_therapist_slot_mapping(
+                db,
+                therapist_id=booking_create.therapist_id,
+                slot_id=booking_create.slot_id,
+                slot_date=booking_create.slot_date,
+                therapy_id=booking_create.therapy_id,
+            )
 
-        patient_slot_booking = AppointmentRepository.create_patient_slot_booking(
+        patient_slot_booking = AppointmentRepository.get_patient_slot_booking_for_mapping_child(
             db,
-            patient_id=booking_create.patient_id,
             therapist_slot_mapping_id=therapist_slot_mapping.id,
-            patient_session_plan_item_id=plan_item.id if plan_item else None,
-            patient_package_id=active_package.id if active_package else None,
-            program_id=booking_create.program_id,
-            duration_minutes=booking_duration,
-            is_package_session=is_package_session,
-            amount=booking_amount,
-            paid_amount=booking_paid_amount,
-            due_amount=booking_due_amount,
-            payment_status=booking_payment_status,
+            patient_id=booking_create.patient_id,
         )
+        if patient_slot_booking:
+            if patient_slot_booking.status not in {"UNPAID_CANCELLED", "PAID_CANCELLED"}:
+                raise ValueError("Child already has an active booking for this slot")
+            patient_slot_booking.patient_session_plan_item_id = plan_item.id if plan_item else None
+            patient_slot_booking.patient_package_id = active_package.id if active_package else None
+            patient_slot_booking.crt_program_booking_id = crt_program_booking.id if crt_program_booking else None
+            patient_slot_booking.program_id = booking_create.program_id
+            patient_slot_booking.duration_minutes = booking_duration
+            patient_slot_booking.is_package_session = is_package_session
+            patient_slot_booking.amount = booking_amount
+            patient_slot_booking.paid_amount = booking_paid_amount
+            patient_slot_booking.due_amount = booking_due_amount
+            patient_slot_booking.fully_paid = False
+            patient_slot_booking.payment_status = booking_payment_status
+            patient_slot_booking.status_id = MASTER_LOOKUP_DATA["patient_slot_booking"]["BOOKED"]
+            db.flush()
+        else:
+            patient_slot_booking = AppointmentRepository.create_patient_slot_booking(
+                db,
+                patient_id=booking_create.patient_id,
+                therapist_slot_mapping_id=therapist_slot_mapping.id,
+                patient_session_plan_item_id=plan_item.id if plan_item else None,
+                patient_package_id=active_package.id if active_package else None,
+                crt_program_booking_id=crt_program_booking.id if crt_program_booking else None,
+                program_id=booking_create.program_id,
+                duration_minutes=booking_duration,
+                is_package_session=is_package_session,
+                amount=booking_amount,
+                paid_amount=booking_paid_amount,
+                due_amount=booking_due_amount,
+                payment_status=booking_payment_status,
+            )
 
         if plan_item:
             plan_item.assigned_sessions = assigned_sessions + 1
@@ -673,19 +1050,67 @@ class AppointmentService:
             if active_package.sessions_remaining == 0:
                 active_package.status = "completed"
             AppointmentService._recalculate_package_slot_payments(db, active_package)
-        db.commit()
-        db.refresh(patient_slot_booking)
-        db.refresh(therapist_slot_mapping)
-        if plan_item:
-            db.refresh(plan_item)
-        if active_package:
-            db.refresh(active_package)
+        if commit:
+            db.commit()
+            db.refresh(patient_slot_booking)
+            db.refresh(therapist_slot_mapping)
+            if plan_item:
+                db.refresh(plan_item)
+            if active_package:
+                db.refresh(active_package)
+        else:
+            db.flush()
 
         return {
             "patient_slot_booking": patient_slot_booking,
             "therapist_slot_mapping": therapist_slot_mapping,
             "patient_session_plan_item": plan_item,
         }
+
+    @staticmethod
+    def _group_calendar_slots(slots: list[dict]) -> list[dict]:
+        grouped: dict[tuple, list[dict]] = defaultdict(list)
+        passthrough = []
+        for slot in slots:
+            if slot.get("program_type") in {"vocational", "social"} and slot.get("patient_slot_booking_id"):
+                grouped[(
+                    slot.get("slot_date"),
+                    slot.get("slot_id"),
+                    slot.get("therapistId") or slot.get("therapist_id"),
+                    slot.get("therapy_id"),
+                    slot.get("program_id"),
+                )].append(slot)
+            else:
+                passthrough.append(slot)
+
+        for rows in grouped.values():
+            primary = rows[0]
+            participants = []
+            for row in rows:
+                if not row.get("patient_id"):
+                    continue
+                participants.append({
+                    "id": row.get("patient_id"),
+                    "full_name": row.get("patient_name"),
+                    "patient_code": row.get("patient_code"),
+                    "patient_slot_booking_id": row.get("patient_slot_booking_id"),
+                    "patient_session_plan_id": row.get("patient_session_plan_id"),
+                    "patient_phone": row.get("patient_phone"),
+                    "amount": row.get("amount") or row.get("amount_per_session") or 0,
+                    "paid_amount": row.get("paid_amount") or 0,
+                    "due_amount": row.get("due_amount") or 0,
+                    "fully_paid": bool(str(row.get("payment_status") or "").upper() in {"PAID", "PACKAGE_COVERED"} and float(row.get("due_amount") or 0) <= 0),
+                    "payment_status": row.get("payment_status"),
+                    "status": row.get("patient_slot_booking_status") or row.get("status"),
+                    "patient_package_id": row.get("patient_package_id"),
+                    "is_package_session": row.get("is_package_session"),
+                    "package_name": row.get("package_name"),
+                })
+            primary["participants"] = participants
+            primary["child_count"] = len(participants)
+            passthrough.append(primary)
+
+        return passthrough
 
     @staticmethod
     def cancel_slot(db: Session, patient_slot_booking_id: int):
@@ -707,6 +1132,11 @@ class AppointmentService:
         package = patient_slot_booking.patient_package
 
         patient_slot_booking.status = "UNPAID_CANCELLED"
+        AppointmentService._cancel_related_crt_segments(
+            db,
+            patient_slot_booking,
+            target_status="UNPAID_CANCELLED",
+        )
         if package and patient_slot_booking.is_package_session:
             package.sessions_completed = max(0, (package.sessions_completed or 0) - 1)
             package.sessions_remaining = (package.sessions_remaining or 0) + 1
@@ -741,6 +1171,48 @@ class AppointmentService:
         }
 
     @staticmethod
+    def _cancel_related_crt_segments(
+        db: Session,
+        patient_slot_booking: PatientSlotBooking,
+        *,
+        target_status: str,
+        exclude_current: bool = True,
+    ) -> None:
+        mapping = patient_slot_booking.therapist_slot_mapping
+        if not mapping or not patient_slot_booking.patient_id or not patient_slot_booking.program_id:
+            return
+        program_type = AppointmentService._program_type(patient_slot_booking.program.program_name if patient_slot_booking.program else None)
+        if program_type != "crt":
+            return
+
+        siblings = (
+            db.query(PatientSlotBooking)
+            .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
+            .filter(
+                PatientSlotBooking.patient_id == patient_slot_booking.patient_id,
+                PatientSlotBooking.program_id == patient_slot_booking.program_id,
+                TherapistSlotMapping.slot_date == mapping.slot_date,
+                PatientSlotBooking.status_id.notin_([
+                    AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+                    AppointmentService.PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
+                ]),
+                TherapistSlotMapping.status_id != AppointmentService.THERAPIST_SLOT_MAPPING_CANCELLED_ID,
+            )
+            .all()
+        )
+        for sibling in siblings:
+            if exclude_current and sibling.id == patient_slot_booking.id:
+                continue
+            sibling.status = target_status
+            sibling_mapping = sibling.therapist_slot_mapping
+            if sibling_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
+                db,
+                sibling_mapping.id,
+                exclude_patient_slot_booking_id=sibling.id,
+            ):
+                sibling_mapping.status = "CANCELLED"
+
+    @staticmethod
     def reschedule_slot(db: Session, patient_slot_booking_id: int, booking_create: SlotBookingCreate):
         patient_slot_booking = AppointmentRepository.get_patient_slot_booking_for_update(
             db,
@@ -763,15 +1235,20 @@ class AppointmentService:
         slot = AppointmentRepository.get_slot(db, booking_create.slot_id)
         if not slot:
             raise ValueError("Selected slot is not available")
-        if AppointmentService._slot_overlaps_break(slot):
+        booking_duration = int(
+            booking_create.duration_minutes
+            or getattr(patient_slot_booking, "duration_minutes", None)
+            or AppointmentService._booking_duration_for_program(db, booking_create.program_id or patient_slot_booking.program_id)
+        )
+        if AppointmentService._booking_overlaps_break(slot, booking_duration):
             raise ValueError("Appointments cannot be booked during the 1:30 PM to 2:00 PM break")
 
-        therapist_leave = AppointmentRepository.get_therapist_leave(
+        if AppointmentService._therapist_unavailable_for_slot(
             db,
             booking_create.therapist_id,
             booking_create.slot_date,
-        )
-        if AppointmentService._leave_blocks_slot(therapist_leave, slot.start_time):
+            slot.start_time,
+        ):
             raise ValueError("Therapist is not available")
 
         occupied_mapping = (
@@ -826,6 +1303,15 @@ class AppointmentService:
             return slot_start.hour >= 13
 
         return True
+
+    @staticmethod
+    def _therapist_unavailable_for_slot(db: Session, therapist_id: int, slot_date, slot_start) -> bool:
+        therapist_leave = AppointmentRepository.get_therapist_leave(
+            db,
+            therapist_id,
+            slot_date,
+        )
+        return AppointmentService._leave_blocks_slot(therapist_leave, slot_start)
     
     @staticmethod
     def get_calendar_view(
@@ -834,7 +1320,6 @@ class AppointmentService:
         region_ids
     ):
         AppointmentService._ensure_package_billing_schema(db)
-
         records = AppointmentRepository.get_calendar_data(
             db=db,
             selected_date=selected_date,
@@ -845,15 +1330,8 @@ class AppointmentService:
             db=db,
             selected_date=selected_date
         )
-        unavailable_rows = AppointmentRepository.get_unavailable_therapist_availability(
-            db=db,
-            selected_date=selected_date,
-            region_ids=region_ids
-        )
 
         leaves_by_therapist = {leave.therapist_id: leave for leave in leaves}
-        for row in unavailable_rows:
-            leaves_by_therapist.setdefault(row.therapist_id, row)
 
         crt_segment_overrides = AppointmentService._crt_segment_overrides(records)
 
@@ -908,6 +1386,7 @@ class AppointmentService:
             therapist_map[therapist_id]["slots"].append({
                 "slot_mapping_id": row.slot_mapping_id,
                 "patient_slot_booking_id": row.patient_slot_booking_id,
+                "crt_program_booking_id": row.crt_program_booking_id,
                 "slot_id": row.slot_id,
                 "slot_date": str(selected_date),
                 "slot_time": row.start_time,
@@ -929,7 +1408,7 @@ class AppointmentService:
                 "assigned_sessions": assigned_sessions,
                 "completed_sessions": completed_sessions,
                 "remaining_sessions": remaining_sessions,
-                "amount_per_session": float(row.amount_per_session or 0),
+                "amount_per_session": float(row.amount_per_session or row.program_per_session_amount or 0),
                 "patient_package_id": row.patient_package_id,
                 "is_package_session": bool(row.is_package_session),
                 "package_name": row.package_name,
@@ -937,9 +1416,10 @@ class AppointmentService:
                 "package_paid_amount": float(row.package_paid_amount or 0),
                 "package_due_amount": float(row.package_due_amount or 0),
                 "package_payment_status": row.package_payment_status,
-                "amount": float(row.amount or 0),
+                "amount": float(row.amount or (row.program_per_session_amount if program_type == "crt" and row.patient_slot_booking_id else 0) or 0),
                 "paid_amount": float(row.paid_amount or 0),
                 "due_amount": float(row.due_amount or 0),
+                "fully_paid": bool(str(row.payment_status or "").upper() in {"PAID", "PACKAGE_COVERED"} and float(row.due_amount or 0) <= 0),
                 "payment_status": row.payment_status,
                 "program_id": row.program_id,
                 "program_name": row.program_name,
@@ -1017,6 +1497,7 @@ class AppointmentService:
                 })
 
         for therapist in therapist_map.values():
+            therapist["slots"] = AppointmentService._group_calendar_slots(therapist["slots"])
             therapist["slots"].sort(key=lambda slot: slot["start_time"])
 
         return {
@@ -1032,7 +1513,6 @@ class AppointmentService:
         region_ids
     ):
         AppointmentService._ensure_package_billing_schema(db)
-
         records = AppointmentRepository.get_calendar_data_range(
             db=db,
             start_date=start_date,
@@ -1100,6 +1580,7 @@ class AppointmentService:
             therapist_map[therapist_id]["slots"].append({
                 "slot_mapping_id": row.slot_mapping_id,
                 "patient_slot_booking_id": row.patient_slot_booking_id,
+                "crt_program_booking_id": row.crt_program_booking_id,
                 "slot_id": row.slot_id,
                 "slot_date": str(slot_date),
                 "slot_time": row.start_time,
@@ -1121,7 +1602,7 @@ class AppointmentService:
                 "assigned_sessions": assigned_sessions,
                 "completed_sessions": completed_sessions,
                 "remaining_sessions": remaining_sessions,
-                "amount_per_session": float(row.amount_per_session or 0),
+                "amount_per_session": float(row.amount_per_session or row.program_per_session_amount or 0),
                 "patient_package_id": row.patient_package_id,
                 "is_package_session": bool(row.is_package_session),
                 "package_name": row.package_name,
@@ -1129,9 +1610,10 @@ class AppointmentService:
                 "package_paid_amount": float(row.package_paid_amount or 0),
                 "package_due_amount": float(row.package_due_amount or 0),
                 "package_payment_status": row.package_payment_status,
-                "amount": float(row.amount or 0),
+                "amount": float(row.amount or (row.program_per_session_amount if program_type == "crt" and row.patient_slot_booking_id else 0) or 0),
                 "paid_amount": float(row.paid_amount or 0),
                 "due_amount": float(row.due_amount or 0),
+                "fully_paid": bool(str(row.payment_status or "").upper() in {"PAID", "PACKAGE_COVERED"} and float(row.due_amount or 0) <= 0),
                 "payment_status": row.payment_status,
                 "program_id": row.program_id,
                 "program_name": row.program_name,
@@ -1213,6 +1695,7 @@ class AppointmentService:
             current_date += timedelta(days=1)
 
         for therapist in therapist_map.values():
+            therapist["slots"] = AppointmentService._group_calendar_slots(therapist["slots"])
             therapist["slots"].sort(key=lambda slot: (slot["slot_date"], slot["start_time"]))
 
         return {
@@ -1268,6 +1751,11 @@ class AppointmentService:
         else:
             normalized_cancel_type = str(cancel_type or "unpaid").strip().lower()
             patient_slot_booking.status = "PAID_CANCELLED" if normalized_cancel_type == "paid" else "UNPAID_CANCELLED"
+            AppointmentService._cancel_related_crt_segments(
+                db,
+                patient_slot_booking,
+                target_status=patient_slot_booking.status,
+            )
             if package and patient_slot_booking.is_package_session:
                 package.sessions_completed = max(0, (package.sessions_completed or 0) - 1)
                 package.sessions_remaining = (package.sessions_remaining or 0) + 1
@@ -1291,15 +1779,38 @@ class AppointmentService:
         if normalized_action == "complete" and not patient_slot_booking.is_package_session and slot_amount <= 0:
             slot_amount = AppointmentService._direct_program_amount(db, patient_slot_booking.patient_id)
             patient_slot_booking.amount = slot_amount
+        if normalized_action == "complete" and not patient_slot_booking.is_package_session:
+            package_with_credit = AppointmentService._package_with_credit_for_slot(db, patient_slot_booking)
+            if package_with_credit:
+                patient_slot_booking.patient_package_id = package_with_credit.id
+                patient_slot_booking.is_package_session = True
+                patient_slot_booking.patient_package = package_with_credit
+                package = package_with_credit
+                db.flush()
         package_total = float(package.total_amount or 0) if package else 0
         package_paid = float(package.paid_amount or 0) if package else 0
         package_fully_paid = bool(patient_slot_booking.is_package_session and package and package_total > 0 and package_paid >= package_total)
         paid_amount = float(patient_slot_booking.paid_amount or 0)
-        if package and patient_slot_booking.is_package_session:
+        is_paid_cancel = normalized_action == "cancel" and str(cancel_type or "").strip().lower() == "paid"
+
+        if bool(getattr(patient_slot_booking, "fully_paid", False)) and not is_paid_cancel:
+            patient_slot_booking.due_amount = 0
+            patient_slot_booking.payment_status = "PACKAGE_COVERED" if patient_slot_booking.is_package_session else "PAID"
+        elif package and patient_slot_booking.is_package_session:
+            credit_before = AppointmentService._package_remaining_credit(db, package)
             AppointmentService._recalculate_package_slot_payments(db, package)
+            if normalized_action == "complete" or is_paid_cancel:
+                balance_after = slot_amount - max(0, credit_before)
+                AppointmentService._record_slot_payment_if_missing(
+                    db,
+                    patient_slot_booking,
+                    amount=0,
+                    due_amount=balance_after,
+                    remark_text="Paid cancellation" if is_paid_cancel else "Package credit used",
+                )
         else:
-            patient_slot_booking.due_amount = 0 if package_fully_paid else max(0, slot_amount - paid_amount)
-            if package_fully_paid:
+            patient_slot_booking.due_amount = max(0, slot_amount - paid_amount) if is_paid_cancel else (0 if package_fully_paid else max(0, slot_amount - paid_amount))
+            if package_fully_paid and not is_paid_cancel:
                 patient_slot_booking.payment_status = "PACKAGE_COVERED"
             elif paid_amount >= slot_amount and slot_amount > 0:
                 patient_slot_booking.payment_status = "PAID"
@@ -1307,6 +1818,28 @@ class AppointmentService:
                 patient_slot_booking.payment_status = "PARTIAL"
             else:
                 patient_slot_booking.payment_status = "UNPAID"
+            if normalized_action == "complete" and patient_slot_booking.due_amount > 0:
+                AppointmentService._record_slot_payment_if_missing(
+                    db,
+                    patient_slot_booking,
+                    amount=0,
+                    due_amount=float(patient_slot_booking.due_amount or 0),
+                    remark_text="Session completed",
+                )
+
+        if is_paid_cancel:
+            patient_slot_booking.fully_paid = False
+            if not (package and patient_slot_booking.is_package_session):
+                patient_slot_booking.paid_amount = float(patient_slot_booking.paid_amount or 0)
+                patient_slot_booking.due_amount = max(0, slot_amount - float(patient_slot_booking.paid_amount or 0))
+                patient_slot_booking.payment_status = "UNPAID" if patient_slot_booking.due_amount > 0 else "PAID"
+            AppointmentService._record_slot_payment_if_missing(
+                db,
+                patient_slot_booking,
+                amount=0,
+                due_amount=float(patient_slot_booking.due_amount or 0),
+                remark_text="Paid cancellation",
+            )
 
         db.commit()
         db.refresh(patient_slot_booking)

@@ -69,24 +69,6 @@ async def get_programs(
             query = query.filter(Program.region_id.in_(region_ids))
 
         programs = query.order_by(Program.program_name.asc(), Program.id.asc()).all()
-        program_names = {program.program_name.strip().lower() for program in programs}
-        required_programs = {"general", "crt", "vocational", "social group", "schooling"}
-        if not required_programs.issubset(program_names):
-            fallback_programs = (
-                db.query(Program)
-                .filter(
-                    Program.is_active.is_(True),
-                    Program.deleted_at.is_(None),
-                )
-                .order_by(Program.program_name.asc(), Program.id.asc())
-                .all()
-            )
-            programs = programs + [
-                program
-                for program in fallback_programs
-                if program.program_name.strip().lower() not in program_names
-            ]
-
         order = {
             "general": 0,
             "crt": 1,
@@ -375,15 +357,79 @@ async def book_slot(
     )
 
     try:
-        booking = AppointmentService.book_slot(db, booking_create)
+        patient_ids = []
+        requested_patient_ids = booking_create.patient_ids or ([booking_create.patient_id] if booking_create.patient_id else [])
+        for patient_id in requested_patient_ids:
+            if patient_id not in patient_ids:
+                patient_ids.append(patient_id)
+        if not patient_ids:
+            raise ValueError("Select at least one child to book")
+
+        allocations = booking_create.allocations or [{
+            "therapist_id": booking_create.therapist_id,
+            "therapy_id": booking_create.therapy_id,
+            "slot_id": booking_create.slot_id,
+            "duration_minutes": booking_create.duration_minutes,
+            "is_primary": True,
+        }]
+        bulk_booking = len(patient_ids) > 1 or len(allocations) > 1
+
+        bookings = []
+        crt_parent_by_patient: dict[int, int] = {}
+        for allocation in allocations:
+            for patient_id in patient_ids:
+                patient_booking_create = booking_create.copy(update={
+                    "patient_id": patient_id,
+                    "patient_ids": None,
+                    "allocations": None,
+                    "therapist_id": int(allocation.get("therapist_id") or booking_create.therapist_id),
+                    "therapy_id": int(allocation.get("therapy_id") or booking_create.therapy_id),
+                    "slot_id": int(allocation.get("slot_id") or booking_create.slot_id),
+                    "duration_minutes": allocation.get("duration_minutes") or booking_create.duration_minutes,
+                    "is_primary": bool(allocation.get("is_primary", True)),
+                    "patient_session_plan_id": (
+                        booking_create.patient_session_plan_id
+                        if allocation.get("is_primary", True) and len(patient_ids) == 1
+                        else None
+                    ),
+                    "patient_package_id": (
+                        booking_create.patient_package_id
+                        if allocation.get("is_primary", True) and len(patient_ids) == 1
+                        else None
+                    ),
+                    "use_package": bool(booking_create.use_package and allocation.get("is_primary", True)),
+                    "crt_program_booking_id": crt_parent_by_patient.get(patient_id),
+                })
+                booking = AppointmentService.book_slot(db, patient_booking_create, commit=not bulk_booking)
+                patient_slot_booking = booking["patient_slot_booking"]
+                if patient_slot_booking.crt_program_booking_id:
+                    crt_parent_by_patient[patient_id] = patient_slot_booking.crt_program_booking_id
+                therapist_slot_mapping = booking["therapist_slot_mapping"]
+                plan_item = booking["patient_session_plan_item"]
+                remaining_sessions = (
+                    plan_item.allocated_sessions
+                    - (plan_item.assigned_sessions or 0)
+                    - (plan_item.completed_sessions or 0)
+                ) if plan_item else None
+                bookings.append({
+                    "patient_slot_booking": patient_slot_booking,
+                    "therapist_slot_mapping": therapist_slot_mapping,
+                    "patient_session_plan_item": plan_item,
+                    "remaining_sessions": remaining_sessions,
+                })
+        if bulk_booking:
+            db.commit()
+            for item in bookings:
+                db.refresh(item["patient_slot_booking"])
+                db.refresh(item["therapist_slot_mapping"])
+                if item["patient_session_plan_item"]:
+                    db.refresh(item["patient_session_plan_item"])
+
+        booking = bookings[0]
         patient_slot_booking = booking["patient_slot_booking"]
         therapist_slot_mapping = booking["therapist_slot_mapping"]
         plan_item = booking["patient_session_plan_item"]
-        remaining_sessions = (
-            plan_item.allocated_sessions
-            - (plan_item.assigned_sessions or 0)
-            - (plan_item.completed_sessions or 0)
-        ) if plan_item else None
+        remaining_sessions = booking["remaining_sessions"]
         logger.info(
             "Slot booked successfully",
             extra={
@@ -391,6 +437,7 @@ async def book_slot(
                 "therapist_slot_mapping_id": therapist_slot_mapping.id,
                 "user_id": current_user.id,
                 "patient_id": booking_create.patient_id,
+                "patient_ids": patient_ids,
                 "therapist_id": booking_create.therapist_id
             }
         )
@@ -411,9 +458,24 @@ async def book_slot(
             "paid_amount": float(patient_slot_booking.paid_amount or 0),
             "due_amount": float(patient_slot_booking.due_amount or 0),
             "payment_status": patient_slot_booking.payment_status,
+            "booked_slots": [
+                {
+                    "patient_id": item["patient_slot_booking"].patient_id,
+                    "patient_slot_booking_id": item["patient_slot_booking"].id,
+                    "therapist_slot_mapping_id": item["therapist_slot_mapping"].id,
+                    "patient_package_id": item["patient_slot_booking"].patient_package_id,
+                    "is_package_session": bool(item["patient_slot_booking"].is_package_session),
+                    "amount": float(item["patient_slot_booking"].amount or 0),
+                    "paid_amount": float(item["patient_slot_booking"].paid_amount or 0),
+                    "due_amount": float(item["patient_slot_booking"].due_amount or 0),
+                    "payment_status": item["patient_slot_booking"].payment_status,
+                }
+                for item in bookings
+            ],
         }
 
     except ValueError as e:
+        db.rollback()
         logger.warning(
             f"Error booking slot: {str(e)}",
             extra={"user_id": current_user.id}
@@ -424,13 +486,14 @@ async def book_slot(
         )
 
     except Exception as e:
+        db.rollback()
         logger.error(
             f"Error booking slot: {str(e)}",
             extra={"user_id": current_user.id}
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error booking slot"
+            detail=str(e)
         )
 
 

@@ -18,6 +18,8 @@ class PaymentRepository:
             payment_amount=payment_create.payment_amount,
             payment_mode=payment_create.payment_mode,
             payment_status=payment_create.payment_status,
+            fully_paid=payment_create.fully_paid,
+            due_amount=payment_create.due_amount,
             remark=payment_create.remark,
             payment_date=payment_create.payment_date,
             created_by=created_by,

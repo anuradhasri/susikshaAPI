@@ -175,6 +175,9 @@ class PaymentService:
 
                 Payment.payment_status.label("payment_status"),
 
+                Payment.fully_paid.label("fully_paid"),
+                Payment.due_amount.label("due_amount"),
+
                 Payment.remark.label("payment_remark"),
 
                 Payment.payment_date.label("payment_date")
@@ -260,6 +263,8 @@ class PaymentService:
                 payment_amount=payment_create.payment_amount,
                 payment_mode=payment_create.payment_mode,
                 payment_status=payment_status,
+                fully_paid=payment_create.fully_paid,
+                due_amount=payment_create.due_amount,
                 remark=payment_create.remark,
                 payment_date=saved_payment_date,
                 created_by=created_by

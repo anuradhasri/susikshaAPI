@@ -232,7 +232,9 @@ class AppointmentCreate(AppointmentBase):
 
 
 class SlotBookingCreate(BaseModel):
-    patient_id: int
+    patient_id: Optional[int] = None
+    patient_ids: Optional[List[int]] = None
+    allocations: Optional[List[dict]] = None
     therapist_id: int
     therapy_id: int
     program_id: Optional[int] = None
@@ -245,6 +247,8 @@ class SlotBookingCreate(BaseModel):
     phone: Optional[str] = None
     use_package: bool = True
     patient_package_id: Optional[int] = None
+    is_primary: bool = True
+    crt_program_booking_id: Optional[int] = None
 
 
 class AppointmentUpdate(BaseModel):
@@ -280,6 +284,7 @@ class SlotBookingResponse(BaseModel):
     paid_amount: float = 0
     due_amount: float = 0
     payment_status: Optional[str] = None
+    booked_slots: Optional[List[dict]] = None
 
     class Config:
         from_attributes = True
@@ -532,6 +537,8 @@ class PaymentBase(BaseModel):
     payment_amount: Decimal
     payment_mode: Optional[int] = None
     payment_status: Optional[str] = None
+    fully_paid: bool = False
+    due_amount: Decimal = Decimal("0")
     remark: Optional[str] = None
 
 
@@ -540,12 +547,16 @@ class PaymentCreate(BaseModel):
     payment_mode: Optional[int] = None
     payment_amount: Decimal
     payment_status: Optional[str] = None
+    fully_paid: bool = False
+    due_amount: Decimal = Decimal("0")
     remark: Optional[str] = None
     payment_date: Optional[datetime] = None
 
 
 class PaymentUpdate(BaseModel):
     payment_status: Optional[str] = None
+    fully_paid: Optional[bool] = None
+    due_amount: Optional[Decimal] = None
     remark: Optional[str] = None
 
 
@@ -566,6 +577,8 @@ class PaymentListResponse(BaseModel):
     payment_mode: Optional[str] = None
     payment_amount: Decimal
     payment_status: Optional[str] = None
+    fully_paid: bool = False
+    due_amount: Decimal = Decimal("0")
     payment_remark: Optional[str] = None
     payment_date: Optional[datetime] = None
 
@@ -586,6 +599,8 @@ class PaymentResponse(BaseModel):
     payment_mode: Optional[int] = None
     payment_amount: Decimal
     payment_status: Optional[str] = None
+    fully_paid: bool = False
+    due_amount: Decimal = Decimal("0")
     remark: Optional[str] = None
     payment_date: Optional[datetime] = None
     created_at: datetime

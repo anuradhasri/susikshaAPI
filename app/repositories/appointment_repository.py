@@ -320,6 +320,23 @@ class AppointmentRepository:
         )
 
     @staticmethod
+    def get_therapist_slot_mapping(
+        db: Session,
+        therapist_id: int,
+        slot_id: int,
+        slot_date: date,
+        therapy_id: int | None = None,
+    ) -> Optional[TherapistSlotMapping]:
+        query = db.query(TherapistSlotMapping).filter(
+            TherapistSlotMapping.therapist_id == therapist_id,
+            TherapistSlotMapping.slot_id == slot_id,
+            TherapistSlotMapping.slot_date == slot_date,
+        )
+        if therapy_id is not None:
+            query = query.filter(TherapistSlotMapping.therapy_id == therapy_id)
+        return query.order_by(TherapistSlotMapping.id.asc()).first()
+
+    @staticmethod
     def get_active_therapist_slot_mappings_for_date(
         db: Session,
         therapist_id: int,
@@ -367,6 +384,22 @@ class AppointmentRepository:
             )
             .first()
             is not None
+        )
+
+    @staticmethod
+    def get_patient_slot_booking_for_mapping_child(
+        db: Session,
+        therapist_slot_mapping_id: int,
+        patient_id: int,
+    ) -> Optional[PatientSlotBooking]:
+        return (
+            db.query(PatientSlotBooking)
+            .filter(
+                PatientSlotBooking.therapist_slot_mapping_id == therapist_slot_mapping_id,
+                PatientSlotBooking.patient_id == patient_id,
+            )
+            .order_by(PatientSlotBooking.id.asc())
+            .first()
         )
 
     @staticmethod
@@ -418,6 +451,7 @@ class AppointmentRepository:
         therapist_slot_mapping_id: int,
         patient_session_plan_item_id: Optional[int],
         patient_package_id: Optional[int] = None,
+        crt_program_booking_id: Optional[int] = None,
         program_id: Optional[int] = None,
         duration_minutes: Optional[int] = None,
         is_package_session: bool = False,
@@ -431,6 +465,7 @@ class AppointmentRepository:
             therapist_slot_mapping_id=therapist_slot_mapping_id,
             patient_session_plan_item_id=patient_session_plan_item_id,
             patient_package_id=patient_package_id,
+            crt_program_booking_id=crt_program_booking_id,
             program_id=program_id,
             duration_minutes=duration_minutes,
             is_package_session=is_package_session,
@@ -525,9 +560,11 @@ class AppointmentRepository:
                 PatientSlotBooking.paid_amount,
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
+                PatientSlotBooking.crt_program_booking_id,
                 PatientSlotBooking.program_id,
                 PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
                 Program.program_name,
+                Program.per_session_amount.label("program_per_session_amount"),
                 Program.duration_minutes.label("program_duration_minutes"),
                 Program.capacity.label("program_capacity"),
                 Program.session_type.label("program_session_type"),
@@ -637,9 +674,11 @@ class AppointmentRepository:
                 PatientSlotBooking.paid_amount,
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
+                PatientSlotBooking.crt_program_booking_id,
                 PatientSlotBooking.program_id,
                 PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
                 Program.program_name,
+                Program.per_session_amount.label("program_per_session_amount"),
                 Program.duration_minutes.label("program_duration_minutes"),
                 Program.capacity.label("program_capacity"),
                 Program.session_type.label("program_session_type"),

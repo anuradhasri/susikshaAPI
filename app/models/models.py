@@ -626,6 +626,7 @@ class PatientPackage(Base):
     total_amount = Column(Float, nullable=False, default=0, server_default="0")
     paid_amount = Column(Float, nullable=False, default=0, server_default="0")
     due_amount = Column(Float, nullable=False, default=0, server_default="0")
+    fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
     payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")
     status = Column(String(50), default="active")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -720,8 +721,13 @@ class Payment(Base):
     )
 
     remark = Column(Text, nullable=True)
+    transaction_id = Column(String(255), nullable=True)
+    payment_note = Column(Text, nullable=True)
 
     payment_date = Column(DateTime, nullable=True)
+
+    fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
+    due_amount = Column(Float, nullable=False, default=0, server_default="0")
 
     created_by = Column(Integer, nullable=True)
     updated_by = Column(Integer, nullable=True)
@@ -1053,6 +1059,8 @@ class AssessmentMaster(Base):
     assessment_name = Column(String(255), nullable=True)
     type_id = Column(Integer, ForeignKey("assessment_type_master.id"), nullable=False, default=1, server_default="1")
     description = Column(Text, nullable=True)
+    amount = Column(Float, nullable=False, default=0, server_default="0")
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True)
     display_order = Column(Integer, nullable=False, default=0, server_default="0")
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     created_date = Column(DateTime, server_default=func.now())
@@ -1267,6 +1275,34 @@ class TherapistSlotMapping(StatusIdMixin, Base):
     )
 
 
+class CrtProgramBooking(Base):
+    __tablename__ = "crt_program_bookings"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=False, index=True)
+    patient_package_id = Column(Integer, ForeignKey("patient_packages.id"), nullable=True)
+    slot_date = Column(Date, nullable=False, index=True)
+    total_amount = Column(Float, nullable=False, default=0, server_default="0")
+    paid_amount = Column(Float, nullable=False, default=0, server_default="0")
+    due_amount = Column(Float, nullable=False, default=0, server_default="0")
+    fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
+    is_package_session = Column(Boolean, nullable=False, default=False, server_default="0")
+    payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")
+    status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    patient = relationship("Patient")
+    program = relationship("Program")
+    patient_package = relationship("PatientPackage")
+    slot_bookings = relationship("PatientSlotBooking", back_populates="crt_program_booking")
+
+    __table_args__ = (
+        Index("idx_crt_program_booking_patient_date", "patient_id", "program_id", "slot_date"),
+    )
+
+
 class PatientSlotBooking(StatusIdMixin, Base):
     __tablename__ = "patient_slot_booking"
     _status_category = "patient_slot_booking"
@@ -1285,12 +1321,14 @@ class PatientSlotBooking(StatusIdMixin, Base):
         nullable=True
     )
     patient_package_id = Column(Integer, ForeignKey("patient_packages.id"), nullable=True)
+    crt_program_booking_id = Column(Integer, ForeignKey("crt_program_bookings.id"), nullable=True)
     program_id = Column(Integer, ForeignKey("programs.id"), nullable=True)
     duration_minutes = Column(Integer, nullable=True)
     is_package_session = Column(Boolean, nullable=False, default=False, server_default="0")
     amount = Column(Float, nullable=False, default=0, server_default="0")
     paid_amount = Column(Float, nullable=False, default=0, server_default="0")
     due_amount = Column(Float, nullable=False, default=0, server_default="0")
+    fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
     payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")
     status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=1, server_default="1")
     created_at = Column(DateTime, server_default=func.now())
@@ -1307,4 +1345,9 @@ class PatientSlotBooking(StatusIdMixin, Base):
         back_populates="patient_slot_bookings"
     )
     patient_package = relationship("PatientPackage")
+    crt_program_booking = relationship("CrtProgramBooking", back_populates="slot_bookings")
     program = relationship("Program")
+
+    __table_args__ = (
+        UniqueConstraint("therapist_slot_mapping_id", "patient_id", name="uq_patient_slot_mapping_child"),
+    )
