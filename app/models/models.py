@@ -709,7 +709,11 @@ class Payment(Base):
         nullable=False,
         index=True
     )
+    patient_slot_booking_id = Column(Integer, ForeignKey("patient_slot_booking.id"), nullable=True, index=True)
+    crt_program_booking_id = Column(Integer, ForeignKey("crt_program_bookings.id"), nullable=True, index=True)
+    assessment_source_payment_id = Column(BigInteger, ForeignKey("payments.id"), nullable=True, index=True)
 
+    amount = Column(DECIMAL(12, 2), nullable=False, default=0, server_default="0")
     payment_amount = Column(DECIMAL(12, 2), nullable=False)
 
     payment_status = Column(String(50), nullable=True)
@@ -749,6 +753,38 @@ class Payment(Base):
 
     __table_args__ = (
         Index("idx_payment_status", "payment_status"),
+    )
+
+
+class PatientAssessmentBilling(Base):
+    __tablename__ = "patient_assessment_billing"
+
+    id = Column(BigInteger, primary_key=True, index=True, autoincrement=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
+    assessment_id = Column(Integer, ForeignKey("assessment_master.id"), nullable=False, index=True)
+    patient_assessment_id = Column(Integer, ForeignKey("patient_assessment.id"), nullable=True, index=True)
+    source_payment_id = Column(BigInteger, ForeignKey("payments.id"), nullable=True, index=True)
+
+    assessment_amount = Column(DECIMAL(12, 2), nullable=False, default=0, server_default="0")
+    paid_amount = Column(DECIMAL(12, 2), nullable=False, default=0, server_default="0")
+    due_amount = Column(DECIMAL(12, 2), nullable=False, default=0, server_default="0")
+    fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
+    payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")
+
+    completed_at = Column(DateTime, nullable=True)
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    patient = relationship("Patient")
+    assessment = relationship("AssessmentMaster")
+    patient_assessment = relationship("PatientAssessment")
+    source_payment = relationship("Payment", foreign_keys=[source_payment_id])
+
+    __table_args__ = (
+        UniqueConstraint("patient_id", "assessment_id", name="uq_patient_assessment_billing"),
+        Index("idx_patient_assessment_billing_status", "payment_status"),
     )
 
 
@@ -1285,6 +1321,7 @@ class CrtProgramBooking(Base):
     slot_date = Column(Date, nullable=False, index=True)
     total_amount = Column(Float, nullable=False, default=0, server_default="0")
     paid_amount = Column(Float, nullable=False, default=0, server_default="0")
+    package_covered_amount = Column(Float, nullable=False, default=0, server_default="0")
     due_amount = Column(Float, nullable=False, default=0, server_default="0")
     fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
     is_package_session = Column(Boolean, nullable=False, default=False, server_default="0")
@@ -1327,6 +1364,7 @@ class PatientSlotBooking(StatusIdMixin, Base):
     is_package_session = Column(Boolean, nullable=False, default=False, server_default="0")
     amount = Column(Float, nullable=False, default=0, server_default="0")
     paid_amount = Column(Float, nullable=False, default=0, server_default="0")
+    package_covered_amount = Column(Float, nullable=False, default=0, server_default="0")
     due_amount = Column(Float, nullable=False, default=0, server_default="0")
     fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
     payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")

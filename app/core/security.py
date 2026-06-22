@@ -6,15 +6,24 @@ from app.core.config import get_settings
 
 settings = get_settings()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+def password_exceeds_bcrypt_limit(password: str) -> bool:
+    return len((password or "").encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES
 
 
 def hash_password(password: str) -> str:
     """Hash password using bcrypt"""
+    if password_exceeds_bcrypt_limit(password):
+        raise ValueError("Password cannot be longer than 72 bytes")
     return pwd_context.hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify password against hash"""
+    if password_exceeds_bcrypt_limit(plain_password):
+        return False
     return pwd_context.verify(plain_password, hashed_password)
 
 

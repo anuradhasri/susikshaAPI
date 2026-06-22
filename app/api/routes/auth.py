@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.security import password_exceeds_bcrypt_limit
 from app.schemas.schemas import (
     ForgotPasswordRequest,
     RefreshTokenRequest,
@@ -99,6 +100,8 @@ def _client_ip(request: Request) -> str | None:
 def _password_policy_error(password: str) -> str | None:
     if len(password) < 8:
         return "Password must be at least 8 characters"
+    if password_exceeds_bcrypt_limit(password):
+        return "Password cannot be longer than 72 bytes"
     if not any(char.isupper() for char in password):
         return "Password must include at least one uppercase letter"
     if not any(char.isdigit() for char in password):

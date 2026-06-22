@@ -15,6 +15,7 @@ from app.models.models import (
     MASTER_LOOKUP_DATA,
     Patient,
     PatientAssessment,
+    PatientAssessmentBilling,
     Payment,
     Role,
     TherapyAssessmentMapping,
@@ -71,7 +72,50 @@ def _ensure_assessment_billing_schema(db: Session) -> None:
         db.execute(text("ALTER TABLE assessment_master ADD COLUMN amount FLOAT NOT NULL DEFAULT 0"))
     if "region_id" not in columns:
         db.execute(text("ALTER TABLE assessment_master ADD COLUMN region_id INT NULL"))
+    payment_columns = {column["name"] for column in inspect(db.bind).get_columns("payments")}
+    if "assessment_source_payment_id" not in payment_columns:
+        db.execute(text("ALTER TABLE payments ADD COLUMN assessment_source_payment_id BIGINT NULL"))
+    inspector = inspect(db.bind)
+    if not inspector.has_table("patient_assessment_billing"):
+        db.execute(text("""
+            CREATE TABLE patient_assessment_billing (
+                id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                patient_id INT NOT NULL,
+                assessment_id INT NOT NULL,
+                patient_assessment_id INT NULL,
+                source_payment_id BIGINT NULL,
+                assessment_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+                paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+                due_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+                fully_paid BOOLEAN NOT NULL DEFAULT 0,
+                payment_status VARCHAR(50) NOT NULL DEFAULT 'UNPAID',
+                completed_at DATETIME NULL,
+                created_by INT NULL,
+                updated_by INT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_patient_assessment_billing (patient_id, assessment_id),
+                KEY idx_patient_assessment_billing_patient_id (patient_id),
+                KEY idx_patient_assessment_billing_assessment_id (assessment_id),
+                KEY idx_patient_assessment_billing_patient_assessment_id (patient_assessment_id),
+                KEY idx_patient_assessment_billing_source_payment_id (source_payment_id),
+                KEY idx_patient_assessment_billing_status (payment_status)
+            )
+        """))
+    else:
+        billing_columns = {column["name"] for column in inspector.get_columns("patient_assessment_billing")}
+        if "fully_paid" not in billing_columns:
+            db.execute(text("ALTER TABLE patient_assessment_billing ADD COLUMN fully_paid BOOLEAN NOT NULL DEFAULT 0"))
+            db.execute(text("UPDATE patient_assessment_billing SET fully_paid = CASE WHEN due_amount <= 0 THEN 1 ELSE 0 END"))
     db.commit()
+
+
+def _assessment_payment_status(amount: float, paid: float, due: float) -> str:
+    if amount <= 0 or due <= 0:
+        return "PAID"
+    if paid > 0:
+        return "PARTIAL"
+    return "UNPAID"
 
 
 def _assessment_name(row: AssessmentMaster) -> str:
@@ -396,6 +440,17 @@ def complete_child_assessment(
 
     amount = max(0, float(getattr(assessment, "amount", 0) or 0))
     marker = f"[assessment:{assessment_id}]"
+    previous_assessment_due = (
+        db.query(func.coalesce(func.sum(PatientAssessmentBilling.due_amount), 0))
+        .filter(
+            PatientAssessmentBilling.patient_id == child_id,
+            PatientAssessmentBilling.assessment_id != assessment_id,
+            PatientAssessmentBilling.due_amount > 0,
+        )
+        .scalar()
+        or 0
+    )
+    charge_due_amount = max(0, float(previous_assessment_due or 0) + amount)
     existing_payment = (
         db.query(Payment)
         .filter(
@@ -408,17 +463,84 @@ def complete_child_assessment(
     if amount > 0 and not existing_payment:
         existing_payment = Payment(
             patient_id=child_id,
+            amount=amount,
             payment_mode=None,
             payment_amount=0,
             payment_status="UNPAID",
             fully_paid=False,
-            due_amount=amount,
+            due_amount=charge_due_amount,
             payment_date=datetime.utcnow(),
             remark=f"{marker} Assessment completed - {_assessment_name(assessment)}",
             created_by=current_user.id,
             updated_by=current_user.id,
         )
         db.add(existing_payment)
+        db.flush()
+        existing_payment.assessment_source_payment_id = existing_payment.id
+    elif existing_payment and not getattr(existing_payment, "assessment_source_payment_id", None):
+        existing_payment.assessment_source_payment_id = existing_payment.id
+        if not float(getattr(existing_payment, "amount", 0) or 0):
+            existing_payment.amount = amount
+        if float(getattr(existing_payment, "payment_amount", 0) or 0) <= 0:
+            existing_payment.due_amount = charge_due_amount
+            existing_payment.fully_paid = charge_due_amount <= 0
+
+    paid_amount = 0.0
+    due_amount = charge_due_amount
+    if existing_payment:
+        chain_id = int(getattr(existing_payment, "assessment_source_payment_id", None) or existing_payment.id)
+        latest_payment = (
+            db.query(Payment)
+            .filter(
+                Payment.patient_id == child_id,
+                or_(
+                    Payment.id == chain_id,
+                    Payment.assessment_source_payment_id == chain_id,
+                    Payment.remark.like(f"[assessment-payment:{chain_id}]%"),
+                ),
+            )
+            .order_by(Payment.payment_date.desc(), Payment.created_at.desc(), Payment.id.desc())
+            .first()
+        )
+        paid_amount = (
+            db.query(func.coalesce(func.sum(Payment.payment_amount), 0))
+            .filter(
+                Payment.patient_id == child_id,
+                or_(
+                    Payment.id == chain_id,
+                    Payment.assessment_source_payment_id == chain_id,
+                    Payment.remark.like(f"[assessment-payment:{chain_id}]%"),
+                ),
+            )
+            .scalar()
+            or 0
+        )
+        due_amount = max(0, amount - float(paid_amount or 0))
+
+    billing = (
+        db.query(PatientAssessmentBilling)
+        .filter(
+            PatientAssessmentBilling.patient_id == child_id,
+            PatientAssessmentBilling.assessment_id == assessment_id,
+        )
+        .first()
+    )
+    if not billing:
+        billing = PatientAssessmentBilling(
+            patient_id=child_id,
+            assessment_id=assessment_id,
+            created_by=current_user.id,
+        )
+        db.add(billing)
+    billing.patient_assessment_id = patient_assessment.id
+    billing.source_payment_id = existing_payment.id if existing_payment else None
+    billing.assessment_amount = amount
+    billing.paid_amount = float(paid_amount or 0)
+    billing.due_amount = max(0, float(due_amount or 0))
+    billing.fully_paid = float(billing.due_amount or 0) <= 0
+    billing.payment_status = _assessment_payment_status(amount, float(paid_amount or 0), float(billing.due_amount or 0))
+    billing.completed_at = patient_assessment.completed_date
+    billing.updated_by = current_user.id
 
     db.commit()
     return {
@@ -428,6 +550,10 @@ def complete_child_assessment(
             "assessment_name": _assessment_name(assessment),
             "amount": amount,
             "payment_id": existing_payment.id if existing_payment else None,
+            "billing_id": billing.id,
+            "paid_amount": float(billing.paid_amount or 0),
+            "due_amount": float(billing.due_amount or 0),
+            "payment_status": billing.payment_status,
         },
     }
 
