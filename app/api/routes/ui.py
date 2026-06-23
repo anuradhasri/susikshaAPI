@@ -1493,6 +1493,19 @@ def _slot_booking_amount(slot_booking: PatientSlotBooking) -> float:
     return 0
 
 
+def _non_package_slot_due(slot_booking: PatientSlotBooking) -> float:
+    if bool(getattr(slot_booking, "is_package_session", False)):
+        return 0.0
+    if bool(getattr(slot_booking, "fully_paid", False)):
+        return 0.0
+    amount = float(getattr(slot_booking, "amount", 0) or _slot_booking_amount(slot_booking) or 0)
+    paid = float(getattr(slot_booking, "paid_amount", 0) or 0)
+    stored_due = float(getattr(slot_booking, "due_amount", 0) or 0)
+    if stored_due > 0:
+        return stored_due
+    return max(0, amount - paid)
+
+
 def _is_package_fully_paid(patient_package: Optional[PatientPackage]) -> bool:
     if not patient_package:
         return False
@@ -3135,10 +3148,223 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     }
 
 
+def _session_report_month_key(value: date) -> str:
+    return value.strftime("%Y-%m")
+
+
+def _session_report_month_label(value: date) -> str:
+    return value.strftime("%B %Y")
+
+
+def _slot_status_code(slot_booking: PatientSlotBooking) -> str:
+    status = getattr(slot_booking, "patient_slot_booking_status_master", None)
+    return str(getattr(status, "code", "") or "").upper()
+
+
+def _slot_is_conducted(slot_booking: PatientSlotBooking) -> bool:
+    status = _slot_status_code(slot_booking)
+    if status in {"CANCELLED", "UNPAID_CANCELLED", "NO_SHOW"}:
+        return False
+    return True
+
+
+def _slot_is_paid(slot_booking: PatientSlotBooking, amount: float, paid: float, status: str) -> bool:
+    return bool(
+        getattr(slot_booking, "fully_paid", False)
+        or status in {"PAID", "COMPLETED", "PACKAGE_COVERED"}
+        or (amount > 0 and paid >= amount)
+    )
+
+
+def _therapist_session_report_payload(
+    db: Session,
+    user: Optional[User],
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    therapist_id: Optional[int] = None,
+    region_id: Optional[int] = None,
+) -> dict:
+    today = date.today()
+    period_start = _parse_date(start_date) or today.replace(day=1)
+    next_month = (period_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    period_end = _parse_date(end_date) or (next_month - timedelta(days=1))
+    if period_end < period_start:
+        raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
+
+    roles = _user_roles(db, user)
+    current_therapist = _current_therapist(db, user) if "therapist" in roles else None
+    if current_therapist:
+        therapist_id = current_therapist.id
+
+    region_ids = _user_region_ids(db, user)
+    if region_id and region_ids and region_id not in region_ids:
+        raise HTTPException(status_code=403, detail="Region is outside your access")
+
+    query = (
+        db.query(PatientSlotBooking)
+        .options(
+            joinedload(PatientSlotBooking.patient),
+            joinedload(PatientSlotBooking.patient_slot_booking_status_master),
+            joinedload(PatientSlotBooking.patient_package).joinedload(PatientPackage.package),
+            joinedload(PatientSlotBooking.crt_program_booking),
+            joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapist),
+            joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+        )
+        .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
+        .join(Therapist, Therapist.id == TherapistSlotMapping.therapist_id)
+        .filter(
+            TherapistSlotMapping.slot_date >= period_start,
+            TherapistSlotMapping.slot_date <= period_end,
+        )
+    )
+
+    if therapist_id:
+        query = query.filter(TherapistSlotMapping.therapist_id == therapist_id)
+    if region_id:
+        query = query.filter(Therapist.region_id == region_id)
+    elif region_ids:
+        query = query.filter(Therapist.region_id.in_(region_ids))
+
+    rows = query.order_by(Therapist.name, TherapistSlotMapping.slot_date, PatientSlotBooking.id).all()
+    therapists: dict[int, dict] = {}
+    grand = {
+        "totalSessions": 0,
+        "paidSessions": 0,
+        "sessionAmount": 0.0,
+        "paidAmount": 0.0,
+        "therapistAmount": 0.0,
+        "dueAmount": 0.0,
+    }
+
+    for row in rows:
+        mapping = row.therapist_slot_mapping
+        if not mapping or not _slot_is_conducted(row):
+            continue
+
+        therapist = mapping.therapist
+        therapist_key = mapping.therapist_id
+        session_date = mapping.slot_date
+        status = str(row.payment_status or "").upper()
+        amount = float(
+            row.crt_program_booking.total_amount
+            if row.crt_program_booking_id and row.crt_program_booking
+            else row.amount
+            or 0
+        )
+        paid = float(
+            row.crt_program_booking.paid_amount
+            if row.crt_program_booking_id and row.crt_program_booking
+            else row.paid_amount
+            or 0
+        )
+        due = 0.0 if _slot_is_paid(row, amount, paid, status) else max(0.0, amount - paid)
+        is_paid = _slot_is_paid(row, amount, paid, status)
+        therapist_amount = paid if is_paid else amount
+        month_key = _session_report_month_key(session_date)
+
+        therapist_row = therapists.setdefault(
+            therapist_key,
+            {
+                "therapistId": therapist_key,
+                "therapistName": therapist.name if therapist else f"Therapist {therapist_key}",
+                "regionId": therapist.region_id if therapist else None,
+                "totalSessions": 0,
+                "paidSessions": 0,
+                "sessionAmount": 0.0,
+                "paidAmount": 0.0,
+                "therapistAmount": 0.0,
+                "dueAmount": 0.0,
+                "monthlySummary": {},
+                "sessions": [],
+            },
+        )
+        monthly = therapist_row["monthlySummary"].setdefault(
+            month_key,
+            {
+                "month": month_key,
+                "label": _session_report_month_label(session_date),
+                "totalSessions": 0,
+                "paidSessions": 0,
+                "sessionAmount": 0.0,
+                "paidAmount": 0.0,
+                "therapistAmount": 0.0,
+                "dueAmount": 0.0,
+            },
+        )
+
+        patient_name = (
+            f"{row.patient.first_name} {row.patient.last_name}".strip()
+            if row.patient
+            else "Unknown"
+        )
+        detail = {
+            "sessionId": row.id,
+            "date": _iso(session_date),
+            "month": month_key,
+            "patientId": row.patient_id,
+            "patientName": patient_name,
+            "therapyName": mapping.therapy.name if mapping.therapy else None,
+            "status": _slot_status_code(row) or "BOOKED",
+            "paymentStatus": status or ("PAID" if is_paid else "UNPAID"),
+            "sessionAmount": round(amount, 2),
+            "paidAmount": round(paid, 2),
+            "therapistAmount": round(therapist_amount, 2),
+            "dueAmount": round(due, 2),
+            "fullyPaid": is_paid,
+        }
+
+        for bucket in (therapist_row, monthly, grand):
+            bucket["totalSessions"] += 1
+            bucket["paidSessions"] += 1 if is_paid else 0
+            bucket["sessionAmount"] += amount
+            bucket["paidAmount"] += paid
+            bucket["therapistAmount"] += therapist_amount
+            bucket["dueAmount"] += due
+        therapist_row["sessions"].append(detail)
+
+    therapist_list = []
+    for therapist_row in therapists.values():
+        therapist_row["monthlySummary"] = sorted(therapist_row["monthlySummary"].values(), key=lambda item: item["month"])
+        therapist_row["sessions"] = sorted(therapist_row["sessions"], key=lambda item: (item["date"], item["sessionId"]))
+        for key in ("sessionAmount", "paidAmount", "therapistAmount", "dueAmount"):
+            therapist_row[key] = round(therapist_row[key], 2)
+            for monthly in therapist_row["monthlySummary"]:
+                monthly[key] = round(monthly[key], 2)
+        therapist_list.append(therapist_row)
+
+    therapist_list.sort(key=lambda item: item["therapistName"].lower())
+    for key in ("sessionAmount", "paidAmount", "therapistAmount", "dueAmount"):
+        grand[key] = round(grand[key], 2)
+
+    return {
+        "period": {
+            "startDate": _iso(period_start),
+            "endDate": _iso(period_end),
+            "label": f"{period_start.strftime('%d %b %Y')} - {period_end.strftime('%d %b %Y')}",
+        },
+        "regionId": region_id,
+        "totals": grand,
+        "therapists": therapist_list,
+    }
+
+
 @router.get("/analytics")
 async def analytics(request: Request, period: Optional[str] = None, db: Session = Depends(get_db)):
     user = _require_user(request, db)
     return {"data": _analytics_payload(db, user, period)}
+
+
+@router.get("/reports/therapist-sessions")
+async def therapist_session_report(
+    request: Request,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    therapist_id: Optional[int] = None,
+    region_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    user = _require_user(request, db)
+    return {"data": _therapist_session_report_payload(db, user, start_date, end_date, therapist_id, region_id)}
 
 
 @router.get("/patients/{patient_id}")
@@ -3775,19 +4001,24 @@ async def get_patient_transactions(
         row = _transaction_slot_shape(payable_slot, slot_payments.get(payable_slot.id))
         crt_parent = payable_slot.crt_program_booking
         if crt_parent:
+            crt_siblings = slots_by_crt_parent.get(int(crt_parent.id), [payable_slot])
+            parent_is_package = bool(crt_parent.is_package_session or crt_parent.patient_package_id)
             row["amount"] = float(crt_parent.total_amount or 0)
             row["paid_amount"] = float(crt_parent.paid_amount or 0)
             row["package_covered_amount"] = float(crt_parent.package_covered_amount or 0)
-            row["due_amount"] = max(0, float(crt_parent.due_amount or 0))
-            if bool(crt_parent.is_package_session):
+            if parent_is_package:
                 row["due_amount"] = max(
                     0,
                     float(crt_parent.total_amount or 0)
                     - float(crt_parent.package_covered_amount or 0)
                     - float(crt_parent.paid_amount or 0),
                 )
-            row["fully_paid"] = bool(crt_parent.fully_paid)
-            row["is_package_session"] = bool(crt_parent.is_package_session)
+            else:
+                sibling_due = sum(_non_package_slot_due(sibling) for sibling in crt_siblings)
+                parent_due = max(0, float(crt_parent.due_amount or 0))
+                row["due_amount"] = sibling_due if sibling_due > 0 else parent_due
+            row["fully_paid"] = bool(crt_parent.fully_paid) or (not parent_is_package and float(row["due_amount"] or 0) <= 0)
+            row["is_package_session"] = parent_is_package
             row["patient_package_id"] = crt_parent.patient_package_id
             row["payment_status"] = crt_parent.payment_status
         else:
