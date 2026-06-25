@@ -46,6 +46,8 @@ from app.models.models import (
     Therapist,
     TherapistAvailability,
     TherapistLeave,
+    TherapistTherapyMapping,
+    TherapyAssessmentMapping,
     Session as TherapySession,
     SessionNote,
     User,
@@ -53,6 +55,7 @@ from app.models.models import (
     UserRole,
     MASTER_LOOKUP_DATA,
     CrtProgramBooking,
+    GroupProgramBooking,
 )
 from app.services.user_service import AuthService, UserService
 
@@ -129,6 +132,9 @@ def _ensure_package_billing_schema(db: Session) -> None:
     def ensure_crt_program_booking_schema() -> None:
         inspector = inspect(db.bind)
         if inspector.has_table("crt_program_bookings"):
+            columns = {col["name"] for col in inspector.get_columns("crt_program_bookings")}
+            if "slot_id" not in columns:
+                db.execute(text("ALTER TABLE crt_program_bookings ADD COLUMN slot_id INT NULL"))
             return
         db.execute(text("""
             CREATE TABLE crt_program_bookings (
@@ -136,6 +142,7 @@ def _ensure_package_billing_schema(db: Session) -> None:
                 patient_id INT NOT NULL,
                 program_id INT NOT NULL,
                 patient_package_id INT NULL,
+                slot_id INT NULL,
                 slot_date DATE NOT NULL,
                 total_amount FLOAT NOT NULL DEFAULT 0,
                 paid_amount FLOAT NOT NULL DEFAULT 0,
@@ -148,8 +155,32 @@ def _ensure_package_billing_schema(db: Session) -> None:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 KEY idx_crt_program_booking_patient_date (patient_id, program_id, slot_date),
+                KEY idx_crt_program_booking_session (patient_id, program_id, slot_date, slot_id),
                 KEY idx_crt_program_booking_package_id (patient_package_id),
                 KEY idx_crt_program_booking_status_id (status_id)
+            )
+        """))
+
+    def ensure_group_program_booking_schema() -> None:
+        inspector = inspect(db.bind)
+        if inspector.has_table("group_program_bookings"):
+            return
+        db.execute(text("""
+            CREATE TABLE group_program_bookings (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                program_id INT NOT NULL,
+                region_id INT NULL,
+                therapy_id INT NULL,
+                slot_id INT NOT NULL,
+                slot_date DATE NOT NULL,
+                start_time TIME NULL,
+                end_time TIME NULL,
+                status_id INT NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                KEY idx_group_program_booking_session (program_id, slot_date, slot_id, therapy_id),
+                KEY idx_group_program_booking_region_id (region_id),
+                KEY idx_group_program_booking_status_id (status_id)
             )
         """))
 
@@ -206,11 +237,28 @@ def _ensure_package_billing_schema(db: Session) -> None:
             )
             .all()
         )
+        existing_parents = (
+            db.query(CrtProgramBooking)
+            .filter(CrtProgramBooking.slot_id.is_(None))
+            .all()
+        )
+        for parent in existing_parents:
+            linked_slot = (
+                db.query(PatientSlotBooking)
+                .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
+                .filter(PatientSlotBooking.crt_program_booking_id == parent.id)
+                .order_by(TherapistSlotMapping.slot_id.asc(), PatientSlotBooking.id.asc())
+                .first()
+            )
+            if linked_slot and linked_slot.therapist_slot_mapping:
+                parent.slot_id = linked_slot.therapist_slot_mapping.slot_id
+
         groups: dict[tuple[int, int, date], list[PatientSlotBooking]] = defaultdict(list)
         for slot in crt_slots:
             if slot.therapist_slot_mapping:
                 groups[(slot.patient_id, slot.program_id, slot.therapist_slot_mapping.slot_date)].append(slot)
         for (group_patient_id, group_program_id, group_date), group_slots in groups.items():
+            first_mapping = group_slots[0].therapist_slot_mapping
             amount = max(float(_slot_booking_amount(slot) or 0) for slot in group_slots)
             paid = sum(float(slot.paid_amount or 0) for slot in group_slots)
             fully_paid = any(bool(getattr(slot, "fully_paid", False)) for slot in group_slots) or (amount > 0 and paid >= amount)
@@ -218,6 +266,7 @@ def _ensure_package_billing_schema(db: Session) -> None:
                 patient_id=group_patient_id,
                 program_id=group_program_id,
                 patient_package_id=next((slot.patient_package_id for slot in group_slots if slot.patient_package_id), None),
+                slot_id=first_mapping.slot_id if first_mapping else None,
                 slot_date=group_date,
                 total_amount=amount,
                 paid_amount=paid,
@@ -247,9 +296,12 @@ def _ensure_package_billing_schema(db: Session) -> None:
         slot_columns = {col["name"] for col in inspect(db.bind).get_columns("patient_slot_booking")}
         if "crt_program_booking_id" not in slot_columns:
             db.execute(text("ALTER TABLE patient_slot_booking ADD COLUMN crt_program_booking_id INT NULL"))
+        if "group_program_booking_id" not in slot_columns:
+            db.execute(text("ALTER TABLE patient_slot_booking ADD COLUMN group_program_booking_id INT NULL"))
         if "fully_paid" not in slot_columns:
             db.execute(text("ALTER TABLE patient_slot_booking ADD COLUMN fully_paid BOOLEAN NOT NULL DEFAULT 0"))
         ensure_crt_program_booking_schema()
+        ensure_group_program_booking_schema()
         ensure_booking_package_covered_schema()
         backfill_crt_program_bookings()
         ensure_group_booking_indexes()
@@ -278,6 +330,7 @@ def _ensure_package_billing_schema(db: Session) -> None:
     add_columns("patient_slot_booking", {
         "patient_package_id": "INT NULL",
         "crt_program_booking_id": "INT NULL",
+        "group_program_booking_id": "INT NULL",
         "is_package_session": "BOOLEAN NOT NULL DEFAULT 0",
         "amount": "FLOAT NOT NULL DEFAULT 0",
         "paid_amount": "FLOAT NOT NULL DEFAULT 0",
@@ -288,6 +341,7 @@ def _ensure_package_billing_schema(db: Session) -> None:
     })
     ensure_payment_fully_paid_schema()
     ensure_crt_program_booking_schema()
+    ensure_group_program_booking_schema()
     ensure_booking_package_covered_schema()
     backfill_crt_program_bookings()
     ensure_group_booking_indexes()
@@ -362,6 +416,7 @@ def _ensure_enquiry_schema(db: Session) -> None:
                     phone VARCHAR(20) NOT NULL,
                     referred_by VARCHAR(255) NULL,
                     enquiry_source VARCHAR(100) NULL,
+                    program_id INTEGER NULL,
                     region_id INTEGER NOT NULL,
                     is_active BOOLEAN NOT NULL DEFAULT 1
                 )
@@ -376,8 +431,10 @@ def _ensure_enquiry_schema(db: Session) -> None:
                     phone VARCHAR(20) NOT NULL,
                     referred_by VARCHAR(255) NULL,
                     enquiry_source VARCHAR(100) NULL,
+                    program_id INT NULL,
                     region_id INT NOT NULL,
                     is_active TINYINT(1) NOT NULL DEFAULT 1,
+                    KEY idx_enquiry_program_id (program_id),
                     KEY idx_enquiry_region_id (region_id),
                     KEY idx_enquiry_phone (phone),
                     KEY idx_enquiry_is_active (is_active)
@@ -395,6 +452,7 @@ def _ensure_enquiry_schema(db: Session) -> None:
         "phone": "VARCHAR(20) NULL",
         "referred_by": "VARCHAR(255) NULL",
         "enquiry_source": "VARCHAR(100) NULL",
+        "program_id": "INT NULL",
         "region_id": "INT NULL",
         "is_active": "BOOLEAN NOT NULL DEFAULT 1",
     }
@@ -440,6 +498,14 @@ def _password_policy_error(password: str) -> Optional[str]:
         return "Password must include at least one number"
     if not any(not char.isalnum() for char in password):
         return "Password must include at least one special character"
+    return None
+
+
+def _change_password_policy_error(password: str) -> Optional[str]:
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    if password_exceeds_bcrypt_limit(password):
+        return "Password cannot be longer than 72 bytes"
     return None
 
 
@@ -504,14 +570,25 @@ def _full_name(user: Optional[User]) -> str:
 def _user_region_ids(db: Session, user: Optional[User]) -> list[int]:
     if not user:
         return []
-    return [
-        region_id
-        for (region_id,) in (
-            db.query(UserRegionMapping.regionid)
-            .filter(UserRegionMapping.userid == user.id)
-            .all()
+    try:
+        region_ids = [
+            region_id
+            for (region_id,) in (
+                db.query(UserRegionMapping.regionid)
+                .filter(UserRegionMapping.userid == user.id)
+                .all()
+            )
+        ]
+        if region_ids:
+            return region_ids
+        therapist = (
+            db.query(Therapist.region_id)
+            .filter(Therapist.user_id == user.id, Therapist.is_active.is_(True))
+            .first()
         )
-    ]
+        return [therapist.region_id] if therapist and therapist.region_id else []
+    except Exception:
+        return []
 
 
 def _primary_region_id(db: Session, user: Optional[User]) -> Optional[int]:
@@ -644,23 +721,264 @@ def _role(db: Session, name: str) -> Role:
     db.refresh(role)
     return role
 
+RBAC_RESOURCES = [
+    ("menu.appointments", "menu", "Appointments", None, 10),
+    ("menu.enquiries", "menu", "Enquiries", None, 20),
+    ("menu.children", "menu", "Children", None, 30),
+    ("menu.therapists", "menu", "Therapists", None, 40),
+    ("menu.reports", "menu", "Reports", None, 50),
+    ("region.switch", "control", "Region switcher", None, 60),
+    ("appointment.waitlist", "panel", "Appointment waitlist", None, 70),
+    ("appointment.action.create", "action", "Create appointment", None, 80),
+    ("appointment.action.edit", "action", "Edit appointment", None, 90),
+    ("appointment.action.complete", "action", "Complete appointment", None, 100),
+    ("appointment.action.payment", "action", "Appointment payment", None, 110),
+    ("appointment.action.cancel_paid", "action", "Paid cancel", None, 120),
+    ("appointment.action.cancel_unpaid", "action", "Unpaid cancel", None, 130),
+    ("appointment.filter.therapists", "control", "Appointment therapist filter", None, 135),
+    ("child.tab.details", "tab", "Child details", None, 140),
+    ("child.tab.assessment", "tab", "Assessment", None, 150),
+    ("child.tab.therapy", "tab", "Therapy", None, 160),
+    ("child.tab.payments", "tab", "Payments", None, 170),
+    ("child.action.create", "action", "Create child", None, 180),
+    ("child.action.edit_profile", "action", "Edit child profile", None, 190),
+    ("child.action.upload_document", "action", "Upload child document", None, 200),
+    ("child.action.buy_package", "action", "Buy package", None, 210),
+    ("child.action.session_plan", "action", "Session plan", None, 220),
+    ("child.action.transaction", "action", "Child transaction", None, 230),
+    ("assessment.action.export", "action", "Export assessment", None, 240),
+    ("assessment.action.complete", "action", "Complete assessment", None, 250),
+]
+
+FRONT_OFFICE_PERMISSION_CODES = {code for code, *_ in RBAC_RESOURCES}
+CREATE_PERMISSION_CODES = {
+    "appointment.action.create",
+    "child.action.create",
+    "child.action.upload_document",
+    "child.action.buy_package",
+    "child.action.transaction",
+}
+EDIT_PERMISSION_CODES = {
+    "appointment.action.edit",
+    "appointment.action.complete",
+    "appointment.action.payment",
+    "child.action.edit_profile",
+    "child.action.session_plan",
+    "assessment.action.complete",
+    "region.switch",
+}
+DELETE_PERMISSION_CODES = {
+    "appointment.action.cancel_paid",
+    "appointment.action.cancel_unpaid",
+}
+THERAPIST_PERMISSION_CODES = {
+    "menu.appointments",
+    "child.tab.details",
+    "child.tab.assessment",
+    "child.tab.therapy",
+    "assessment.action.export",
+}
+CENTRAL_HEAD_PERMISSION_CODES = {
+    "menu.appointments",
+    "appointment.filter.therapists",
+    "child.tab.details",
+    "child.tab.assessment",
+    "assessment.action.export",
+    "assessment.action.complete",
+}
+
+
+def _ensure_rbac_tables(db: Session) -> None:
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS rbac_resources (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            code VARCHAR(120) NOT NULL UNIQUE,
+            resource_type VARCHAR(50) NOT NULL,
+            label VARCHAR(150) NOT NULL,
+            parent_code VARCHAR(120) NULL,
+            display_order INT NOT NULL DEFAULT 0,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_rbac_resources_type (resource_type),
+            KEY idx_rbac_resources_active (is_active)
+        )
+    """))
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS rbac_role_permissions (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            role_id INT NOT NULL,
+            resource_id INT NOT NULL,
+            can_view TINYINT(1) NOT NULL DEFAULT 0,
+            can_create TINYINT(1) NOT NULL DEFAULT 0,
+            can_edit TINYINT(1) NOT NULL DEFAULT 0,
+            can_delete TINYINT(1) NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_rbac_role_resource (role_id, resource_id),
+            KEY idx_rbac_role_permissions_role (role_id),
+            KEY idx_rbac_role_permissions_resource (resource_id)
+        )
+    """))
+    for code, resource_type, label, parent_code, display_order in RBAC_RESOURCES:
+        db.execute(text("""
+            INSERT INTO rbac_resources (code, resource_type, label, parent_code, display_order, is_active)
+            VALUES (:code, :resource_type, :label, :parent_code, :display_order, 1)
+            ON DUPLICATE KEY UPDATE
+                resource_type = VALUES(resource_type),
+                label = VALUES(label),
+                parent_code = VALUES(parent_code),
+                display_order = VALUES(display_order),
+                is_active = 1
+        """), {
+            "code": code,
+            "resource_type": resource_type,
+            "label": label,
+            "parent_code": parent_code,
+            "display_order": display_order,
+        })
+
+    for role_name in ("admin", "front_office", "frontoffice", "front_officer", "therapist", "central_head"):
+        _role(db, role_name)
+
+    role_permissions = {
+        "admin": FRONT_OFFICE_PERMISSION_CODES,
+        "front_office": FRONT_OFFICE_PERMISSION_CODES,
+        "frontoffice": FRONT_OFFICE_PERMISSION_CODES,
+        "front_officer": FRONT_OFFICE_PERMISSION_CODES,
+        "therapist": THERAPIST_PERMISSION_CODES,
+        "central_head": CENTRAL_HEAD_PERMISSION_CODES,
+    }
+    for role_name, codes in role_permissions.items():
+        role = _role(db, role_name)
+        for code, *_ in RBAC_RESOURCES:
+            enabled = code in codes
+            db.execute(text("""
+                INSERT INTO rbac_role_permissions (
+                    role_id, resource_id, can_view, can_create, can_edit, can_delete
+                )
+                SELECT :role_id, resource.id, :can_view, :can_create, :can_edit, :can_delete
+                FROM rbac_resources resource
+                WHERE resource.code = :code
+                ON DUPLICATE KEY UPDATE
+                    can_view = VALUES(can_view),
+                    can_create = VALUES(can_create),
+                    can_edit = VALUES(can_edit),
+                    can_delete = VALUES(can_delete)
+            """), {
+                "role_id": role.id,
+                "code": code,
+                "can_view": 1 if enabled else 0,
+                "can_create": 1 if enabled and code in CREATE_PERMISSION_CODES else 0,
+                "can_edit": 1 if enabled and code in EDIT_PERMISSION_CODES else 0,
+                "can_delete": 1 if enabled and code in DELETE_PERMISSION_CODES else 0,
+            })
+    db.commit()
+
+
+def _permission_shape(db: Session, user: User) -> dict:
+    _ensure_rbac_tables(db)
+    rows = db.execute(text("""
+        SELECT
+            resource.code,
+            MAX(permission.can_view) AS can_view,
+            MAX(permission.can_create) AS can_create,
+            MAX(permission.can_edit) AS can_edit,
+            MAX(permission.can_delete) AS can_delete
+        FROM rbac_resources resource
+        JOIN rbac_role_permissions permission ON permission.resource_id = resource.id
+        JOIN user_roles user_role ON user_role.role_id = permission.role_id
+        WHERE user_role.user_id = :user_id
+          AND user_role.deleted_at IS NULL
+          AND resource.is_active = 1
+        GROUP BY resource.code
+    """), {"user_id": user.id}).all()
+    return {
+        row.code: {
+            "view": bool(row.can_view),
+            "create": bool(row.can_create),
+            "edit": bool(row.can_edit),
+            "delete": bool(row.can_delete),
+        }
+        for row in rows
+    }
+
+
+def _assessment_permission_shape(db: Session, user: User) -> dict:
+    permissions = _permission_shape(db, user)
+    role_names = _user_roles(db, user)
+    can_view_assessment = permissions.get("child.tab.assessment", {}).get("view", False)
+    can_edit_assessment = permissions.get("assessment.action.complete", {}).get("edit", False)
+    central_head_edit_ids: set[int] | None = None
+    if "central_head" in role_names:
+        therapist = (
+            db.query(Therapist)
+            .filter(Therapist.user_id == user.id, Therapist.is_active.is_(True))
+            .first()
+        )
+        if therapist:
+            therapy_ids = [
+                row.therapy_id
+                for row in db.query(TherapistTherapyMapping.therapy_id)
+                .filter(
+                    TherapistTherapyMapping.therapist_id == therapist.id,
+                    TherapistTherapyMapping.is_active.is_(True),
+                )
+                .all()
+            ]
+            central_head_edit_ids = {
+                row.assessment_id
+                for row in db.query(TherapyAssessmentMapping.assessment_id)
+                .filter(TherapyAssessmentMapping.therapy_id.in_(therapy_ids))
+                .all()
+            } if therapy_ids else set()
+    result = {}
+    rows = db.query(AssessmentMaster).filter(AssessmentMaster.is_active.is_(True)).all()
+    for assessment in rows:
+        can_edit_this_assessment = can_edit_assessment
+        if central_head_edit_ids is not None:
+            can_edit_this_assessment = assessment.id in central_head_edit_ids
+        result[str(assessment.id)] = {
+            "view": can_view_assessment,
+            "edit": can_edit_this_assessment,
+            "complete": can_edit_this_assessment,
+        }
+    return result
+
+
 def _user_shape(user: User, db: Session) -> dict:
     region_ids = _user_region_ids(db, user)
+    permissions = _permission_shape(db, user)
 
     return {
+        "id": user.id,
         "user_id": user.id,
         "username": user.username,
         "full_name": _full_name(user),
         "email": user.email,
         "phone": user.phone,
         "region_id": region_ids[0] if region_ids else None,
+        "region_ids": region_ids,
         "roles": [
             {
                 "role_id": ur.role.id,
                 "role_name": ur.role.name
             }
             for ur in user.user_roles
-        ]
+            if ur.deleted_at is None and ur.role and ur.role.deleted_at is None
+        ],
+        "user_roles": [
+            {
+                "roles": {
+                    "id": ur.role.id,
+                    "name": ur.role.name,
+                }
+            }
+            for ur in user.user_roles
+            if ur.deleted_at is None and ur.role and ur.role.deleted_at is None
+        ],
+        "permissions": permissions,
+        "assessment_permissions": _assessment_permission_shape(db, user),
     }
 
 
@@ -705,7 +1023,26 @@ def _user_roles(db: Session, user: Optional[User]) -> set[str]:
 
 
 def _current_therapist(db: Session, user: Optional[User]) -> Optional[Therapist]:
-    return None
+    if not user:
+        return None
+
+    therapist = (
+        db.query(Therapist)
+        .filter(Therapist.user_id == user.id, Therapist.is_active.is_(True))
+        .first()
+    )
+    if therapist:
+        return therapist
+
+    full_name = _full_name(user)
+    if not full_name:
+        return None
+
+    return (
+        db.query(Therapist)
+        .filter(Therapist.name == full_name, Therapist.is_active.is_(True))
+        .first()
+    )
 
 
 def _user_role_shape(user_role: UserRole) -> dict:
@@ -767,6 +1104,8 @@ def _enquiry_shape(enquiry: Enquiry) -> dict:
         "phone": enquiry.phone,
         "referred_by": enquiry.referred_by,
         "enquiry_source": enquiry.enquiry_source,
+        "program_id": getattr(enquiry, "program_id", None),
+        "program_name": enquiry.program.program_name if getattr(enquiry, "program", None) else None,
         "region_id": enquiry.region_id,
         "is_active": enquiry.is_active,
     }
@@ -775,7 +1114,7 @@ def _enquiry_shape(enquiry: Enquiry) -> dict:
 def _therapist_shape(therapist: Therapist) -> dict:
     return {
         "id": therapist.id,
-        "user_id": None,
+        "user_id": therapist.user_id,
         "specialization": therapist.qualification,
         "license_number": None,
         "bio": therapist.qualification,
@@ -1190,19 +1529,21 @@ def _package_slot_waived_amount(patient_package: PatientPackage) -> float:
         filters.append(Payment.crt_program_booking_id.in_(crt_ids))
     if not filters:
         return 0.0
-    total = (
-        db.query(func.coalesce(func.sum(Payment.amount), 0))
+    payments = (
+        db.query(Payment)
         .filter(
             Payment.patient_id == patient_package.patient_id,
             Payment.fully_paid.is_(True),
-            Payment.payment_amount <= 0,
             Payment.due_amount <= 0,
             Payment.payment_note.like("%Marked as fully paid%"),
             or_(*filters),
         )
-        .scalar()
+        .all()
     )
-    return float(total or 0)
+    return sum(
+        max(0.0, float(payment.amount or 0) - float(payment.payment_amount or 0))
+        for payment in payments
+    )
 
 
 def _record_package_payment_allocations(db: Session, patient_package: PatientPackage, paid_amount: float, user_id: Optional[int]) -> None:
@@ -1284,7 +1625,7 @@ def _package_paid_balance_amount(patient_package: PatientPackage) -> float:
 
 def _package_shape(patient_package: PatientPackage) -> dict:
     stats = _package_session_stats(patient_package)
-    due_amount = float(patient_package.due_amount or 0)
+    due_amount = _package_due_amount(patient_package)
     paid_amount = _package_effective_paid_amount(patient_package)
     total_amount = float(patient_package.total_amount or (patient_package.package.price if patient_package.package else 0) or 0)
     return {
@@ -1340,15 +1681,8 @@ def _ensure_package_master_schema(db: Session) -> None:
     if inspect(db.bind).has_table("programs"):
         seed_names = (
             "General 16 Session - Package",
-            "General 12 Session - Package",
-            "CRT 6-Day Program",
-            "CRT 5-Day Program",
-            "Social Skills 12 Session",
-            "Social Skills 8 Session",
-            "Schooling 12 Session",
-            "Schooling 8 Session",
-            "Vocational 10 Session",
-            "Vocational 8 Session",
+            "CRT 5 Session - Package",
+            "Vocational 8 Session - Package",
         )
         db.query(Package).filter(Package.program_id.isnot(None), Package.name.notin_(seed_names)).update(
             {"is_active": False},
@@ -1356,17 +1690,10 @@ def _ensure_package_master_schema(db: Session) -> None:
         )
         package_seed = """
             SELECT 'General' AS program_name, 'General 16 Session - Package' AS package_name, 16 AS total_sessions, 17600 AS price, 120 AS duration_days
-            UNION ALL SELECT 'General', 'General 12 Session - Package', 12, 13200, 90
-            UNION ALL SELECT 'CRT', 'CRT 6-Day Program', 6, 40000, 45
-            UNION ALL SELECT 'CRT', 'CRT 5-Day Program', 5, 30000, 30
-            UNION ALL SELECT 'CRT (Structured Program)', 'CRT 6-Day Program', 6, 40000, 45
-            UNION ALL SELECT 'CRT (Structured Program)', 'CRT 5-Day Program', 5, 30000, 30
-            UNION ALL SELECT 'Social Group', 'Social Skills 12 Session', 12, 22000, 90
-            UNION ALL SELECT 'Social Group', 'Social Skills 8 Session', 8, 16000, 60
-            UNION ALL SELECT 'Schooling', 'Schooling 12 Session', 12, 14400, 90
-            UNION ALL SELECT 'Schooling', 'Schooling 8 Session', 8, 9600, 60
-            UNION ALL SELECT 'Vocational', 'Vocational 10 Session', 10, 25000, 75
-            UNION ALL SELECT 'Vocational', 'Vocational 8 Session', 8, 20000, 60
+            UNION ALL SELECT 'CRT', 'CRT 5 Session - Package', 5, 45000, 30
+            UNION ALL SELECT 'CRT (Structured Program)', 'CRT 5 Session - Package', 5, 45000, 30
+            UNION ALL SELECT 'Vocational', 'Vocational 8 Session - Package', 8, 10000, 60
+            UNION ALL SELECT 'Vocational Program', 'Vocational 8 Session - Package', 8, 10000, 60
         """
         db.execute(text(f"""
             UPDATE packages pkg
@@ -1547,19 +1874,21 @@ def _slot_waived_amount(db: Session, slot_booking: PatientSlotBooking) -> float:
     patient_id = slot_booking.patient_id
     if not patient_id and slot_booking.patient_session_plan_item and slot_booking.patient_session_plan_item.patient_session_plan:
         patient_id = slot_booking.patient_session_plan_item.patient_session_plan.patient_id
-    total = (
-        db.query(func.coalesce(func.sum(Payment.amount), 0))
+    payments = (
+        db.query(Payment)
         .filter(
             Payment.patient_id == patient_id,
             Payment.fully_paid.is_(True),
-            Payment.payment_amount <= 0,
             Payment.due_amount <= 0,
             Payment.payment_note.like("%Marked as fully paid%"),
             or_(*filters),
         )
-        .scalar()
+        .all()
     )
-    return float(total or 0)
+    return sum(
+        max(0.0, float(payment.amount or 0) - float(payment.payment_amount or 0))
+        for payment in payments
+    )
 
 
 def _slot_marked_fully_paid(db: Session, slot_booking: PatientSlotBooking) -> bool:
@@ -1829,6 +2158,7 @@ def _transaction_slot_shape(slot_booking: PatientSlotBooking, payment: Optional[
         "transaction_type": "Package Session" if is_crt_package_session else "Session Due",
         "patient_slot_booking_id": slot_booking.id,
         "crt_program_booking_id": slot_booking.crt_program_booking_id,
+        "group_program_booking_id": getattr(slot_booking, "group_program_booking_id", None),
         "patient_id": crt_parent.patient_id if crt_parent else slot_booking.patient_id,
         "patient_package_id": crt_parent.patient_package_id if crt_parent else slot_booking.patient_package_id,
         "package_name": row_patient_package.package.name if row_patient_package and row_patient_package.package else None,
@@ -1866,7 +2196,7 @@ def _package_purchase_transaction_shape(patient_package: PatientPackage, initial
         "package_name": package_label,
         "is_package_session": False,
         "slot_name": None,
-        "session_name": "Package purchased",
+        "session_name": f"{package_label} purchased",
         "therapy_name": None,
         "slot_date": _iso(patient_package.start_date),
         "start_time": None,
@@ -1942,8 +2272,13 @@ def _payment_transaction_shape(
         is_package_session = bool(getattr(slot_booking, "is_package_session", False)) or bool(getattr(crt_parent, "is_package_session", False))
         is_package_credit_row = is_package_session and "Package credit used" in str(payment.remark or "")
         display_session_name = base_row.get("session_name") or payment_session_text
-        due = float(due_override) if due_override is not None else payment_due
-        if due_override is None and is_package_session and row_patient_package:
+        if due_override is not None:
+            due = float(due_override)
+        elif previous_due is not None and not is_package_session:
+            due = max(0, float(previous_due) - payment_amount)
+        else:
+            due = payment_due
+        if due_override is None and previous_due is None and is_package_session and row_patient_package:
             due = float(getattr(row_patient_package, "due_amount", payment_due) or 0)
         if display_amount_override is not None:
             display_amount = float(display_amount_override)
@@ -1976,13 +2311,14 @@ def _payment_transaction_shape(
         package_label = patient_package.package.name if patient_package.package else f"Package #{patient_package.package_id}"
         payment_note_lower = str(getattr(payment, "payment_note", "") or "").strip().lower()
         package_session_name = (
-            "Package purchased"
+            f"{package_label} purchased"
             if payment_note_lower == "package purchased"
             else "Package credit added"
         )
-        amount = stored_amount if package_session_name == "Package purchased" and stored_amount > 0 else 0
+        is_package_purchase_row = payment_note_lower == "package purchased"
+        amount = stored_amount if is_package_purchase_row and stored_amount > 0 else 0
         db = object_session(patient_package) or object_session(payment)
-        if not payment_note_lower and package_session_name != "Package purchased" and db and patient_package.id:
+        if not payment_note_lower and not is_package_purchase_row and db and patient_package.id:
             first_package_payment = (
                 db.query(Payment.id)
                 .filter(
@@ -1994,7 +2330,8 @@ def _payment_transaction_shape(
                 .first()
             )
             if first_package_payment and first_package_payment.id == payment.id:
-                package_session_name = "Package purchased"
+                package_session_name = f"{package_label} purchased"
+                is_package_purchase_row = True
                 amount = stored_amount if stored_amount > 0 else float(patient_package.total_amount or 0)
         return {
             "id": f"payment-{payment.id}",
@@ -2354,7 +2691,7 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.filter(Patient.region_id.in_(region_ids))
         return query
     if table == "enquiries":
-        query = db.query(Enquiry).filter(Enquiry.is_active.is_(True))
+        query = db.query(Enquiry).options(joinedload(Enquiry.program)).filter(Enquiry.is_active.is_(True))
         if region_ids:
             query = query.filter(Enquiry.region_id.in_(region_ids))
         return query
@@ -2372,8 +2709,6 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         query = db.query(Therapist)
         if current_therapist:
             query = query.filter(Therapist.id == current_therapist.id)
-        elif region_ids:
-            query = query.filter(Therapist.region_id.in_(region_ids))
         return query
     if table == "therapist_availability":
         query = db.query(TherapistAvailability).options(joinedload(TherapistAvailability.therapist)).filter(TherapistAvailability.deleted_at.is_(None))
@@ -2413,9 +2748,15 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return query
     if table == "packages":
         _ensure_package_master_schema(db)
+        allowed_package_names = (
+            "General 16 Session - Package",
+            "CRT 5 Session - Package",
+            "Vocational 8 Session - Package",
+        )
         return db.query(Package).options(joinedload(Package.program)).filter(
             Package.deleted_at.is_(None),
             Package.is_active.is_(True),
+            Package.name.in_(allowed_package_names),
         )
     if table == "patient_packages":
         _ensure_package_billing_schema(db)
@@ -2501,6 +2842,10 @@ def _apply_filters(query, table: str, filters: list[dict]):
         elif field == "is_active" and table == "therapists":
             if op == "eq":
                 query = query.filter(Therapist.is_active == (str(value).lower() == "true"))
+        elif field == "region_id" and table == "therapists":
+            if op == "eq":
+                query = query.filter(Therapist.region_id == value)
+                continue
         elif field == "is_resolved" and table == "alerts":
             if op == "eq":
                 query = query.filter(Alert.is_active == (str(value).lower() == "false"))
@@ -2617,18 +2962,15 @@ async def me(request: Request, db: Session = Depends(get_db)):
 @router.post("/auth/change-password")
 async def change_password(payload: dict, request: Request, db: Session = Depends(get_db)):
     user = _require_user(request, db)
-    old_password = payload.get("old_password")
     new_password = payload.get("new_password")
 
-    if not old_password or not new_password:
-        raise HTTPException(status_code=400, detail="Old password and new password are required")
-    password_error = _password_policy_error(new_password)
+    if not new_password:
+        raise HTTPException(status_code=400, detail="New password is required")
+    password_error = _change_password_policy_error(new_password)
     if password_error:
         raise HTTPException(status_code=400, detail=password_error)
-    if old_password == new_password:
-        raise HTTPException(status_code=400, detail="New password must be different from old password")
-    if not verify_password(old_password, user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Old password is incorrect")
+    if verify_password(new_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="New password must be different from current password")
 
     user.hashed_password = hash_password(new_password)
     user.updated_at = _now()
@@ -3176,6 +3518,29 @@ def _slot_is_paid(slot_booking: PatientSlotBooking, amount: float, paid: float, 
     )
 
 
+def _is_general_report_session(slot_booking: PatientSlotBooking) -> bool:
+    program_name = (
+        slot_booking.program.program_name
+        if getattr(slot_booking, "program", None)
+        else ""
+    )
+    normalized = re.sub(r"[^a-z0-9]+", " ", program_name.lower()).strip()
+    if not normalized:
+        return True
+    excluded_tokens = (
+        "crt",
+        "structured",
+        "vocational",
+        "social",
+        "parent training",
+        "prewriting",
+        "prewritting",
+        "peg",
+        "school",
+    )
+    return not any(token in normalized for token in excluded_tokens)
+
+
 def _therapist_session_report_payload(
     db: Session,
     user: Optional[User],
@@ -3239,6 +3604,8 @@ def _therapist_session_report_payload(
     for row in rows:
         mapping = row.therapist_slot_mapping
         if not mapping or not _slot_is_conducted(row):
+            continue
+        if not _is_general_report_session(row):
             continue
 
         therapist = mapping.therapist
@@ -3471,62 +3838,46 @@ async def get_patient_transactions(
         .all()
     )
     slots_by_crt_parent: dict[int, list[PatientSlotBooking]] = defaultdict(list)
+    slots_by_group_child: dict[tuple[int, int], list[PatientSlotBooking]] = defaultdict(list)
     for slot_booking in slots:
         if slot_booking.crt_program_booking_id:
             slots_by_crt_parent[int(slot_booking.crt_program_booking_id)].append(slot_booking)
-    negative_credit_crt_ids: set[int] = set()
-    for payment in payment_rows:
-        crt_id = getattr(payment, "crt_program_booking_id", None)
-        if not crt_id:
-            continue
-        remark = str(payment.remark or "")
-        note = str(getattr(payment, "payment_note", "") or "")
-        if (
-            ("Package credit used" in remark or note.startswith("Allocated from package payment"))
-            and float(getattr(payment, "due_amount", 0) or 0) < 0
-        ):
-            negative_credit_crt_ids.add(int(crt_id))
-
-    resolved_crt_payment_ids: dict[int, int] = {}
-    for payment in payment_rows:
-        crt_id = getattr(payment, "crt_program_booking_id", None)
-        if not crt_id:
-            continue
-        remark = str(payment.remark or "")
-        note = str(getattr(payment, "payment_note", "") or "")
-        is_resolution = (
-            "Package credit used" in remark
-            or note.startswith("Allocated from package payment")
-            or "Marked as fully paid" in note
+        if getattr(slot_booking, "group_program_booking_id", None) and slot_booking.patient_id:
+            slots_by_group_child[(int(slot_booking.group_program_booking_id), int(slot_booking.patient_id))].append(slot_booking)
+    group_payable_slot_by_slot_id: dict[int, PatientSlotBooking] = {}
+    for group_siblings in slots_by_group_child.values():
+        payable_slot = max(
+            group_siblings,
+            key=lambda sibling: (
+                bool(sibling.is_package_session),
+                float(sibling.due_amount or 0),
+                float(sibling.amount or _slot_booking_amount(sibling) or 0),
+                int(sibling.id or 0),
+            ),
         )
-        if is_resolution:
-            resolved_crt_payment_ids[int(crt_id)] = max(resolved_crt_payment_ids.get(int(crt_id), 0), int(payment.id or 0))
-    if resolved_crt_payment_ids:
-        filtered_payment_rows = []
-        for payment in payment_rows:
-            crt_id = getattr(payment, "crt_program_booking_id", None)
-            remark = str(payment.remark or "")
-            note = str(getattr(payment, "payment_note", "") or "")
-            is_negative_credit = bool(
-                crt_id
-                and int(crt_id) in negative_credit_crt_ids
-                and ("Package credit used" in remark or note.startswith("Allocated from package payment"))
-                and float(getattr(payment, "due_amount", 0) or 0) < 0
-            )
-            is_later_full_paid_marker = bool(
-                crt_id
-                and int(crt_id) in negative_credit_crt_ids
-                and "Marked as fully paid" in note
-            )
-            if is_later_full_paid_marker:
+        total_paid = sum(float(sibling.paid_amount or 0) for sibling in group_siblings)
+        total_package_covered = sum(float(getattr(sibling, "package_covered_amount", 0) or 0) for sibling in group_siblings)
+        amount = max(float(sibling.amount or _slot_booking_amount(sibling) or 0) for sibling in group_siblings)
+        fully_paid = any(bool(getattr(sibling, "fully_paid", False)) for sibling in group_siblings) or (amount > 0 and total_paid + total_package_covered >= amount)
+        payable_slot.amount = amount
+        payable_slot.paid_amount = total_paid
+        payable_slot.package_covered_amount = total_package_covered
+        payable_slot.due_amount = 0 if fully_paid else max(0, amount - total_paid - total_package_covered)
+        payable_slot.fully_paid = fully_paid
+        payable_slot.payment_status = "PAID" if fully_paid else ("PARTIAL" if total_paid > 0 or total_package_covered > 0 else "UNPAID")
+        for sibling in group_siblings:
+            group_payable_slot_by_slot_id[int(sibling.id)] = payable_slot
+            if sibling.id == payable_slot.id:
                 continue
-            if is_negative_credit:
-                filtered_payment_rows.append(payment)
-                continue
-            if crt_id and int(payment.id or 0) < resolved_crt_payment_ids.get(int(crt_id), 0):
-                continue
-            filtered_payment_rows.append(payment)
-        payment_rows = filtered_payment_rows
+            sibling.amount = 0
+            sibling.paid_amount = 0
+            sibling.package_covered_amount = 0
+            sibling.due_amount = 0
+            sibling.fully_paid = fully_paid
+            sibling.payment_status = payable_slot.payment_status
+    if group_payable_slot_by_slot_id:
+        db.flush()
+    slots_by_id = {slot_booking.id: slot_booking for slot_booking in slots}
     managed_package_credit_keys: set[tuple[str, int]] = set()
     for payment in payment_rows:
         remark = payment.remark or ""
@@ -3557,12 +3908,23 @@ async def get_patient_transactions(
             payments_by_crt_parent[int(payment.crt_program_booking_id)].append(payment)
             crt_slots = slots_by_crt_parent.get(int(payment.crt_program_booking_id), [])
             if crt_slots:
-                payable_slot = max(crt_slots, key=lambda row: (float(row.amount or _slot_booking_amount(row) or 0), -int(row.id or 0)))
+                marker = (payment.remark or "").split("]", 1)[0] if "]" in (payment.remark or "") else ""
+                marked_slot_id = None
+                if marker.startswith("[slot:"):
+                    try:
+                        marked_slot_id = int(marker.replace("[slot:", ""))
+                    except ValueError:
+                        marked_slot_id = None
+                payable_slot = (
+                    next((row for row in crt_slots if row.id == marked_slot_id), None)
+                    or max(crt_slots, key=lambda row: (float(row.amount or _slot_booking_amount(row) or 0), -int(row.id or 0)))
+                )
                 slot_payments.setdefault(payable_slot.id, payment)
                 payments_by_slot[payable_slot.id].append(payment)
                 continue
         if getattr(payment, "patient_slot_booking_id", None):
             slot_id = int(payment.patient_slot_booking_id)
+            slot_id = int(group_payable_slot_by_slot_id.get(slot_id, slots_by_id.get(slot_id)).id) if (slot_id in group_payable_slot_by_slot_id or slots_by_id.get(slot_id)) else slot_id
             slot_payments.setdefault(slot_id, payment)
             payments_by_slot[slot_id].append(payment)
             continue
@@ -3575,6 +3937,7 @@ async def get_patient_transactions(
                 slot_id = int(marker.replace("[slot:", ""))
             except ValueError:
                 continue
+            slot_id = int(group_payable_slot_by_slot_id.get(slot_id, slots_by_id.get(slot_id)).id) if (slot_id in group_payable_slot_by_slot_id or slots_by_id.get(slot_id)) else slot_id
             slot_payments.setdefault(slot_id, payment)
             payments_by_slot[slot_id].append(payment)
         elif marker.startswith("[package:"):
@@ -3592,7 +3955,6 @@ async def get_patient_transactions(
         _sync_crt_parent_payment_from_ledger(db, crt_parent)
     db.commit()
 
-    slots_by_id = {slot_booking.id: slot_booking for slot_booking in slots}
     package_payment_totals = {
         package_id: sum(float(payment.payment_amount or 0) for payment in payments)
         for package_id, payments in payments_by_package.items()
@@ -3889,6 +4251,22 @@ async def get_patient_transactions(
                 previous_due = max(0, starting_due_by_slot.get(paid_slot.id, 0) - cumulative_paid_by_slot[paid_slot.id])
                 cumulative_paid_by_slot[paid_slot.id] += float(payment.payment_amount or 0)
                 due_override = package_session_running_due(paid_slot, payment)
+                crt_parent = paid_slot.crt_program_booking
+                if crt_parent and not (bool(getattr(crt_parent, "is_package_session", False)) or getattr(crt_parent, "patient_package_id", None)):
+                    total = float(crt_parent.total_amount or _slot_booking_amount(paid_slot) or 0)
+                    package_covered = float(getattr(crt_parent, "package_covered_amount", 0) or 0)
+                    paid_to_date = sum(
+                        float(row.payment_amount or 0)
+                        for row in payments_by_crt_parent.get(crt_parent_id, [])
+                        if (
+                            (row.payment_date or row.created_at or _now()),
+                            row.id or 0,
+                        ) <= (
+                            (payment.payment_date or payment.created_at or _now()),
+                            payment.id or 0,
+                        )
+                    )
+                    due_override = max(0, total - package_covered - paid_to_date)
                 transaction_rows.append(_payment_transaction_shape(
                     payment,
                     slot_booking=paid_slot,
@@ -3976,6 +4354,7 @@ async def get_patient_transactions(
 
     payable_slot_rows = []
     emitted_payable_crt_parent_ids: set[int] = set()
+    emitted_payable_group_child_keys: set[tuple[int, int]] = set()
     excluded_payable_statuses = {"CANCELLED", "UNPAID_CANCELLED"}
     for slot_booking in sorted(slots, key=lambda row: (row.created_at or _now(), row.id or 0)):
         payable_slot = slot_booking
@@ -3994,6 +4373,21 @@ async def get_patient_transactions(
                     int(sibling.id or 0),
                 ),
             )
+        elif getattr(slot_booking, "group_program_booking_id", None) and slot_booking.patient_id:
+            group_child_key = (int(slot_booking.group_program_booking_id), int(slot_booking.patient_id))
+            if group_child_key in emitted_payable_group_child_keys:
+                continue
+            emitted_payable_group_child_keys.add(group_child_key)
+            group_siblings = slots_by_group_child.get(group_child_key, [slot_booking])
+            payable_slot = max(
+                group_siblings,
+                key=lambda sibling: (
+                    bool(sibling.is_package_session),
+                    float(sibling.due_amount or 0),
+                    float(sibling.amount or _slot_booking_amount(sibling) or 0),
+                    int(sibling.id or 0),
+                ),
+            )
 
         if str(payable_slot.status or "").upper() in excluded_payable_statuses:
             continue
@@ -4001,22 +4395,12 @@ async def get_patient_transactions(
         row = _transaction_slot_shape(payable_slot, slot_payments.get(payable_slot.id))
         crt_parent = payable_slot.crt_program_booking
         if crt_parent:
-            crt_siblings = slots_by_crt_parent.get(int(crt_parent.id), [payable_slot])
+            _sync_crt_parent_payment_from_ledger(db, crt_parent)
             parent_is_package = bool(crt_parent.is_package_session or crt_parent.patient_package_id)
             row["amount"] = float(crt_parent.total_amount or 0)
             row["paid_amount"] = float(crt_parent.paid_amount or 0)
             row["package_covered_amount"] = float(crt_parent.package_covered_amount or 0)
-            if parent_is_package:
-                row["due_amount"] = max(
-                    0,
-                    float(crt_parent.total_amount or 0)
-                    - float(crt_parent.package_covered_amount or 0)
-                    - float(crt_parent.paid_amount or 0),
-                )
-            else:
-                sibling_due = sum(_non_package_slot_due(sibling) for sibling in crt_siblings)
-                parent_due = max(0, float(crt_parent.due_amount or 0))
-                row["due_amount"] = sibling_due if sibling_due > 0 else parent_due
+            row["due_amount"] = max(0, float(crt_parent.due_amount or 0))
             row["fully_paid"] = bool(crt_parent.fully_paid) or (not parent_is_package and float(row["due_amount"] or 0) <= 0)
             row["is_package_session"] = parent_is_package
             row["patient_package_id"] = crt_parent.patient_package_id
@@ -4034,6 +4418,13 @@ async def get_patient_transactions(
                     - float(row.get("package_covered_amount") or 0)
                     - float(row.get("paid_amount") or 0),
                 )
+            elif getattr(payable_slot, "group_program_booking_id", None):
+                row["due_amount"] = max(
+                    0,
+                    slot_amount
+                    - float(row.get("package_covered_amount") or 0)
+                    - float(row.get("paid_amount") or 0),
+                )
             row["fully_paid"] = bool(getattr(payable_slot, "fully_paid", False))
             row["payment_status"] = payable_slot.payment_status
         if row["fully_paid"]:
@@ -4041,6 +4432,7 @@ async def get_patient_transactions(
         due_amount = float(row.get("due_amount") or 0)
         if due_amount <= 0:
             continue
+        row["current_due_amount"] = due_amount
         payable_slot_rows.append(row)
 
     package_payment_created_at_by_id = {
@@ -4072,6 +4464,13 @@ async def get_patient_transactions(
         return (group_created_at, priority, row.get("created_at") or "")
 
     transaction_rows.sort(key=transaction_sort_key, reverse=True)
+    payable_slot_rows.sort(key=lambda row: row.get("created_at") or "")
+    running_session_due = 0.0
+    for row in payable_slot_rows:
+        if row.get("is_package_session"):
+            continue
+        running_session_due += max(0, float(row.get("due_amount") or 0))
+        row["due_amount"] = running_session_due
     payable_slot_rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
 
     return {
@@ -4112,6 +4511,13 @@ async def create_patient_transaction(
     fully_paid = bool(payload.get("fully_paid"))
     if paid_amount < 0:
         raise HTTPException(status_code=400, detail="Paid amount cannot be negative")
+
+    def validate_paid_amount(max_allowed: float, label: str) -> None:
+        if paid_amount > max_allowed + 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Paid amount cannot be more than {label} due",
+            )
 
     slot_booking = None
     patient_package = None
@@ -4177,6 +4583,7 @@ async def create_patient_transaction(
             selected_due_before = payload_due
         if selected_due_before <= 0:
             raise HTTPException(status_code=400, detail="Assessment has no pending due")
+        validate_paid_amount(selected_due_before, "assessment")
         if fully_paid and paid_amount <= 0:
             paid_amount = 0
         overall_due_before = max(float(overall_assessment_due or 0), selected_due_before)
@@ -4208,6 +4615,50 @@ async def create_patient_transaction(
             plan_patient_id = slot_booking.patient_session_plan_item.patient_session_plan.patient_id
         if slot_booking.patient_id != patient_id and plan_patient_id != patient_id:
             raise HTTPException(status_code=400, detail="Slot booking does not belong to this child")
+        if getattr(slot_booking, "group_program_booking_id", None) and slot_booking.patient_id:
+            group_siblings = (
+                db.query(PatientSlotBooking)
+                .options(
+                    joinedload(PatientSlotBooking.patient_package).joinedload(PatientPackage.package),
+                    joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.slot),
+                    joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+                )
+                .filter(
+                    PatientSlotBooking.group_program_booking_id == slot_booking.group_program_booking_id,
+                    PatientSlotBooking.patient_id == slot_booking.patient_id,
+                )
+                .all()
+            )
+            if group_siblings:
+                payable_slot = max(
+                    group_siblings,
+                    key=lambda sibling: (
+                        bool(sibling.is_package_session),
+                        float(sibling.due_amount or 0),
+                        float(sibling.amount or _slot_booking_amount(sibling) or 0),
+                        int(sibling.id or 0),
+                    ),
+                )
+                total_paid = sum(float(sibling.paid_amount or 0) for sibling in group_siblings)
+                total_package_covered = sum(float(getattr(sibling, "package_covered_amount", 0) or 0) for sibling in group_siblings)
+                amount = max(float(sibling.amount or _slot_booking_amount(sibling) or 0) for sibling in group_siblings)
+                payable_slot.amount = amount
+                payable_slot.paid_amount = total_paid
+                payable_slot.package_covered_amount = total_package_covered
+                payable_slot.due_amount = max(0, amount - total_paid - total_package_covered)
+                payable_slot.fully_paid = bool(payable_slot.fully_paid or (amount > 0 and payable_slot.due_amount <= 0))
+                payable_slot.payment_status = "PAID" if payable_slot.fully_paid else ("PARTIAL" if total_paid > 0 or total_package_covered > 0 else "UNPAID")
+                for sibling in group_siblings:
+                    if sibling.id == payable_slot.id:
+                        continue
+                    sibling.amount = 0
+                    sibling.paid_amount = 0
+                    sibling.package_covered_amount = 0
+                    sibling.due_amount = 0
+                    sibling.fully_paid = payable_slot.fully_paid
+                    sibling.payment_status = payable_slot.payment_status
+                slot_booking = payable_slot
+                db.flush()
 
         crt_parent = slot_booking.crt_program_booking
         ledger_filters = []
@@ -4230,10 +4681,12 @@ async def create_patient_transaction(
             selected_due_before = float(payload.get("due_amount") or 0) or float(slot_booking.due_amount or 0)
         if selected_due_before <= 0:
             selected_due_before = float(_slot_booking_amount(slot_booking) or 0)
+        validate_paid_amount(selected_due_before, "session")
         if is_non_package_session_payment:
             slot_due_query = db.query(func.coalesce(func.sum(PatientSlotBooking.due_amount), 0)).filter(
                 PatientSlotBooking.patient_id == patient_id,
                 PatientSlotBooking.crt_program_booking_id.is_(None),
+                PatientSlotBooking.group_program_booking_id.is_(None),
                 PatientSlotBooking.is_package_session.is_(False),
                 PatientSlotBooking.fully_paid.is_(False),
                 PatientSlotBooking.due_amount > 0,
@@ -4241,6 +4694,34 @@ async def create_patient_transaction(
             if not crt_parent:
                 slot_due_query = slot_due_query.filter(PatientSlotBooking.id != slot_booking.id)
             slot_due_total = slot_due_query.scalar() or 0
+            group_due_total = 0.0
+            group_due_rows = (
+                db.query(PatientSlotBooking)
+                .filter(
+                    PatientSlotBooking.patient_id == patient_id,
+                    PatientSlotBooking.crt_program_booking_id.is_(None),
+                    PatientSlotBooking.group_program_booking_id.isnot(None),
+                    PatientSlotBooking.is_package_session.is_(False),
+                    PatientSlotBooking.fully_paid.is_(False),
+                    PatientSlotBooking.due_amount > 0,
+                )
+                .all()
+            )
+            grouped_due_rows: dict[tuple[int, int], list[PatientSlotBooking]] = defaultdict(list)
+            for due_row in group_due_rows:
+                if due_row.id == slot_booking.id:
+                    continue
+                grouped_due_rows[(int(due_row.group_program_booking_id), int(due_row.patient_id or patient_id))].append(due_row)
+            for due_siblings in grouped_due_rows.values():
+                payable_due_row = max(
+                    due_siblings,
+                    key=lambda sibling: (
+                        float(sibling.due_amount or 0),
+                        float(sibling.amount or _slot_booking_amount(sibling) or 0),
+                        int(sibling.id or 0),
+                    ),
+                )
+                group_due_total += max(0, float(payable_due_row.due_amount or 0))
 
             crt_due_query = db.query(func.coalesce(func.sum(CrtProgramBooking.due_amount), 0)).filter(
                 CrtProgramBooking.patient_id == patient_id,
@@ -4252,11 +4733,12 @@ async def create_patient_transaction(
                 crt_due_query = crt_due_query.filter(CrtProgramBooking.id != crt_parent.id)
             crt_due_total = crt_due_query.scalar() or 0
 
-            other_session_due = max(0, float(slot_due_total or 0) + float(crt_due_total or 0))
+            other_session_due = max(0, float(slot_due_total or 0) + float(group_due_total or 0) + float(crt_due_total or 0))
             selected_due_after = 0 if fully_paid else max(0, selected_due_before - paid_amount)
             payment_due_after = other_session_due + selected_due_after
         else:
             payment_due_after = 0 if fully_paid else max(0, selected_due_before - paid_amount)
+        selected_slot_due_after = 0 if fully_paid else max(0, selected_due_before - paid_amount)
         booking_amount_snapshot = float(crt_parent.total_amount or 0) if crt_parent else 0
         if booking_amount_snapshot <= 0:
             booking_amount_snapshot = float(payload.get("booking_amount") or 0) or float(slot_booking.amount or _slot_booking_amount(slot_booking) or 0) or selected_due_before
@@ -4293,7 +4775,7 @@ async def create_patient_transaction(
                     sibling,
                     booking_amount_snapshot,
                     sibling_paid,
-                    0 if fully_paid else float(payment_due_after or 0),
+                    selected_slot_due_after,
                     sibling_package_covered,
                 )
                 sibling.fully_paid = bool(fully_paid or sibling.due_amount <= 0)
@@ -4318,6 +4800,24 @@ async def create_patient_transaction(
             _recalculate_slot_payment(slot_booking)
             if slot_booking.fully_paid:
                 _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, 0)
+            if getattr(slot_booking, "group_program_booking_id", None) and slot_booking.patient_id:
+                group_siblings = (
+                    db.query(PatientSlotBooking)
+                    .filter(
+                        PatientSlotBooking.group_program_booking_id == slot_booking.group_program_booking_id,
+                        PatientSlotBooking.patient_id == slot_booking.patient_id,
+                    )
+                    .all()
+                )
+                for sibling in group_siblings:
+                    if sibling.id == slot_booking.id:
+                        continue
+                    sibling.amount = 0
+                    sibling.paid_amount = 0
+                    sibling.package_covered_amount = 0
+                    sibling.due_amount = 0
+                    sibling.fully_paid = slot_booking.fully_paid
+                    sibling.payment_status = slot_booking.payment_status
     elif patient_package_id:
         patient_package = (
             db.query(PatientPackage)
@@ -4413,6 +4913,9 @@ async def create_patient_transaction(
             updated_by=user.id,
         )
         db.add(payment)
+        if slot_booking and slot_booking.crt_program_booking:
+            db.flush()
+            _sync_crt_parent_payment_from_ledger(db, slot_booking.crt_program_booking)
         if assessment_billing:
             if fully_paid:
                 assessment_billing.paid_amount = max(
@@ -4462,6 +4965,8 @@ async def create_patient_transaction(
     db.commit()
     if slot_booking:
         db.refresh(slot_booking)
+        if slot_booking.crt_program_booking:
+            db.refresh(slot_booking.crt_program_booking)
     return {"data": _transaction_slot_shape(slot_booking) if slot_booking else None}
 
 
@@ -4806,10 +5311,15 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
     elif table == "enquiries":
         first_name = (item.get("first_name") or "").strip()
         phone = (item.get("phone") or "").strip()
+        program_id = item.get("program_id")
         if not first_name:
             raise HTTPException(status_code=400, detail="First name is required")
         if not phone:
             raise HTTPException(status_code=400, detail="Phone number is required")
+        if program_id:
+            program = db.query(Program).filter(Program.id == program_id, Program.is_active.is_(True)).first()
+            if not program or (program.region_id and program.region_id != region_id):
+                raise HTTPException(status_code=400, detail="Selected program is not available for this region")
         row = Enquiry(
             first_name=first_name,
             last_name=(item.get("last_name") or "").strip() or None,
@@ -4817,6 +5327,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             phone=phone,
             referred_by=item.get("referred_by"),
             enquiry_source=item.get("enquiry_source"),
+            program_id=program_id,
             region_id=region_id,
             is_active=True,
         )
@@ -5106,9 +5617,13 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
         if "registration_at" in item:
             row.registration_at = _parse_dt(item["registration_at"]) if item["registration_at"] else row.registration_at
     elif table == "enquiries":
+        if "program_id" in item and item["program_id"]:
+            program = db.query(Program).filter(Program.id == item["program_id"], Program.is_active.is_(True)).first()
+            if not program or (program.region_id and program.region_id != row.region_id):
+                raise HTTPException(status_code=400, detail="Selected program is not available for this region")
         for key in [
             "first_name", "last_name", "gender", "phone",
-            "referred_by", "enquiry_source", "is_active",
+            "referred_by", "enquiry_source", "program_id", "is_active",
         ]:
             if key in item:
                 setattr(row, key, item[key])

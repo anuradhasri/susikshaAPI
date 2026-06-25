@@ -292,7 +292,7 @@ class TherapistService:
         """Get therapist by ID"""
         query = db.query(Therapist).filter(
             Therapist.id == therapist_id,
-            Therapist.deleted_at.is_(None)
+            Therapist.is_active.is_(True)
         )
         
         if region_id:
@@ -309,13 +309,13 @@ class TherapistService:
         limit: int = 100
     ) -> tuple:
         """List therapists with filtering"""
-        query = db.query(Therapist).filter(Therapist.deleted_at.is_(None))
+        query = db.query(Therapist).filter(Therapist.is_active.is_(True))
         
         if region_id:
             query = filter_by_region(query, region_id, Therapist)
         
         if is_available is not None:
-            query = query.filter(Therapist.is_available == is_available)
+            query = query.filter(Therapist.is_active == is_available)
         
         total = query.count()
         therapists = query.offset(skip).limit(limit).all()

@@ -18,12 +18,16 @@ from app.models.models import (
     PatientAssessmentBilling,
     Payment,
     Role,
+    Therapist,
     TherapyAssessmentMapping,
+    TherapistTherapyMapping,
     User,
     UserRole,
 )
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["assessments"])
+ASSESSMENT_ADMIN_ROLES = {"admin", "frontoffice", "front_office", "front_officer"}
+ASSESSMENT_CENTRAL_HEAD_ROLES = {"central_head"}
 
 
 class AnswerPayload(BaseModel):
@@ -58,11 +62,10 @@ class TherapyAccessPayload(BaseModel):
 
 
 DEFAULT_ASSESSMENTS = [
-    ("Behavioural Assessment", "Behaviour, play, attention, and social skill observations", 1),
-    ("Occupational Therapy Assessment", "Motor, ADL, visual motor, and OT observations", 2),
-    ("Speech Assessment", "Speech, language, communication, and findings", 3),
-    ("Sensory Profile", "Sensory processing profile across domains", 4),
-    ("Goals & Recommendations", "Therapy goals, recommendations, and next steps", 5),
+    ("Language and Communication", "Language and communication assessment", 1),
+    ("Occupational Therapy", "Occupational therapy assessment", 2),
+    ("Physiotherapy", "Physiotherapy assessment", 3),
+    ("Special Education", "Special education assessment", 4),
 ]
 
 
@@ -174,11 +177,122 @@ def _has_assessment_admin_access(db: Session, user_id: int) -> bool:
             UserRole.user_id == user_id,
             UserRole.deleted_at.is_(None),
             Role.deleted_at.is_(None),
-            func.lower(func.replace(Role.name, " ", "_")).in_(["admin", "frontoffice", "front_office", "front_officer"]),
+            func.lower(func.replace(Role.name, " ", "_")).in_(list(ASSESSMENT_ADMIN_ROLES)),
         )
         .first()
         is not None
     )
+
+
+def _normalized_role_names(db: Session, user_id: int) -> set[str]:
+    return {
+        str(row.name or "").strip().lower().replace(" ", "_")
+        for row in (
+            db.query(Role.name)
+            .join(UserRole, UserRole.role_id == Role.id)
+            .filter(
+                UserRole.user_id == user_id,
+                UserRole.deleted_at.is_(None),
+                Role.deleted_at.is_(None),
+            )
+            .all()
+        )
+    }
+
+
+def _current_therapist(db: Session, user: User) -> Therapist | None:
+    full_name = " ".join(part for part in [user.first_name, user.last_name] if part).strip()
+    therapist = (
+        db.query(Therapist)
+        .filter(Therapist.user_id == user.id, Therapist.is_active.is_(True))
+        .first()
+    )
+    if not therapist and full_name:
+        therapist = (
+            db.query(Therapist)
+            .filter(Therapist.name == full_name, Therapist.is_active.is_(True))
+            .first()
+        )
+    return therapist
+
+
+def _mapped_assessment_ids(db: Session, user: User) -> set[int]:
+    therapist = _current_therapist(db, user)
+    if not therapist:
+        return set()
+
+    therapy_ids = [
+        row.therapy_id
+        for row in (
+            db.query(TherapistTherapyMapping.therapy_id)
+            .filter(
+                TherapistTherapyMapping.therapist_id == therapist.id,
+                TherapistTherapyMapping.is_active.is_(True),
+            )
+            .all()
+        )
+    ]
+    if not therapy_ids:
+        return set()
+
+    return {
+        row.assessment_id
+        for row in (
+            db.query(TherapyAssessmentMapping.assessment_id)
+            .filter(TherapyAssessmentMapping.therapy_id.in_(therapy_ids))
+            .all()
+        )
+    }
+
+
+def _visible_assessment_ids(db: Session, user: User) -> set[int] | None:
+    roles = _normalized_role_names(db, user.id)
+    if not roles or roles & ASSESSMENT_ADMIN_ROLES or roles & ASSESSMENT_CENTRAL_HEAD_ROLES:
+        return None
+    if "therapist" not in roles:
+        return set()
+    return _mapped_assessment_ids(db, user)
+
+
+def _assessment_is_allowed(assessment: AssessmentMaster, allowed_ids: set[int] | None) -> bool:
+    if allowed_ids is None:
+        return True
+    if not allowed_ids:
+        return False
+    return assessment.id in allowed_ids
+
+
+def _can_edit_assessment_for_user(db: Session, user: User, assessment_id: int) -> bool:
+    roles = _normalized_role_names(db, user.id)
+    if roles & ASSESSMENT_ADMIN_ROLES:
+        return True
+    if roles & ASSESSMENT_CENTRAL_HEAD_ROLES:
+        return assessment_id in _mapped_assessment_ids(db, user)
+    return False
+
+
+def _rbac_allowed(db: Session, user_id: int, code: str, action: str = "view") -> bool:
+    column = {
+        "view": "can_view",
+        "create": "can_create",
+        "edit": "can_edit",
+        "delete": "can_delete",
+    }.get(action, "can_view")
+    row = db.execute(text(f"""
+        SELECT MAX(permission.{column})
+        FROM rbac_resources resource
+        JOIN rbac_role_permissions permission ON permission.resource_id = resource.id
+        JOIN user_roles user_role ON user_role.role_id = permission.role_id
+        WHERE user_role.user_id = :user_id
+          AND user_role.deleted_at IS NULL
+          AND resource.code = :code
+          AND resource.is_active = 1
+    """), {"user_id": user_id, "code": code}).first()
+    if row and bool(row[0]):
+        return True
+    if action in {"edit", "create", "delete"}:
+        return _has_assessment_admin_access(db, user_id)
+    return _has_assessment_admin_access(db, user_id)
 
 
 @router.get("/children/{child_id}")
@@ -201,11 +315,9 @@ def get_child_assessments(
         .filter(ChildAssessmentAnswer.child_id == child_id)
         .all()
     }
-    editable_assessment_ids = (
-        {assessment.id for assessment in db.query(AssessmentMaster.id).all()}
-        if _has_assessment_admin_access(db, current_user.id)
-        else set()
-    )
+    can_view_assessments = _rbac_allowed(db, current_user.id, "child.tab.assessment", "view")
+    if not can_view_assessments:
+        return {"data": []}
     patient_assessments = {
         row.assessment_id: row
         for row in db.query(PatientAssessment)
@@ -225,6 +337,12 @@ def get_child_assessments(
         .order_by(AssessmentMaster.display_order.asc(), AssessmentMaster.id.asc())
         .all()
     )
+    allowed_assessment_ids = _visible_assessment_ids(db, current_user)
+    assessments = [
+        assessment
+        for assessment in assessments
+        if _assessment_is_allowed(assessment, allowed_assessment_ids)
+    ]
 
     question_rows = (
         db.query(AssessmentQuestion)
@@ -250,7 +368,8 @@ def get_child_assessments(
                 "display_order": assessment.display_order,
                 "status": status,
                 "completed_date": patient_assessment.completed_date.isoformat() if patient_assessment and patient_assessment.completed_date else None,
-                "can_edit": assessment.id in editable_assessment_ids and status != "COMPLETED",
+                "can_view": True,
+                "can_edit": _can_edit_assessment_for_user(db, current_user, assessment.id) and status != "COMPLETED",
                 "questions": [
                     {
                         "id": question.id,
@@ -282,8 +401,8 @@ def save_child_assessment_answers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not _has_assessment_admin_access(db, current_user.id):
-        raise HTTPException(status_code=403, detail="Only front office/admin can edit assessments")
+    if not _can_edit_assessment_for_user(db, current_user, assessment_id):
+        raise HTTPException(status_code=403, detail="You can edit only assessments allocated to your therapy")
 
     patient = db.query(Patient).filter(Patient.id == child_id).first()
     if not patient:
@@ -388,8 +507,8 @@ def complete_child_assessment(
         raise HTTPException(status_code=404, detail="Assessment not found")
     if getattr(assessment, "region_id", None) is not None and assessment.region_id != patient.region_id:
         raise HTTPException(status_code=403, detail="Assessment is not available for this child's region")
-    if not _has_assessment_admin_access(db, current_user.id):
-        raise HTTPException(status_code=403, detail="Only front office/admin can complete assessments")
+    if not _can_edit_assessment_for_user(db, current_user, assessment_id):
+        raise HTTPException(status_code=403, detail="You can complete only assessments allocated to your therapy")
 
     questions = (
         db.query(AssessmentQuestion)

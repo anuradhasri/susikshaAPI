@@ -12,14 +12,17 @@ security = HTTPBearer()
 
 
 def _user_region_ids(db: Session, user_id: int) -> list[int]:
-    return [
-        region_id
-        for (region_id,) in (
-            db.query(UserRegionMapping.regionid)
-            .filter(UserRegionMapping.userid == user_id)
-            .all()
-        )
-    ]
+    try:
+        return [
+            region_id
+            for (region_id,) in (
+                db.query(UserRegionMapping.regionid)
+                .filter(UserRegionMapping.userid == user_id)
+                .all()
+            )
+        ]
+    except Exception:
+        return []
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -68,18 +71,8 @@ async def get_current_user(
             detail="User is inactive",
         )
 
-    # Fetch Region IDs from mapping table
-    region_mappings = (
-        db.query(UserRegionMapping.regionid)
-        .filter(UserRegionMapping.userid == user.id)
-        .all()
-    )
-
-    # Convert [(1,), (2,)] -> [1, 2]
-    region_ids = [r.regionid for r in region_mappings]
-
     # Attach to user object
-    user.region_ids = region_ids
+    user.region_ids = _user_region_ids(db, user.id)
 
     return user
 

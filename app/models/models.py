@@ -15,6 +15,7 @@ class UserRoleEnum(str, enum.Enum):
     ADMIN = "admin"
     THERAPIST = "therapist"
     FRONT_OFFICE = "front_office"
+    CENTRAL_HEAD = "central_head"
 
 
 class DocumentTypeEnum(str, enum.Enum):
@@ -358,13 +359,16 @@ class Enquiry(Base):
     phone = Column(String(20), nullable=False)
     referred_by = Column(String(255), nullable=True)
     enquiry_source = Column(String(100), nullable=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
 
     region = relationship("Region")
+    program = relationship("Program")
 
     __table_args__ = (
         Index("idx_enquiry_region_id", "region_id"),
+        Index("idx_enquiry_program_id", "program_id"),
         Index("idx_enquiry_phone", "phone"),
         Index("idx_enquiry_is_active", "is_active"),
     )
@@ -376,6 +380,7 @@ class Therapist(Base):
     __tablename__ = "therapists"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, unique=True)
     name = Column(String(255), nullable=False)
     qualification = Column(Text, nullable=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
@@ -383,13 +388,15 @@ class Therapist(Base):
     updated_by = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    is_active = Column(Boolean, nullable=False)
+    is_active = Column(Boolean, default=True)
     
     region = relationship("Region", back_populates="therapists")
+    user = relationship("User")
     availability = relationship("TherapistAvailability", back_populates="therapist")
 
     __table_args__ = (
         Index("idx_therapist_region_id", "region_id"),
+        Index("idx_therapist_user_id", "user_id"),
     )
 
     therapy_mappings = relationship(
@@ -398,10 +405,6 @@ class Therapist(Base):
     )
     
     @property
-    def user_id(self):
-        return None
-
-    @property
     def license_number(self):
         return None
 
@@ -409,9 +412,17 @@ class Therapist(Base):
     def specialization(self):
         return self.qualification
 
+    @specialization.setter
+    def specialization(self, value):
+        self.qualification = value
+
     @property
     def is_available(self):
-        return True
+        return bool(self.is_active)
+
+    @is_available.setter
+    def is_available(self, value):
+        self.is_active = value
 
 
 class TherapistAvailability(Base):
@@ -1318,6 +1329,7 @@ class CrtProgramBooking(Base):
     patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False, index=True)
     program_id = Column(Integer, ForeignKey("programs.id"), nullable=False, index=True)
     patient_package_id = Column(Integer, ForeignKey("patient_packages.id"), nullable=True)
+    slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=True, index=True)
     slot_date = Column(Date, nullable=False, index=True)
     total_amount = Column(Float, nullable=False, default=0, server_default="0")
     paid_amount = Column(Float, nullable=False, default=0, server_default="0")
@@ -1333,10 +1345,38 @@ class CrtProgramBooking(Base):
     patient = relationship("Patient")
     program = relationship("Program")
     patient_package = relationship("PatientPackage")
+    slot = relationship("SlotMaster")
     slot_bookings = relationship("PatientSlotBooking", back_populates="crt_program_booking")
 
     __table_args__ = (
         Index("idx_crt_program_booking_patient_date", "patient_id", "program_id", "slot_date"),
+        Index("idx_crt_program_booking_session", "patient_id", "program_id", "slot_date", "slot_id"),
+    )
+
+
+class GroupProgramBooking(Base):
+    __tablename__ = "group_program_bookings"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=False, index=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True, index=True)
+    therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=True, index=True)
+    slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=False, index=True)
+    slot_date = Column(Date, nullable=False, index=True)
+    start_time = Column(Time, nullable=True)
+    end_time = Column(Time, nullable=True)
+    status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=1, server_default="1")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    program = relationship("Program")
+    region = relationship("Region")
+    therapy = relationship("TherapyMaster")
+    slot = relationship("SlotMaster")
+    slot_bookings = relationship("PatientSlotBooking", back_populates="group_program_booking")
+
+    __table_args__ = (
+        Index("idx_group_program_booking_session", "program_id", "slot_date", "slot_id", "therapy_id"),
     )
 
 
@@ -1359,6 +1399,7 @@ class PatientSlotBooking(StatusIdMixin, Base):
     )
     patient_package_id = Column(Integer, ForeignKey("patient_packages.id"), nullable=True)
     crt_program_booking_id = Column(Integer, ForeignKey("crt_program_bookings.id"), nullable=True)
+    group_program_booking_id = Column(Integer, ForeignKey("group_program_bookings.id"), nullable=True)
     program_id = Column(Integer, ForeignKey("programs.id"), nullable=True)
     duration_minutes = Column(Integer, nullable=True)
     is_package_session = Column(Boolean, nullable=False, default=False, server_default="0")
@@ -1384,6 +1425,7 @@ class PatientSlotBooking(StatusIdMixin, Base):
     )
     patient_package = relationship("PatientPackage")
     crt_program_booking = relationship("CrtProgramBooking", back_populates="slot_bookings")
+    group_program_booking = relationship("GroupProgramBooking", back_populates="slot_bookings")
     program = relationship("Program")
 
     __table_args__ = (

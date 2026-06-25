@@ -2,20 +2,101 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import date
 from app.core.database import get_db
-from app.dependencies.auth import get_current_user, check_region_access
+from app.dependencies.auth import get_current_user, check_region_access, get_user_roles
 from app.schemas.schemas import (
     SlotBookingCreate,
     SlotBookingResponse, SlotCancelResponse, SlotMasterResponse,
     SlotStatusActionRequest, SlotStatusActionResponse
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
-from app.models.models import Program, ProgramSegment, User
+from app.models.models import Program, ProgramSegment, Therapist, User
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/appointments", tags=["appointments"])
 logger = setup_logging(__name__)
+
+
+def _normalized_roles(roles: list[str]) -> set[str]:
+    return {str(role or "").strip().lower().replace(" ", "_") for role in roles}
+
+
+def _is_front_office_role(roles: set[str]) -> bool:
+    return bool(roles & {"admin", "front_office", "frontoffice", "front_officer"})
+
+
+def _user_region_ids(current_user: User) -> list[int]:
+    region_ids = getattr(current_user, "region_ids", None)
+    if region_ids is None:
+        return []
+    if isinstance(region_ids, int):
+        return [region_ids]
+    return list(region_ids)
+
+
+def _rbac_allowed(db: Session, user_id: int, code: str, action: str = "view") -> bool:
+    column = {
+        "view": "can_view",
+        "create": "can_create",
+        "edit": "can_edit",
+        "delete": "can_delete",
+    }.get(action, "can_view")
+    try:
+        row = db.execute(text(f"""
+            SELECT MAX(permission.{column})
+            FROM rbac_resources resource
+            JOIN rbac_role_permissions permission ON permission.resource_id = resource.id
+            JOIN user_roles user_role ON user_role.role_id = permission.role_id
+            WHERE user_role.user_id = :user_id
+              AND user_role.deleted_at IS NULL
+              AND resource.code = :code
+              AND resource.is_active = 1
+        """), {"user_id": user_id, "code": code}).first()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+async def _require_calendar_write(current_user: User, db: Session) -> None:
+    roles = _normalized_roles(await get_user_roles(current_user, db))
+    if _rbac_allowed(db, current_user.id, "appointment.action.create", "create") or _is_front_office_role(roles):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only front office/admin can change appointments",
+    )
+
+
+async def _require_waitlist_access(current_user: User, db: Session) -> None:
+    roles = _normalized_roles(await get_user_roles(current_user, db))
+    if _rbac_allowed(db, current_user.id, "appointment.waitlist", "view") or _is_front_office_role(roles):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only front office/admin can view waitlist",
+    )
+
+
+def _therapist_ids_for_user(db: Session, current_user: User) -> list[int]:
+    full_name = " ".join(part for part in [current_user.first_name, current_user.last_name] if part).strip()
+    query = db.query(Therapist).filter(Therapist.is_active.is_(True))
+    matches = query.filter(Therapist.user_id == current_user.id).all()
+    if not matches and full_name:
+        matches = query.filter(Therapist.name == full_name).all()
+    return [therapist.id for therapist in matches]
+
+
+def _filter_calendar_to_therapists(response: dict, therapist_ids: list[int]) -> dict:
+    allowed = set(therapist_ids)
+    response["therapists"] = [
+        therapist
+        for therapist in response.get("therapists", [])
+        if int(therapist.get("therapist_id") or 0) in allowed
+    ]
+    response["total"] = len(response["therapists"])
+    return response
 
 @router.get(
     "/slots",
@@ -52,12 +133,12 @@ async def get_programs(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
 
     try:
         AppointmentService._ensure_program_schema(db)
-        region_ids = [region_id] if region_id else current_user.region_ids
+        region_ids = [region_id] if region_id else _user_region_ids(current_user)
         if isinstance(region_ids, int):
             region_ids = [region_ids]
 
@@ -76,8 +157,24 @@ async def get_programs(
             "vocational": 2,
             "vocational program": 2,
             "social group": 3,
-            "schooling": 4,
+            "social skills program": 3,
+            "parent training program: prewriting skills": 4,
+            "parent training program: toilet training": 5,
+            "parent training program: prewriting skills: toilet training": 5,
+            "parent training program: peg": 6,
+            "peg": 6,
+            "schooling": 7,
         }
+        def canonical_program_name(name: str) -> str:
+            normalized = name.strip().lower()
+            if "peg" in normalized:
+                return "parent training program: peg"
+            if "toilet" in normalized:
+                return "parent training program: toilet training"
+            if "parent training" in normalized and ("prewriting" in normalized or "prewritting" in normalized):
+                return "parent training program: prewriting skills"
+            return normalized
+
         deduped_programs = {}
         for program in sorted(
             programs,
@@ -88,7 +185,7 @@ async def get_programs(
                 item.id,
             ),
         ):
-            deduped_programs.setdefault(program.program_name.strip().lower(), program)
+            deduped_programs.setdefault(canonical_program_name(program.program_name), program)
         programs = list(deduped_programs.values())
         segment_rows = (
             db.query(ProgramSegment)
@@ -153,8 +250,9 @@ async def get_waitlist_patients(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
+    await _require_waitlist_access(current_user, db)
 
     try:
         
@@ -218,7 +316,7 @@ async def get_patient_plans(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
 
     try:
@@ -286,7 +384,7 @@ async def get_patient_plans_therapies(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
 
     try:
@@ -353,8 +451,9 @@ async def book_slot(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
+    await _require_calendar_write(current_user, db)
 
     try:
         patient_ids = []
@@ -399,6 +498,7 @@ async def book_slot(
                     ),
                     "use_package": bool(booking_create.use_package and allocation.get("is_primary", True)),
                     "crt_program_booking_id": crt_parent_by_patient.get(patient_id),
+                    "allow_shared_slot": bulk_booking,
                 })
                 booking = AppointmentService.book_slot(db, patient_booking_create, commit=not bulk_booking)
                 patient_slot_booking = booking["patient_slot_booking"]
@@ -512,8 +612,9 @@ async def reschedule_slot(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
+    await _require_calendar_write(current_user, db)
 
     try:
         booking = AppointmentService.reschedule_slot(db, patient_slot_booking_id, booking_create)
@@ -574,8 +675,9 @@ async def update_slot_status(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
+    await _require_calendar_write(current_user, db)
 
     try:
         response = AppointmentService.update_slot_status(
@@ -621,8 +723,9 @@ async def cancel_slot(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
+    await _require_calendar_write(current_user, db)
 
     try:
         cancellation = AppointmentService.cancel_slot(db, patient_slot_booking_id)
@@ -696,8 +799,9 @@ async def get_appointment_calendar(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
+    roles = _normalized_roles(await get_user_roles(current_user, db))
 
     try:
         if start_date or end_date:
@@ -710,7 +814,7 @@ async def get_appointment_calendar(
                 db=db,
                 start_date=start_date,
                 end_date=end_date,
-                region_ids=[region_id] if region_id else current_user.region_ids
+                region_ids=[region_id] if region_id else _user_region_ids(current_user)
             )
         else:
             if not selected_date:
@@ -719,8 +823,11 @@ async def get_appointment_calendar(
             response = AppointmentService.get_calendar_view(
                 db=db,
                 selected_date=selected_date,
-                region_ids=[region_id] if region_id else current_user.region_ids
+                region_ids=[region_id] if region_id else _user_region_ids(current_user)
             )
+
+        if "therapist" in roles and not _is_front_office_role(roles):
+            response = _filter_calendar_to_therapists(response, _therapist_ids_for_user(db, current_user))
 
         logger.info(
             "Appointment calendar fetched successfully",
@@ -764,7 +871,7 @@ async def get_appointment_calendar(
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch appointment calendar"
+            detail=f"Failed to fetch appointment calendar: {str(e)}"
         )
 
 @router.get(
@@ -784,7 +891,7 @@ async def get_therapists(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=current_user.region_ids
+        target_region_id=_user_region_ids(current_user)
     )
 
     try:

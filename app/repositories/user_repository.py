@@ -3,7 +3,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.models import PasswordResetToken, Patient, Role, User, UserRegionMapping, UserRole
+from app.models.models import PasswordResetToken, Patient, Role, Therapist, User, UserRegionMapping, UserRole
 from app.schemas.schemas import UserCreate, UserUpdate
 
 
@@ -57,7 +57,15 @@ class UserRepository:
     @staticmethod
     def region_ids(db: Session, user_id: int) -> list[int]:
         rows = db.query(UserRegionMapping.regionid).filter(UserRegionMapping.userid == user_id).all()
-        return [region_id for (region_id,) in rows]
+        region_ids = [region_id for (region_id,) in rows]
+        if region_ids:
+            return region_ids
+        therapist = (
+            db.query(Therapist.region_id)
+            .filter(Therapist.user_id == user_id, Therapist.is_active.is_(True))
+            .first()
+        )
+        return [therapist.region_id] if therapist and therapist.region_id else []
 
     @staticmethod
     def assign_role(db: Session, user_id: int, role_id: int) -> UserRole:

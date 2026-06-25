@@ -249,6 +249,7 @@ class SlotBookingCreate(BaseModel):
     patient_package_id: Optional[int] = None
     is_primary: bool = True
     crt_program_booking_id: Optional[int] = None
+    allow_shared_slot: bool = False
 
 
 class AppointmentUpdate(BaseModel):

@@ -148,17 +148,10 @@ class AppointmentRepository:
                 Therapist.is_active ==1 
             )
         )
-        therapists = query.all()
+        if region_ids:
+            query = query.filter(Therapist.region_id.in_(region_ids))
 
-        if not therapists:
-            fallback_query = (
-                db.query(
-                    Therapist.id.label("therapist_id"),
-                    Therapist.name.label("therapist_name")
-                )
-                .filter(Therapist.is_active == 1)
-            )
-            therapists = fallback_query.order_by(Therapist.name.asc()).all()
+        therapists = query.order_by(Therapist.name.asc()).all()
 
         response = [
             {
@@ -452,6 +445,7 @@ class AppointmentRepository:
         patient_session_plan_item_id: Optional[int],
         patient_package_id: Optional[int] = None,
         crt_program_booking_id: Optional[int] = None,
+        group_program_booking_id: Optional[int] = None,
         program_id: Optional[int] = None,
         duration_minutes: Optional[int] = None,
         is_package_session: bool = False,
@@ -466,6 +460,7 @@ class AppointmentRepository:
             patient_session_plan_item_id=patient_session_plan_item_id,
             patient_package_id=patient_package_id,
             crt_program_booking_id=crt_program_booking_id,
+            group_program_booking_id=group_program_booking_id,
             program_id=program_id,
             duration_minutes=duration_minutes,
             is_package_session=is_package_session,
@@ -561,6 +556,7 @@ class AppointmentRepository:
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
                 PatientSlotBooking.crt_program_booking_id,
+                PatientSlotBooking.group_program_booking_id,
                 PatientSlotBooking.program_id,
                 PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
                 Program.program_name,
@@ -675,6 +671,7 @@ class AppointmentRepository:
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
                 PatientSlotBooking.crt_program_booking_id,
+                PatientSlotBooking.group_program_booking_id,
                 PatientSlotBooking.program_id,
                 PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
                 Program.program_name,

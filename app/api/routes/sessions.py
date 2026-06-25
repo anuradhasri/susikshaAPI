@@ -59,7 +59,7 @@ async def get_session(
         from app.models.models import Therapist
         therapist = db.query(Therapist).filter(
             Therapist.user_id == current_user.id,
-            Therapist.deleted_at.is_(None)
+            Therapist.is_active.is_(True)
         ).first()
         
         if not therapist or session.therapist_id != therapist.id:
@@ -149,7 +149,7 @@ async def list_sessions(
         from app.models.models import Therapist
         therapist = db.query(Therapist).filter(
             Therapist.user_id == current_user.id,
-            Therapist.deleted_at.is_(None)
+            Therapist.is_active.is_(True)
         ).first()
         
         if therapist:
