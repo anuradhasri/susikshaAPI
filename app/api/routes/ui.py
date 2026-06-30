@@ -909,35 +909,16 @@ def _assessment_permission_shape(db: Session, user: User) -> dict:
     role_names = _user_roles(db, user)
     can_view_assessment = permissions.get("child.tab.assessment", {}).get("view", False)
     can_edit_assessment = permissions.get("assessment.action.complete", {}).get("edit", False)
-    central_head_edit_ids: set[int] | None = None
     if "central_head" in role_names:
-        therapist = (
-            db.query(Therapist)
-            .filter(Therapist.user_id == user.id, Therapist.is_active.is_(True))
-            .first()
-        )
-        if therapist:
-            therapy_ids = [
-                row.therapy_id
-                for row in db.query(TherapistTherapyMapping.therapy_id)
-                .filter(
-                    TherapistTherapyMapping.therapist_id == therapist.id,
-                    TherapistTherapyMapping.is_active.is_(True),
-                )
-                .all()
-            ]
-            central_head_edit_ids = {
-                row.assessment_id
-                for row in db.query(TherapyAssessmentMapping.assessment_id)
-                .filter(TherapyAssessmentMapping.therapy_id.in_(therapy_ids))
-                .all()
-            } if therapy_ids else set()
+        can_view_assessment = True
+        can_edit_assessment = True
+    elif "therapist" in role_names:
+        can_view_assessment = True
+        can_edit_assessment = False
     result = {}
     rows = db.query(AssessmentMaster).filter(AssessmentMaster.is_active.is_(True)).all()
     for assessment in rows:
         can_edit_this_assessment = can_edit_assessment
-        if central_head_edit_ids is not None:
-            can_edit_this_assessment = assessment.id in central_head_edit_ids
         result[str(assessment.id)] = {
             "view": can_view_assessment,
             "edit": can_edit_this_assessment,
@@ -1319,13 +1300,15 @@ def _today_unpaid_completed_slot_query(db: Session, patient_id: int):
 def _slot_amount(slot_booking: PatientSlotBooking) -> float:
     patient_package = slot_booking.patient_package
     if slot_booking.is_package_session and patient_package and patient_package.package and patient_package.package.total_sessions:
-        if slot_booking.crt_program_booking_id and not slot_booking.amount:
-            return 0.0
         return float(patient_package.total_amount or patient_package.package.price or 0) / float(patient_package.package.total_sessions or 1)
     if slot_booking.amount:
         return float(slot_booking.amount or 0)
     plan_item = slot_booking.patient_session_plan_item
-    return float(plan_item.amount_per_session or 0) if plan_item else 0
+    if plan_item and plan_item.amount_per_session:
+        return float(plan_item.amount_per_session or 0)
+    if slot_booking.program and slot_booking.program.per_session_amount:
+        return float(slot_booking.program.per_session_amount or 0)
+    return 0
 
 
 def _patient_package_preview(db: Session, patient_id: int, package_id: int) -> dict:
@@ -1375,10 +1358,7 @@ def _package_billable_slot_bookings(patient_package: PatientPackage) -> list[Pat
     if not db or not patient_package.id:
         return []
 
-    used_status_ids = [
-        MASTER_LOOKUP_DATA["patient_slot_booking"]["COMPLETED"],
-        MASTER_LOOKUP_DATA["patient_slot_booking"]["PAID_CANCELLED"],
-    ]
+    used_status_ids = [MASTER_LOOKUP_DATA["patient_slot_booking"]["COMPLETED"]]
     return (
         db.query(PatientSlotBooking)
         .options(
@@ -1402,12 +1382,30 @@ def _package_billable_usage_rows(patient_package: PatientPackage) -> list[Patien
     rows_without_crt: list[PatientSlotBooking] = []
     for slot_booking in slots:
         if slot_booking.crt_program_booking_id:
-            group_key = ("crt-parent", int(slot_booking.crt_program_booking_id))
+            mapping = slot_booking.therapist_slot_mapping
+            slot = mapping.slot if mapping else None
+            group_key = (
+                "crt-parent",
+                int(slot_booking.crt_program_booking_id),
+                getattr(mapping, "slot_date", None),
+                getattr(slot, "start_time", None),
+                getattr(slot, "end_time", None),
+                0 if mapping and getattr(mapping, "slot_date", None) and slot else int(slot_booking.id or 0),
+            )
         else:
             program_name = (slot_booking.program.program_name if slot_booking.program else "") or ""
-            slot_date = slot_booking.therapist_slot_mapping.slot_date if slot_booking.therapist_slot_mapping else None
+            mapping = slot_booking.therapist_slot_mapping
+            slot_date = mapping.slot_date if mapping else None
             if slot_date and ("crt" in program_name.lower() or "structured" in program_name.lower()):
-                group_key = ("crt-date", slot_booking.program_id, slot_date)
+                slot = mapping.slot if mapping else None
+                group_key = (
+                    "crt-date",
+                    slot_booking.program_id,
+                    slot_date,
+                    getattr(slot, "start_time", None),
+                    getattr(slot, "end_time", None),
+                    slot_booking.id,
+                )
             else:
                 group_key = ()
 
@@ -1430,24 +1428,29 @@ def _package_billable_usage_count(patient_package: PatientPackage) -> int:
 def _package_utilized_amount(patient_package: PatientPackage) -> float:
     rows = _package_billable_usage_rows(patient_package)
     if rows:
-        return sum(
-            float(row.amount or _slot_amount(row) or 0)
-            for row in rows
-            if not (
-                bool(getattr(row, "fully_paid", False))
-                and float(getattr(row, "due_amount", 0) or 0) <= 0
-                and float(getattr(row, "paid_amount", 0) or 0) <= 0
-                and str(getattr(row, "payment_status", "") or "").upper() != "PACKAGE_COVERED"
-            )
-        )
+        db = object_session(patient_package)
+        utilized_amount = 0.0
+        for row in rows:
+            crt_parent = row.crt_program_booking
+            amount = float((crt_parent.total_amount if crt_parent else row.amount) or _slot_amount(row) or 0)
+            if db and _slot_marked_fully_paid(db, row):
+                covered = float((crt_parent.package_covered_amount if crt_parent else getattr(row, "package_covered_amount", 0)) or 0)
+                paid = float((crt_parent.paid_amount if crt_parent else getattr(row, "paid_amount", 0)) or 0)
+                utilized_amount += min(amount, paid + covered)
+                continue
+            utilized_amount += amount
+        return utilized_amount
     return float(patient_package.sessions_completed or 0) * _package_per_session_rate(patient_package) if not object_session(patient_package) else 0.0
 
 
 def _package_due_amount(patient_package: PatientPackage) -> float:
     utilized_amount = _package_utilized_amount(patient_package)
     paid_amount = float(patient_package.paid_amount or 0)
-    slot_waived_amount = _package_slot_waived_amount(patient_package)
-    return utilized_amount - paid_amount - slot_waived_amount
+    return utilized_amount - paid_amount
+
+
+def _session_payable_due_cap(amount: float, paid: float = 0) -> float:
+    return max(0, float(amount or 0) - float(paid or 0))
 
 
 def _package_direct_paid_amount(patient_package: PatientPackage) -> float:
@@ -1469,8 +1472,16 @@ def _package_direct_paid_amount(patient_package: PatientPackage) -> float:
 def _sync_patient_package_paid_amount(patient_package: Optional[PatientPackage]) -> None:
     if not patient_package:
         return
-    paid_amount = _package_direct_paid_amount(patient_package) + _package_slot_paid_amount(patient_package)
+    patient_package.paid_amount = _package_direct_paid_amount(patient_package) + _package_slot_paid_amount(patient_package)
+
+
+def _recalculate_package_due_with_paid_amount(db: Session, patient_package: PatientPackage, paid_amount: float) -> float:
+    original_paid_amount = float(patient_package.paid_amount or 0)
     patient_package.paid_amount = paid_amount
+    _recalculate_package_slot_payments(db, patient_package, sync_paid_amount=False)
+    due_amount = float(patient_package.due_amount or 0)
+    patient_package.paid_amount = original_paid_amount
+    return due_amount
 
 
 def _package_latest_ledger_due(patient_package: PatientPackage) -> Optional[float]:
@@ -1499,26 +1510,183 @@ def _package_latest_ledger_due(patient_package: PatientPackage) -> Optional[floa
     return float(latest_payment.due_amount) if latest_payment else None
 
 
-def _package_slot_paid_amount(patient_package: PatientPackage) -> float:
+def _sync_patient_package_due_from_ledger(patient_package: Optional[PatientPackage]) -> None:
+    if not patient_package:
+        return
+    db = object_session(patient_package)
+    if not db or not patient_package.id:
+        return
+    usage_rows = _package_billable_usage_rows(patient_package)
+    slot_ids = [row.id for row in usage_rows if row.id]
+    crt_ids = list({int(row.crt_program_booking_id) for row in usage_rows if row.crt_program_booking_id})
+    related_filters = [Payment.remark.like(f"[package:{patient_package.id}]%")]
+    if slot_ids:
+        related_filters.append(Payment.patient_slot_booking_id.in_(slot_ids))
+        related_filters.extend(Payment.remark.like(f"[slot:{slot_id}]%") for slot_id in slot_ids)
+    if crt_ids:
+        related_filters.append(Payment.crt_program_booking_id.in_(crt_ids))
+    payments = (
+        db.query(Payment)
+        .filter(
+            Payment.patient_id == patient_package.patient_id,
+            or_(*related_filters),
+        )
+        .all()
+    )
+    positive_due = [
+        float(payment.due_amount or 0)
+        for payment in payments
+        if not bool(getattr(payment, "fully_paid", False))
+        and float(payment.due_amount or 0) > 0
+        and not str(payment.remark or "").startswith(f"[package:{patient_package.id}]")
+    ]
+    if positive_due:
+        patient_package.due_amount = max(positive_due)
+        return
+    credit_due = [
+        float(payment.due_amount or 0)
+        for payment in payments
+        if float(payment.due_amount or 0) < 0
+    ]
+    patient_package.due_amount = min(credit_due) if credit_due else 0
+
+
+def _package_slot_paid_amount(patient_package: PatientPackage, *, include_fully_paid: bool = False) -> float:
     db = object_session(patient_package)
     if not db or not patient_package.id:
         return 0.0
-    total = (
-        db.query(func.coalesce(func.sum(PatientSlotBooking.paid_amount), 0))
+    total = 0.0
+    for row in _package_billable_usage_rows(patient_package):
+        crt_parent = row.crt_program_booking
+        total += float((crt_parent.paid_amount if crt_parent else getattr(row, "paid_amount", 0)) or 0)
+    return total
+
+
+def _package_slot_covered_amount(patient_package: PatientPackage) -> float:
+    db = object_session(patient_package)
+    if not db or not patient_package.id:
+        return 0.0
+    total = 0.0
+    seen_crt_parent_ids: set[int] = set()
+    for row in _package_billable_usage_rows(patient_package):
+        crt_parent = row.crt_program_booking
+        if crt_parent:
+            if int(crt_parent.id) in seen_crt_parent_ids:
+                continue
+            seen_crt_parent_ids.add(int(crt_parent.id))
+            total += float(getattr(crt_parent, "package_covered_amount", 0) or 0)
+        else:
+            total += float(getattr(row, "package_covered_amount", 0) or 0)
+    return total
+
+
+def _set_patient_package_due_from_usage(patient_package: PatientPackage) -> float:
+    db = object_session(patient_package)
+    due_amount = 0.0
+    if db and patient_package.id:
+        seen_crt_parent_ids: set[int] = set()
+        for row in _package_billable_usage_rows(patient_package):
+            crt_parent = row.crt_program_booking
+            if row.crt_program_booking_id:
+                if int(row.crt_program_booking_id) in seen_crt_parent_ids:
+                    continue
+                seen_crt_parent_ids.add(int(row.crt_program_booking_id))
+            if bool(getattr(row, "fully_paid", False)) or bool(getattr(crt_parent, "fully_paid", False)) or _slot_marked_fully_paid(db, row):
+                continue
+            amount = float((crt_parent.total_amount if crt_parent else row.amount) or _slot_amount(row) or 0)
+            paid = float((crt_parent.paid_amount if crt_parent else getattr(row, "paid_amount", 0)) or 0)
+            covered = float((crt_parent.package_covered_amount if crt_parent else getattr(row, "package_covered_amount", 0)) or 0)
+            due_amount += max(0, amount - paid - covered)
+    else:
+        due_amount = _package_due_amount(patient_package)
+    patient_package.due_amount = due_amount
+    return due_amount
+
+
+def _normalize_patient_package_due_values(packages: list[PatientPackage]) -> dict[int, float]:
+    normalized: dict[int, float] = {}
+    for patient_package in packages:
+        if not patient_package or not patient_package.id:
+            continue
+        normalized[int(patient_package.id)] = _rebuild_patient_package_payment_due_snapshots(patient_package)
+    return normalized
+
+
+def _rebuild_patient_package_payment_due_snapshots(patient_package: PatientPackage) -> float:
+    db = object_session(patient_package)
+    if not db or not patient_package.id:
+        return _set_patient_package_due_from_usage(patient_package)
+
+    usage_rows = _package_billable_usage_rows(patient_package)
+    slot_ids = [int(row.id) for row in usage_rows if row.id]
+    crt_ids = list({int(row.crt_program_booking_id) for row in usage_rows if row.crt_program_booking_id})
+    related_filters = [Payment.remark.like(f"[package:{patient_package.id}]%")]
+    if slot_ids:
+        related_filters.append(Payment.patient_slot_booking_id.in_(slot_ids))
+        related_filters.extend(Payment.remark.like(f"[slot:{slot_id}]%") for slot_id in slot_ids)
+    if crt_ids:
+        related_filters.append(Payment.crt_program_booking_id.in_(crt_ids))
+
+    payments = (
+        db.query(Payment)
         .filter(
-            PatientSlotBooking.patient_package_id == patient_package.id,
-            PatientSlotBooking.is_package_session.is_(True),
+            Payment.patient_id == patient_package.patient_id,
+            or_(*related_filters),
         )
-        .scalar()
+        .order_by(Payment.created_at.asc(), Payment.payment_date.asc(), Payment.id.asc())
+        .all()
     )
-    return float(total or 0)
+    if not payments:
+        return _set_patient_package_due_from_usage(patient_package)
+
+    slots_by_id = {int(row.id): row for row in usage_rows if row.id}
+    slots_by_crt_id = {int(row.crt_program_booking_id): row for row in usage_rows if row.crt_program_booking_id}
+    running_due = 0.0
+    for payment in payments:
+        remark = str(payment.remark or "")
+        is_package_payment = remark.startswith(f"[package:{patient_package.id}]")
+        payment_amount = float(payment.payment_amount or 0)
+        if is_package_payment:
+            running_due -= payment_amount
+            payment.due_amount = running_due
+            continue
+
+        row = None
+        if getattr(payment, "patient_slot_booking_id", None):
+            row = slots_by_id.get(int(payment.patient_slot_booking_id))
+        if row is None and getattr(payment, "crt_program_booking_id", None):
+            row = slots_by_crt_id.get(int(payment.crt_program_booking_id))
+
+        amount = float(payment.amount or 0)
+        if amount <= 0 and row is not None:
+            crt_parent = row.crt_program_booking
+            amount = float((crt_parent.total_amount if crt_parent else row.amount) or _slot_amount(row) or 0)
+
+        if bool(getattr(payment, "fully_paid", False)):
+            waived_amount = _payment_waived_amount(payment)
+            if running_due > 0:
+                running_due = max(0, running_due - payment_amount - waived_amount)
+            else:
+                running_due += max(0, amount - payment_amount - waived_amount)
+            payment.due_amount = 0 if running_due <= 0 else running_due
+            continue
+
+        running_due += max(0, amount - payment_amount)
+        payment.due_amount = running_due if running_due < 0 else max(0, running_due)
+
+    patient_package.due_amount = running_due
+    return float(patient_package.due_amount or 0)
 
 
 def _package_slot_waived_amount(patient_package: PatientPackage) -> float:
     db = object_session(patient_package)
     if not db or not patient_package.id:
         return 0.0
-    usage_rows = _package_billable_usage_rows(patient_package)
+    usage_rows = [
+        row
+        for row in _package_billable_usage_rows(patient_package)
+        if not bool(getattr(row, "fully_paid", False))
+    ]
     slot_ids = [row.id for row in usage_rows if row.id]
     crt_ids = list({int(row.crt_program_booking_id) for row in usage_rows if row.crt_program_booking_id})
     filters = []
@@ -1534,16 +1702,23 @@ def _package_slot_waived_amount(patient_package: PatientPackage) -> float:
         .filter(
             Payment.patient_id == patient_package.patient_id,
             Payment.fully_paid.is_(True),
-            Payment.due_amount <= 0,
             Payment.payment_note.like("%Marked as fully paid%"),
             or_(*filters),
         )
         .all()
     )
     return sum(
-        max(0.0, float(payment.amount or 0) - float(payment.payment_amount or 0))
+        _payment_waived_amount(payment)
         for payment in payments
     )
+
+
+def _payment_waived_amount(payment: Payment) -> float:
+    note = str(getattr(payment, "payment_note", "") or "")
+    match = re.search(r"Waived Rs\s*([0-9]+(?:\.[0-9]+)?)", note, flags=re.I)
+    if match:
+        return max(0.0, float(match.group(1) or 0))
+    return max(0.0, float(payment.amount or 0) - float(payment.payment_amount or 0))
 
 
 def _record_package_payment_allocations(db: Session, patient_package: PatientPackage, paid_amount: float, user_id: Optional[int]) -> None:
@@ -1625,8 +1800,8 @@ def _package_paid_balance_amount(patient_package: PatientPackage) -> float:
 
 def _package_shape(patient_package: PatientPackage) -> dict:
     stats = _package_session_stats(patient_package)
-    due_amount = _package_due_amount(patient_package)
-    paid_amount = _package_effective_paid_amount(patient_package)
+    due_amount = float(patient_package.due_amount or 0)
+    paid_amount = float(patient_package.paid_amount or 0)
     total_amount = float(patient_package.total_amount or (patient_package.package.price if patient_package.package else 0) or 0)
     return {
         "id": patient_package.id,
@@ -1681,6 +1856,7 @@ def _ensure_package_master_schema(db: Session) -> None:
     if inspect(db.bind).has_table("programs"):
         seed_names = (
             "General 16 Session - Package",
+            "General 12 Session - Package",
             "CRT 5 Session - Package",
             "Vocational 8 Session - Package",
         )
@@ -1689,7 +1865,8 @@ def _ensure_package_master_schema(db: Session) -> None:
             synchronize_session=False,
         )
         package_seed = """
-            SELECT 'General' AS program_name, 'General 16 Session - Package' AS package_name, 16 AS total_sessions, 17600 AS price, 120 AS duration_days
+            SELECT 'General' AS program_name, 'General 12 Session - Package' AS package_name, 12 AS total_sessions, 13200 AS price, 30 AS duration_days
+            UNION ALL SELECT 'General', 'General 16 Session - Package', 16, 17600, 120
             UNION ALL SELECT 'CRT', 'CRT 5 Session - Package', 5, 45000, 30
             UNION ALL SELECT 'CRT (Structured Program)', 'CRT 5 Session - Package', 5, 45000, 30
             UNION ALL SELECT 'Vocational', 'Vocational 8 Session - Package', 8, 10000, 60
@@ -1804,17 +1981,12 @@ def _payment_shape(payment: Payment) -> dict:
 def _slot_booking_amount(slot_booking: PatientSlotBooking) -> float:
     patient_package = slot_booking.patient_package
     if slot_booking.is_package_session and patient_package and patient_package.package and patient_package.package.total_sessions:
-        if slot_booking.crt_program_booking_id and not slot_booking.amount:
-            return 0.0
         return float(patient_package.total_amount or patient_package.package.price or 0) / float(patient_package.package.total_sessions or 1)
     if slot_booking.amount:
         return float(slot_booking.amount or 0)
     plan_item = slot_booking.patient_session_plan_item
     if plan_item and plan_item.amount_per_session:
         return float(plan_item.amount_per_session or 0)
-    patient_package = slot_booking.patient_package
-    if patient_package and patient_package.package and patient_package.package.total_sessions:
-        return float(patient_package.total_amount or patient_package.package.price or 0) / float(patient_package.package.total_sessions or 1)
     if slot_booking.program and slot_booking.program.per_session_amount:
         return float(slot_booking.program.per_session_amount or 0)
     return 0
@@ -1847,7 +2019,8 @@ def _set_slot_payment_from_amounts(slot_booking: PatientSlotBooking, amount: flo
     slot_booking.paid_amount = paid
     slot_booking.package_covered_amount = package_applied
     slot_booking.due_amount = due
-    slot_booking.fully_paid = bool(amount > 0 and due <= 0)
+    if not bool(getattr(slot_booking, "is_package_session", False)) and not getattr(slot_booking, "patient_package_id", None):
+        slot_booking.fully_paid = bool(amount > 0 and due <= 0)
     if due <= 0 and amount > 0 and package_applied > 0:
         slot_booking.payment_status = "PACKAGE_COVERED"
     elif due <= 0 and amount > 0:
@@ -1862,6 +2035,26 @@ def _set_slot_payment_from_amounts(slot_booking: PatientSlotBooking, amount: flo
         slot_booking.payment_status = "UNPAID"
 
 
+def _set_crt_payment_from_amounts(crt_parent: Optional[CrtProgramBooking], amount: float, paid: float, due: float, package_applied: float = 0) -> None:
+    if not crt_parent:
+        return
+    crt_parent.total_amount = amount
+    crt_parent.paid_amount = paid
+    crt_parent.package_covered_amount = package_applied
+    crt_parent.due_amount = due
+    crt_parent.fully_paid = bool(crt_parent.fully_paid or (amount > 0 and due <= 0))
+    if due <= 0 and amount > 0 and package_applied > 0:
+        crt_parent.payment_status = "PACKAGE_COVERED"
+    elif due <= 0 and amount > 0:
+        crt_parent.payment_status = "PAID"
+    elif paid >= amount and amount > 0:
+        crt_parent.payment_status = "PAID"
+    elif package_applied > 0 or paid > 0:
+        crt_parent.payment_status = "PARTIAL"
+    else:
+        crt_parent.payment_status = "UNPAID"
+
+
 def _slot_waived_amount(db: Session, slot_booking: PatientSlotBooking) -> float:
     filters = []
     if slot_booking.id:
@@ -1874,19 +2067,21 @@ def _slot_waived_amount(db: Session, slot_booking: PatientSlotBooking) -> float:
     patient_id = slot_booking.patient_id
     if not patient_id and slot_booking.patient_session_plan_item and slot_booking.patient_session_plan_item.patient_session_plan:
         patient_id = slot_booking.patient_session_plan_item.patient_session_plan.patient_id
+    if not patient_id and slot_booking.patient_package:
+        patient_id = slot_booking.patient_package.patient_id
+    if not patient_id and slot_booking.crt_program_booking and slot_booking.crt_program_booking.patient_id:
+        patient_id = slot_booking.crt_program_booking.patient_id
     payments = (
         db.query(Payment)
         .filter(
             Payment.patient_id == patient_id,
             Payment.fully_paid.is_(True),
-            Payment.due_amount <= 0,
-            Payment.payment_note.like("%Marked as fully paid%"),
             or_(*filters),
         )
         .all()
     )
     return sum(
-        max(0.0, float(payment.amount or 0) - float(payment.payment_amount or 0))
+        _payment_waived_amount(payment)
         for payment in payments
     )
 
@@ -1903,13 +2098,15 @@ def _slot_marked_fully_paid(db: Session, slot_booking: PatientSlotBooking) -> bo
     patient_id = slot_booking.patient_id
     if not patient_id and slot_booking.patient_session_plan_item and slot_booking.patient_session_plan_item.patient_session_plan:
         patient_id = slot_booking.patient_session_plan_item.patient_session_plan.patient_id
+    if not patient_id and slot_booking.patient_package:
+        patient_id = slot_booking.patient_package.patient_id
+    if not patient_id and slot_booking.crt_program_booking and slot_booking.crt_program_booking.patient_id:
+        patient_id = slot_booking.crt_program_booking.patient_id
     return bool(
         db.query(Payment.id)
         .filter(
             Payment.patient_id == patient_id,
-            Payment.payment_amount <= 0,
-            Payment.due_amount <= 0,
-            Payment.payment_note.like("%Marked as fully paid%"),
+            Payment.fully_paid.is_(True),
             or_(*filters),
         )
         .first()
@@ -1941,10 +2138,28 @@ def _sync_crt_parent_payment_from_slot(crt_parent: Optional[CrtProgramBooking], 
 def _sync_crt_parent_payment_from_ledger(db: Session, crt_parent: Optional[CrtProgramBooking], extra_paid: float = 0) -> None:
     if not crt_parent:
         return
+    child_slot_ids = [
+        int(row.id)
+        for row in (getattr(crt_parent, "slot_bookings", None) or [])
+        if getattr(row, "id", None)
+    ]
+    if not child_slot_ids:
+        child_slot_ids = [
+            int(row.id)
+            for row in db.query(PatientSlotBooking.id)
+            .filter(PatientSlotBooking.crt_program_booking_id == crt_parent.id)
+            .all()
+            if getattr(row, "id", None)
+        ]
+    ledger_filters = [Payment.crt_program_booking_id == crt_parent.id]
+    if child_slot_ids:
+        ledger_filters.append(Payment.patient_slot_booking_id.in_(child_slot_ids))
+        ledger_filters.extend(Payment.remark.like(f"[slot:{slot_id}]%") for slot_id in child_slot_ids)
+    ledger_filter = or_(*ledger_filters)
     marked_fully_paid = (
         db.query(Payment.id)
         .filter(
-            Payment.crt_program_booking_id == crt_parent.id,
+            ledger_filter,
             Payment.fully_paid.is_(True),
             Payment.due_amount <= 0,
         )
@@ -1953,7 +2168,7 @@ def _sync_crt_parent_payment_from_ledger(db: Session, crt_parent: Optional[CrtPr
     )
     ledger_paid = float(
         db.query(func.coalesce(func.sum(Payment.payment_amount), 0))
-        .filter(Payment.crt_program_booking_id == crt_parent.id)
+        .filter(ledger_filter)
         .scalar()
         or 0
     )
@@ -1995,16 +2210,14 @@ def _recalculate_package_slot_payments(
     patient_package: Optional[PatientPackage],
     *,
     record_credit_payments: bool = False,
+    sync_paid_amount: bool = True,
 ) -> None:
     if not patient_package:
         return
 
-    _sync_patient_package_paid_amount(patient_package)
-    used_status_ids = [
-        MASTER_LOOKUP_DATA["patient_slot_booking"]["COMPLETED"],
-        MASTER_LOOKUP_DATA["patient_slot_booking"]["PAID_CANCELLED"],
-    ]
-    package_credit = _package_direct_paid_amount(patient_package)
+    if sync_paid_amount:
+        _sync_patient_package_paid_amount(patient_package)
+    completed_status_id = MASTER_LOOKUP_DATA["patient_slot_booking"]["COMPLETED"]
     all_slot_bookings = (
         db.query(PatientSlotBooking)
         .options(
@@ -2022,63 +2235,84 @@ def _recalculate_package_slot_payments(
         .all()
     )
     slot_bookings: list[PatientSlotBooking] = []
-    emitted_crt_parent_ids: set[int] = set()
+    emitted_crt_keys: set[tuple] = set()
     for slot_booking in all_slot_bookings:
         if slot_booking.crt_program_booking_id:
-            parent_id = int(slot_booking.crt_program_booking_id)
-            if parent_id in emitted_crt_parent_ids:
-                amount = float(slot_booking.amount or 0)
-                _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, 0)
+            mapping = slot_booking.therapist_slot_mapping
+            slot = mapping.slot if mapping else None
+            crt_key = (
+                int(slot_booking.crt_program_booking_id),
+                getattr(mapping, "slot_date", None),
+                getattr(slot, "start_time", None),
+                getattr(slot, "end_time", None),
+                0 if mapping and getattr(mapping, "slot_date", None) and slot else int(slot_booking.id or 0),
+            )
+            if crt_key in emitted_crt_keys:
                 continue
-            emitted_crt_parent_ids.add(parent_id)
-            siblings = [row for row in all_slot_bookings if row.crt_program_booking_id == slot_booking.crt_program_booking_id]
+            emitted_crt_keys.add(crt_key)
+            siblings = [
+                row
+                for row in all_slot_bookings
+                if row.crt_program_booking_id == slot_booking.crt_program_booking_id
+                and (
+                    int(row.id or 0) == int(slot_booking.id or 0)
+                    or (
+                        getattr(getattr(row, "therapist_slot_mapping", None), "slot_date", None) == getattr(mapping, "slot_date", None)
+                        and getattr(getattr(getattr(row, "therapist_slot_mapping", None), "slot", None), "start_time", None) == getattr(slot, "start_time", None)
+                        and getattr(getattr(getattr(row, "therapist_slot_mapping", None), "slot", None), "end_time", None) == getattr(slot, "end_time", None)
+                    )
+                )
+            ]
             payable_slot = max(siblings, key=lambda row: (float(row.amount or _slot_booking_amount(row) or 0), -int(row.id or 0)))
-            for sibling in siblings:
-                if sibling.id != payable_slot.id:
-                    amount = float(sibling.amount or 0)
-                    _set_slot_payment_from_amounts(sibling, amount, float(sibling.paid_amount or 0), 0, 0)
             slot_bookings.append(payable_slot)
         else:
             slot_bookings.append(slot_booking)
 
-    total_positive_due = 0.0
-    synced_credit_keys: set[tuple[str, int]] = set()
+    package_credit_remaining = _package_direct_paid_amount(patient_package)
     for slot_booking in slot_bookings:
-        amount = _slot_booking_amount(slot_booking)
-        if slot_booking.status_id not in used_status_ids:
-            _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, 0)
+        crt_parent = slot_booking.crt_program_booking
+        amount = float((crt_parent.total_amount if crt_parent else None) or _slot_booking_amount(slot_booking) or 0)
+        if slot_booking.status_id != completed_status_id:
+            if crt_parent:
+                _set_crt_payment_from_amounts(crt_parent, amount, float(crt_parent.paid_amount or 0), float(crt_parent.due_amount or 0), float(crt_parent.package_covered_amount or 0))
+            else:
+                _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, 0)
             continue
-        paid = float(slot_booking.paid_amount or 0)
-        marked_fully_paid = _slot_marked_fully_paid(db, slot_booking)
-        waived = 0 if marked_fully_paid else _slot_waived_amount(db, slot_booking)
-        remaining_need = max(0, amount - paid - waived)
-        package_applied = min(package_credit, remaining_need)
-        package_credit = max(0, package_credit - package_applied)
-        due = max(0, amount - package_applied - paid)
-        if waived > 0:
-            due = max(0, due - waived)
+        paid = float((crt_parent.paid_amount if crt_parent else slot_booking.paid_amount) or 0)
+        marked_fully_paid = bool(getattr(slot_booking, "fully_paid", False)) or bool(getattr(crt_parent, "fully_paid", False)) or _slot_marked_fully_paid(db, slot_booking)
         if marked_fully_paid:
-            due = 0
-        _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), due, package_applied)
-        _sync_crt_parent_payment_from_slot(slot_booking.crt_program_booking, slot_booking)
-        credit_key = ("crt", int(slot_booking.crt_program_booking_id)) if slot_booking.crt_program_booking_id else ("slot", int(slot_booking.id))
-        if record_credit_payments and package_applied > 0 and credit_key not in synced_credit_keys:
-            _sync_package_credit_payment_row(db, slot_booking, amount, -package_credit if due <= 0 else due)
-            synced_credit_keys.add(credit_key)
-        total_positive_due += max(0, due)
+            existing_covered = min(amount, float((crt_parent.package_covered_amount if crt_parent else getattr(slot_booking, "package_covered_amount", 0)) or 0))
+            package_credit_remaining = max(0, package_credit_remaining - existing_covered)
+            if crt_parent:
+                _set_crt_payment_from_amounts(crt_parent, amount, paid, 0, existing_covered)
+                crt_parent.fully_paid = True
+                crt_parent.payment_status = "PAID"
+            else:
+                _set_slot_payment_from_amounts(slot_booking, amount, paid, 0, existing_covered)
+                slot_booking.fully_paid = True
+                slot_booking.payment_status = "PAID"
+            continue
+        package_applied = min(package_credit_remaining, max(0, amount - paid))
+        package_credit_remaining = max(0, package_credit_remaining - package_applied)
+        due = max(0, amount - paid - package_applied)
+        if crt_parent:
+            _set_crt_payment_from_amounts(crt_parent, amount, paid, due, package_applied)
+        else:
+            _set_slot_payment_from_amounts(slot_booking, amount, paid, due, package_applied)
 
-    patient_package.due_amount = -package_credit if package_credit > 0 else total_positive_due
+    _rebuild_patient_package_payment_due_snapshots(patient_package)
 
 
 def _package_credit_snapshot(patient_package: PatientPackage) -> dict[tuple[str, int], dict[str, Any]]:
     snapshot: dict[tuple[str, int], dict[str, Any]] = {}
     for slot_booking in _package_billable_usage_rows(patient_package):
+        crt_parent = slot_booking.crt_program_booking
         key = ("crt", int(slot_booking.crt_program_booking_id)) if slot_booking.crt_program_booking_id else ("slot", int(slot_booking.id))
         snapshot[key] = {
             "slot": slot_booking,
-            "covered": float(getattr(slot_booking, "package_covered_amount", 0) or 0),
-            "due": float(getattr(slot_booking, "due_amount", 0) or 0),
-            "amount": float(slot_booking.amount or _slot_booking_amount(slot_booking) or 0),
+            "covered": float((crt_parent.package_covered_amount if crt_parent else getattr(slot_booking, "package_covered_amount", 0)) or 0),
+            "due": float((crt_parent.due_amount if crt_parent else getattr(slot_booking, "due_amount", 0)) or 0),
+            "amount": float((crt_parent.total_amount if crt_parent else slot_booking.amount) or _slot_booking_amount(slot_booking) or 0),
         }
     return snapshot
 
@@ -2184,6 +2418,48 @@ def _transaction_slot_shape(slot_booking: PatientSlotBooking, payment: Optional[
     }
 
 
+def _crt_parent_transaction_shape(crt_parent: CrtProgramBooking, payment: Optional[Payment] = None) -> dict:
+    program_name = crt_parent.program.program_name if crt_parent.program else "CRT"
+    slot = crt_parent.slot
+    start = getattr(slot, "start_time", None)
+    end = getattr(slot, "end_time", None)
+    session_label = program_name or "CRT"
+    if start and end:
+        session_label = f"{session_label} Â· {start}-{end}"
+    if crt_parent.slot_date:
+        session_label = f"{session_label} Â· {crt_parent.slot_date.strftime('%d/%m/%Y')}"
+    row_patient_package = crt_parent.patient_package
+    return {
+        "id": f"crt-{crt_parent.id}",
+        "transaction_type": "Package Session" if crt_parent.is_package_session else "Session Due",
+        "patient_slot_booking_id": None,
+        "crt_program_booking_id": crt_parent.id,
+        "group_program_booking_id": None,
+        "patient_id": crt_parent.patient_id,
+        "patient_package_id": crt_parent.patient_package_id,
+        "package_name": row_patient_package.package.name if row_patient_package and row_patient_package.package else None,
+        "is_package_session": bool(crt_parent.is_package_session or crt_parent.patient_package_id),
+        "slot_name": getattr(slot, "slot_name", None),
+        "session_name": session_label,
+        "therapy_name": None,
+        "program_name": program_name,
+        "program_id": crt_parent.program_id,
+        "slot_date": _iso(crt_parent.slot_date),
+        "start_time": _iso(start),
+        "end_time": _iso(end),
+        "amount": float(crt_parent.total_amount or 0),
+        "paid_amount": float(crt_parent.paid_amount or 0),
+        "package_covered_amount": float(crt_parent.package_covered_amount or 0),
+        "due_amount": float(crt_parent.due_amount or 0),
+        "fully_paid": bool(crt_parent.fully_paid),
+        "payment_status": crt_parent.payment_status,
+        "payment_mode": payment.payment_mode_master.payment_mode_name if payment and payment.payment_mode_master else None,
+        "payment_date": _iso(payment.payment_date if payment else None),
+        "status": crt_parent.payment_status,
+        "created_at": _iso(crt_parent.created_at),
+    }
+
+
 def _package_purchase_transaction_shape(patient_package: PatientPackage, initial_paid_amount: Optional[float] = None) -> dict:
     paid_amount = max(0, float(initial_paid_amount if initial_paid_amount is not None else _package_effective_paid_amount(patient_package)))
     package_label = patient_package.package.name if patient_package.package else f"Package #{patient_package.package_id}"
@@ -2272,14 +2548,14 @@ def _payment_transaction_shape(
         is_package_session = bool(getattr(slot_booking, "is_package_session", False)) or bool(getattr(crt_parent, "is_package_session", False))
         is_package_credit_row = is_package_session and "Package credit used" in str(payment.remark or "")
         display_session_name = base_row.get("session_name") or payment_session_text
-        if due_override is not None:
+        if slot_fully_paid and not is_package_session:
+            due = 0
+        elif due_override is not None:
             due = float(due_override)
         elif previous_due is not None and not is_package_session:
             due = max(0, float(previous_due) - payment_amount)
         else:
             due = payment_due
-        if due_override is None and previous_due is None and is_package_session and row_patient_package:
-            due = float(getattr(row_patient_package, "due_amount", payment_due) or 0)
         if display_amount_override is not None:
             display_amount = float(display_amount_override)
         elif is_package_credit_row:
@@ -2750,6 +3026,7 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         _ensure_package_master_schema(db)
         allowed_package_names = (
             "General 16 Session - Package",
+            "General 12 Session - Package",
             "CRT 5 Session - Package",
             "Vocational 8 Session - Package",
         )
@@ -3801,10 +4078,17 @@ async def get_patient_transactions(
         if slot_booking.is_package_session and slot_booking.patient_package:
             continue
         _recalculate_slot_payment(slot_booking)
-    for patient_package in packages:
-        _recalculate_package_slot_payments(db, patient_package)
-    db.commit()
-
+    crt_parents = (
+        db.query(CrtProgramBooking)
+        .options(
+            joinedload(CrtProgramBooking.program),
+            joinedload(CrtProgramBooking.slot),
+            joinedload(CrtProgramBooking.patient_package).joinedload(PatientPackage.package),
+        )
+        .filter(CrtProgramBooking.patient_id == patient_id)
+        .order_by(CrtProgramBooking.created_at.desc(), CrtProgramBooking.id.desc())
+        .all()
+    )
     slot_payments: dict[int, Payment] = {}
     payments_by_slot: dict[int, list[Payment]] = defaultdict(list)
     payments_by_crt_parent: dict[int, list[Payment]] = defaultdict(list)
@@ -3844,6 +4128,7 @@ async def get_patient_transactions(
             slots_by_crt_parent[int(slot_booking.crt_program_booking_id)].append(slot_booking)
         if getattr(slot_booking, "group_program_booking_id", None) and slot_booking.patient_id:
             slots_by_group_child[(int(slot_booking.group_program_booking_id), int(slot_booking.patient_id))].append(slot_booking)
+    crt_parents_by_id = {int(crt_parent.id): crt_parent for crt_parent in crt_parents}
     group_payable_slot_by_slot_id: dict[int, PatientSlotBooking] = {}
     for group_siblings in slots_by_group_child.values():
         payable_slot = max(
@@ -3949,11 +4234,12 @@ async def get_patient_transactions(
         elif marker.startswith("[assessment:") or marker.startswith("[assessment-payment:"):
             assessment_payments.append(payment)
 
-    for crt_parent_id in payments_by_crt_parent:
-        crt_siblings = slots_by_crt_parent.get(crt_parent_id, [])
-        crt_parent = next((sibling.crt_program_booking for sibling in crt_siblings if sibling.crt_program_booking), None)
-        _sync_crt_parent_payment_from_ledger(db, crt_parent)
-    db.commit()
+    normalized_package_due_by_id = _normalize_patient_package_due_values(packages)
+    normalized_payment_due_by_id = {
+        int(payment.id): float(payment.due_amount or 0)
+        for payment in payment_rows
+        if payment.id
+    }
 
     package_payment_totals = {
         package_id: sum(float(payment.payment_amount or 0) for payment in payments)
@@ -4024,7 +4310,14 @@ async def get_patient_transactions(
             continue
         program_name = (slot_booking.program.program_name if slot_booking.program else "") or ""
         is_crt_slot = "crt" in program_name.lower() or "structured" in program_name.lower()
-        slot_date_key = _iso(slot_booking.therapist_slot_mapping.slot_date if slot_booking.therapist_slot_mapping else None) or ""
+        mapping = slot_booking.therapist_slot_mapping
+        slot = mapping.slot if mapping else None
+        slot_date_key = "|".join([
+            _iso(mapping.slot_date if mapping else None) or "",
+            str(getattr(slot, "start_time", "") or ""),
+            str(getattr(slot, "end_time", "") or ""),
+            str(slot_booking.id or ""),
+        ])
         row = _transaction_slot_shape(slot_booking, slot_payments.get(slot_booking.id))
         row_amount = float(row["amount"] or 0)
         row_paid = float(row["paid_amount"] or 0)
@@ -4046,7 +4339,8 @@ async def get_patient_transactions(
             if is_crt_slot:
                 seen_crt_package_usage.add(crt_usage_key)
             patient_package = packages_by_id.get(package_id)
-            row_due = float(getattr(patient_package, "due_amount", 0) or 0) if patient_package else float(package_running_due.get(package_id, 0) or 0)
+            package_running = float(package_running_due.get(package_id, 0) or 0)
+            row_due = package_running if package_running > 0 else (float(getattr(patient_package, "due_amount", 0) or 0) if patient_package else 0)
             package_running_due[package_id] = row_due
             row["due_amount"] = row_due
         elif not slot_booking.is_package_session:
@@ -4069,7 +4363,12 @@ async def get_patient_transactions(
                     if (sibling.patient_id or patient_id) == (slot_booking.patient_id or patient_id)
                     and sibling.program_id == slot_booking.program_id
                     and sibling.crt_program_booking_id == slot_booking.crt_program_booking_id
-                    and _iso(sibling.therapist_slot_mapping.slot_date if sibling.therapist_slot_mapping else None) == slot_date_key
+                    and "|".join([
+                        _iso(sibling.therapist_slot_mapping.slot_date if sibling.therapist_slot_mapping else None) or "",
+                        str(getattr(sibling.therapist_slot_mapping.slot if sibling.therapist_slot_mapping else None, "start_time", "") or ""),
+                        str(getattr(sibling.therapist_slot_mapping.slot if sibling.therapist_slot_mapping else None, "end_time", "") or ""),
+                        str(sibling.id or ""),
+                    ]) == slot_date_key
                     and not sibling.is_package_session
                     and (
                         "crt" in ((sibling.program.program_name if sibling.program else "") or "").lower()
@@ -4097,6 +4396,29 @@ async def get_patient_transactions(
                 continue
         # Transaction history is payment-ledger only. Session/package context rows
         # remain available through payable_slots but are not shown as transactions.
+
+    for crt_parent in sorted(crt_parents, key=lambda row: (row.created_at or _now(), row.id or 0), reverse=True):
+        crt_parent_id = int(crt_parent.id)
+        if crt_parent_id in emitted_crt_parent_ids:
+            continue
+        _sync_crt_parent_payment_from_ledger(db, crt_parent)
+        has_payment = bool(payments_by_crt_parent.get(crt_parent_id))
+        if (
+            not has_payment
+            and bool(crt_parent.fully_paid)
+            and float(crt_parent.due_amount or 0) <= 0
+        ):
+            continue
+        if (
+            not has_payment
+            and float(crt_parent.due_amount or 0) <= 0
+            and str(crt_parent.payment_status or "").upper() in {"PAID", "PACKAGE_COVERED"}
+        ):
+            continue
+        transaction_rows.append(_crt_parent_transaction_shape(
+            crt_parent,
+            payments_by_crt_parent.get(crt_parent_id, [None])[0],
+        ))
 
     package_running_due = {
         pkg.id: -max(0, package_initial_paid.get(pkg.id, 0) + package_payment_totals.get(pkg.id, 0))
@@ -4152,14 +4474,17 @@ async def get_patient_transactions(
                     or sibling_note.startswith("Allocated from package payment")
                 ):
                     seen_usage_payment_ids.add(sibling_payment_id)
-                    package_usage_before += float(getattr(sibling_payment, "amount", 0) or 0) or float(sibling_slot.amount or _slot_booking_amount(sibling_slot) or 0)
+                    usage_amount = float(getattr(sibling_payment, "amount", 0) or 0) or float(sibling_slot.amount or _slot_booking_amount(sibling_slot) or 0)
+                    if bool(getattr(sibling_payment, "fully_paid", False)) and "Marked as fully paid" in sibling_note:
+                        usage_amount = max(0, usage_amount - _payment_waived_amount(sibling_payment))
+                    package_usage_before += usage_amount
         current_due = package_usage_before - package_credit_before
         credit_available = max(0, -current_due)
         next_due = current_due + row_amount - payment_amount
         package_running_due[package_id] = next_due
         if next_due < 0:
             return next_due
-        return max(0, row_amount - credit_available - payment_amount)
+        return max(0, next_due)
 
     def package_session_running_due(slot_booking: PatientSlotBooking, payment: Payment) -> Optional[float]:
         crt_parent = slot_booking.crt_program_booking
@@ -4173,7 +4498,7 @@ async def get_patient_transactions(
             if (row.created_at or row.payment_date or _now()) <= payment_created_at
         ]
         if not package_payments:
-            return None
+            return float(getattr(payment, "due_amount", 0) or 0)
         latest_package_payment = sorted(
             package_payments,
             key=lambda row: (row.created_at or row.payment_date or _now(), row.id or 0),
@@ -4211,6 +4536,8 @@ async def get_patient_transactions(
                 running_due += float(getattr(sibling_payment, "amount", 0) or 0) or float(sibling_slot.amount or _slot_booking_amount(sibling_slot) or 0)
                 charged_usage_keys.add(usage_key)
             running_due -= float(sibling_payment.payment_amount or 0)
+            if bool(getattr(sibling_payment, "fully_paid", False)) and "Marked as fully paid" in str(getattr(sibling_payment, "payment_note", "") or ""):
+                running_due -= _payment_waived_amount(sibling_payment)
             if sibling_payment_id == int(payment.id or 0):
                 return running_due
         return None
@@ -4250,7 +4577,7 @@ async def get_patient_transactions(
             for paid_slot, payment in sorted(crt_payment_pairs, key=lambda pair: (pair[1].payment_date or pair[1].created_at or _now(), pair[1].id or 0)):
                 previous_due = max(0, starting_due_by_slot.get(paid_slot.id, 0) - cumulative_paid_by_slot[paid_slot.id])
                 cumulative_paid_by_slot[paid_slot.id] += float(payment.payment_amount or 0)
-                due_override = package_session_running_due(paid_slot, payment)
+                due_override = None
                 crt_parent = paid_slot.crt_program_booking
                 if crt_parent and not (bool(getattr(crt_parent, "is_package_session", False)) or getattr(crt_parent, "patient_package_id", None)):
                     total = float(crt_parent.total_amount or _slot_booking_amount(paid_slot) or 0)
@@ -4287,14 +4614,12 @@ async def get_patient_transactions(
         )):
             previous_due = max(0, starting_due - cumulative_paid)
             cumulative_paid += float(payment.payment_amount or 0)
-            due_override = package_session_running_due(slot_booking, payment)
             transaction_rows.append(_payment_transaction_shape(
                 payment,
                 slot_booking=slot_booking,
                 cumulative_paid=cumulative_paid,
                 starting_due=starting_due,
                 previous_due=previous_due,
-                due_override=due_override,
             ))
 
     for package_id, payments in payments_by_package.items():
@@ -4427,9 +4752,57 @@ async def get_patient_transactions(
                 )
             row["fully_paid"] = bool(getattr(payable_slot, "fully_paid", False))
             row["payment_status"] = payable_slot.payment_status
+        latest_payment = latest_slot_ledger_payment(payable_slot)
+        if latest_payment and bool(getattr(latest_payment, "fully_paid", False)) and not row.get("is_package_session"):
+            row["fully_paid"] = True
+        if row.get("is_package_session") and row.get("patient_package_id"):
+            if latest_payment and bool(getattr(latest_payment, "fully_paid", False)):
+                continue
+            row_package = packages_by_id.get(int(row["patient_package_id"]))
+            package_due = max(0, float(getattr(row_package, "due_amount", 0) or 0)) if row_package else 0
+            if package_due > 0:
+                payable_session_amount = _session_payable_due_cap(
+                    float(row.get("amount") or 0),
+                    float(row.get("paid_amount") or 0),
+                )
+                row["due_amount"] = min(float(row.get("due_amount") or 0), payable_session_amount)
+                row["current_due_amount"] = min(package_due, payable_session_amount)
+                row["overall_due_amount"] = package_due
         if row["fully_paid"]:
             continue
-        due_amount = float(row.get("due_amount") or 0)
+        due_amount = float(row.get("current_due_amount", row.get("due_amount")) or 0)
+        if due_amount <= 0:
+            continue
+        row["current_due_amount"] = max(0, float(row.get("current_due_amount", row.get("due_amount")) or 0))
+        payable_slot_rows.append(row)
+
+    for crt_parent in sorted(crt_parents, key=lambda row: (row.created_at or _now(), row.id or 0)):
+        crt_parent_id = int(crt_parent.id)
+        if crt_parent_id in emitted_payable_crt_parent_ids:
+            continue
+        if str(crt_parent.payment_status or "").upper() in excluded_payable_statuses:
+            continue
+        _sync_crt_parent_payment_from_ledger(db, crt_parent)
+        row = _crt_parent_transaction_shape(
+            crt_parent,
+            payments_by_crt_parent.get(crt_parent_id, [None])[0],
+        )
+        if bool(row.get("fully_paid")):
+            continue
+        due_amount = max(0, float(row.get("due_amount") or 0))
+        if row.get("is_package_session") and row.get("patient_package_id"):
+            latest_payment = payments_by_crt_parent.get(crt_parent_id, [None])[0]
+            if latest_payment and bool(getattr(latest_payment, "fully_paid", False)):
+                continue
+            row_package = packages_by_id.get(int(row["patient_package_id"]))
+            package_due = max(0, float(getattr(row_package, "due_amount", 0) or 0)) if row_package else 0
+            if package_due > 0:
+                payable_session_amount = _session_payable_due_cap(
+                    float(row.get("amount") or 0),
+                    float(row.get("paid_amount") or 0),
+                )
+                due_amount = min(max(due_amount, min(package_due, payable_session_amount)), payable_session_amount)
+                row["overall_due_amount"] = package_due
         if due_amount <= 0:
             continue
         row["current_due_amount"] = due_amount
@@ -4465,15 +4838,33 @@ async def get_patient_transactions(
 
     transaction_rows.sort(key=transaction_sort_key, reverse=True)
     payable_slot_rows.sort(key=lambda row: row.get("created_at") or "")
+    running_package_due_by_id: dict[int, float] = defaultdict(float)
+    for row in payable_slot_rows:
+        if not row.get("is_package_session") or not row.get("patient_package_id"):
+            continue
+        row_package = packages_by_id.get(int(row["patient_package_id"]))
+        package_due = max(0, float(getattr(row_package, "due_amount", 0) or 0)) if row_package else 0
+        package_rate = _package_per_session_rate(row_package) if row_package else float(row.get("amount") or 0)
+        if package_due <= 0 or package_rate <= 0:
+            continue
+        package_id = int(row["patient_package_id"])
+        previous_due = running_package_due_by_id[package_id]
+        row_due = min(package_rate, max(0, package_due - previous_due))
+        next_due = min(package_due, previous_due + row_due)
+        running_package_due_by_id[package_id] = next_due
+        row["current_due_amount"] = row_due
+        row["due_amount"] = next_due
+        row["overall_due_amount"] = package_due
+
     running_session_due = 0.0
     for row in payable_slot_rows:
         if row.get("is_package_session"):
             continue
-        running_session_due += max(0, float(row.get("due_amount") or 0))
+        running_session_due += max(0, float(row.get("current_due_amount", row.get("due_amount")) or 0))
         row["due_amount"] = running_session_due
     payable_slot_rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
 
-    return {
+    response = {
         "data": {
             "patient": _patient_shape(patient),
             "active_package": _package_shape(active_package) if active_package else None,
@@ -4488,6 +4879,22 @@ async def get_patient_transactions(
             "transactions": transaction_rows,
         }
     }
+    if normalized_package_due_by_id:
+        db.rollback()
+        for package_id, due_amount in normalized_package_due_by_id.items():
+            db.query(PatientPackage).filter(PatientPackage.id == package_id).update(
+                {PatientPackage.due_amount: due_amount},
+                synchronize_session=False,
+            )
+        for payment_id, due_amount in normalized_payment_due_by_id.items():
+            db.query(Payment).filter(Payment.id == payment_id).update(
+                {Payment.due_amount: due_amount},
+                synchronize_session=False,
+            )
+        db.commit()
+    else:
+        db.rollback()
+    return response
 
 
 @router.post("/patients/{patient_id}/transactions")
@@ -4505,6 +4912,7 @@ async def create_patient_transaction(
     _ensure_assessment_billing_schema(db)
 
     slot_booking_id = payload.get("patient_slot_booking_id")
+    crt_program_booking_id = payload.get("crt_program_booking_id")
     patient_package_id = payload.get("patient_package_id")
     assessment_payment_id = payload.get("assessment_payment_id")
     paid_amount = float(payload.get("paid_amount") or 0)
@@ -4526,6 +4934,7 @@ async def create_patient_transaction(
     payment_due_after: Optional[float] = None
     payment_amount_snapshot: Optional[float] = None
     package_credit_before: Optional[dict[tuple[str, int], dict[str, Any]]] = None
+    package_waived_due_adjustment = 0.0
     if assessment_payment_id:
         assessment_source_payment = (
             db.query(Payment)
@@ -4593,19 +5002,52 @@ async def create_patient_transaction(
         payment_amount_snapshot = selected_due_before
         if assessment_billing and float(assessment_billing.assessment_amount or 0) > 0:
             payment_amount_snapshot = float(assessment_billing.assessment_amount or 0)
-    elif slot_booking_id:
-        slot_booking = (
-            db.query(PatientSlotBooking)
-            .options(
-                joinedload(PatientSlotBooking.patient_package).joinedload(PatientPackage.package),
-                joinedload(PatientSlotBooking.crt_program_booking),
-                joinedload(PatientSlotBooking.patient_session_plan_item),
-                joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.slot),
-                joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+    elif crt_program_booking_id or slot_booking_id:
+        if crt_program_booking_id:
+            crt_parent = (
+                db.query(CrtProgramBooking)
+                .options(
+                    joinedload(CrtProgramBooking.patient_package).joinedload(PatientPackage.package),
+                    joinedload(CrtProgramBooking.slot_bookings).joinedload(PatientSlotBooking.patient_package).joinedload(PatientPackage.package),
+                    joinedload(CrtProgramBooking.slot_bookings).joinedload(PatientSlotBooking.patient_session_plan_item),
+                    joinedload(CrtProgramBooking.slot_bookings).joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.slot),
+                    joinedload(CrtProgramBooking.slot_bookings).joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+                )
+                .filter(
+                    CrtProgramBooking.id == int(crt_program_booking_id),
+                    CrtProgramBooking.patient_id == patient_id,
+                )
+                .first()
             )
-            .filter(PatientSlotBooking.id == int(slot_booking_id))
-            .first()
-        )
+            if not crt_parent:
+                raise HTTPException(status_code=404, detail="CRT booking not found")
+            crt_slots = list(getattr(crt_parent, "slot_bookings", None) or [])
+            if not crt_slots:
+                raise HTTPException(status_code=404, detail="CRT booking has no slots")
+            slot_booking = max(
+                crt_slots,
+                key=lambda sibling: (
+                    bool(sibling.is_package_session),
+                    float(sibling.due_amount or 0),
+                    float(sibling.amount or _slot_booking_amount(sibling) or 0),
+                    int(sibling.id or 0),
+                ),
+            )
+            if crt_parent.patient_package:
+                patient_package = crt_parent.patient_package
+        else:
+            slot_booking = (
+                db.query(PatientSlotBooking)
+                .options(
+                    joinedload(PatientSlotBooking.patient_package).joinedload(PatientPackage.package),
+                    joinedload(PatientSlotBooking.crt_program_booking),
+                    joinedload(PatientSlotBooking.patient_session_plan_item),
+                    joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.slot),
+                    joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+                )
+                .filter(PatientSlotBooking.id == int(slot_booking_id))
+                .first()
+            )
         if not slot_booking:
             raise HTTPException(status_code=404, detail="Slot booking not found")
         if slot_booking.patient_package:
@@ -4672,6 +5114,11 @@ async def create_patient_transaction(
             or getattr(slot_booking, "patient_package_id", None)
             or (crt_parent and (getattr(crt_parent, "is_package_session", False) or getattr(crt_parent, "patient_package_id", None)))
         )
+        booking_amount_snapshot = float(crt_parent.total_amount or 0) if crt_parent else 0
+        if booking_amount_snapshot <= 0:
+            booking_amount_snapshot = float(payload.get("booking_amount") or 0) or float(slot_booking.amount or _slot_booking_amount(slot_booking) or 0)
+        paid_before = float((crt_parent.paid_amount if crt_parent else slot_booking.paid_amount) or 0)
+        session_due_cap = _session_payable_due_cap(booking_amount_snapshot, paid_before)
         selected_due_before = (
             float(getattr(crt_parent, "due_amount", 0) or 0)
             if crt_parent
@@ -4680,7 +5127,9 @@ async def create_patient_transaction(
         if selected_due_before <= 0:
             selected_due_before = float(payload.get("due_amount") or 0) or float(slot_booking.due_amount or 0)
         if selected_due_before <= 0:
-            selected_due_before = float(_slot_booking_amount(slot_booking) or 0)
+            selected_due_before = session_due_cap or float(_slot_booking_amount(slot_booking) or 0)
+        if not is_non_package_session_payment and session_due_cap > 0:
+            selected_due_before = min(selected_due_before, session_due_cap)
         validate_paid_amount(selected_due_before, "session")
         if is_non_package_session_payment:
             slot_due_query = db.query(func.coalesce(func.sum(PatientSlotBooking.due_amount), 0)).filter(
@@ -4736,10 +5185,11 @@ async def create_patient_transaction(
             other_session_due = max(0, float(slot_due_total or 0) + float(group_due_total or 0) + float(crt_due_total or 0))
             selected_due_after = 0 if fully_paid else max(0, selected_due_before - paid_amount)
             payment_due_after = other_session_due + selected_due_after
+        elif getattr(slot_booking, "is_package_session", False) and getattr(slot_booking, "patient_package_id", None):
+            payment_due_after = max(0, selected_due_before - paid_amount)
         else:
             payment_due_after = 0 if fully_paid else max(0, selected_due_before - paid_amount)
         selected_slot_due_after = 0 if fully_paid else max(0, selected_due_before - paid_amount)
-        booking_amount_snapshot = float(crt_parent.total_amount or 0) if crt_parent else 0
         if booking_amount_snapshot <= 0:
             booking_amount_snapshot = float(payload.get("booking_amount") or 0) or float(slot_booking.amount or _slot_booking_amount(slot_booking) or 0) or selected_due_before
         payment_amount_snapshot = booking_amount_snapshot
@@ -4766,33 +5216,23 @@ async def create_patient_transaction(
                 crt_parent.due_amount = 0
                 crt_parent.fully_paid = True
                 crt_parent.payment_status = "PAID"
-            for sibling in crt_parent.slot_bookings:
-                if sibling.id != slot_booking.id:
-                    continue
-                sibling_paid = float(sibling.paid_amount or 0) + paid_amount
-                sibling_package_covered = float(getattr(sibling, "package_covered_amount", 0) or 0)
-                _set_slot_payment_from_amounts(
-                    sibling,
-                    booking_amount_snapshot,
-                    sibling_paid,
-                    selected_slot_due_after,
-                    sibling_package_covered,
-                )
-                sibling.fully_paid = bool(fully_paid or sibling.due_amount <= 0)
             if slot_booking.is_package_session and slot_booking.patient_package:
                 _recalculate_package_slot_payments(db, slot_booking.patient_package)
+                patient_package = slot_booking.patient_package
         elif slot_booking.is_package_session and slot_booking.patient_package:
             patient_package = slot_booking.patient_package
             package_total = float(patient_package.total_amount or (patient_package.package.price if patient_package.package else 0) or 0)
-            patient_package.due_amount = _package_due_amount(patient_package)
+            _set_patient_package_due_from_usage(patient_package)
             patient_package.payment_status = "PAID" if package_total > 0 and patient_package.paid_amount >= package_total else "PARTIAL"
             slot_booking.paid_amount = float(slot_booking.paid_amount or 0) + paid_amount
             amount = _slot_booking_amount(slot_booking)
             _recalculate_package_slot_payments(db, patient_package)
-            slot_booking.fully_paid = bool(slot_booking.fully_paid or fully_paid or (amount > 0 and float(slot_booking.due_amount or 0) <= 0))
+            slot_booking.fully_paid = bool(fully_paid)
             if slot_booking.fully_paid:
-                _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, amount)
-                patient_package.due_amount = _package_due_amount(patient_package)
+                existing_covered = min(amount, float(getattr(slot_booking, "package_covered_amount", 0) or 0))
+                _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, existing_covered)
+                package_waived_due_adjustment = max(0.0, float(selected_due_before or 0) - paid_amount)
+                _set_patient_package_due_from_usage(patient_package)
         else:
             slot_booking.paid_amount = float(slot_booking.paid_amount or 0) + paid_amount
             amount = _slot_booking_amount(slot_booking)
@@ -4838,13 +5278,27 @@ async def create_patient_transaction(
         package_total = float(patient_package.total_amount or (patient_package.package.price if patient_package.package else 0) or 0)
         _recalculate_package_slot_payments(db, patient_package)
         package_credit_before = _package_credit_snapshot(patient_package)
-        package_due_before = float(patient_package.due_amount or 0)
         package_paid_before = float(patient_package.paid_amount or 0)
-        patient_package.paid_amount = min(package_total, float(patient_package.paid_amount or 0) + paid_amount)
+        next_paid_amount = package_paid_before + paid_amount
+        patient_package.paid_amount = next_paid_amount
         patient_package.payment_status = "PAID" if package_total > 0 and patient_package.paid_amount >= package_total else "PARTIAL"
+        payment_due_after = _recalculate_package_due_with_paid_amount(db, patient_package, next_paid_amount)
+        patient_package.due_amount = payment_due_after
+        payment_amount_snapshot = float(payload.get("amount") or 0) or max(0, package_total - package_paid_before)
+
+    if slot_booking and not patient_package:
+        crt_parent_package = getattr(slot_booking.crt_program_booking, "patient_package", None)
+        patient_package = slot_booking.patient_package or crt_parent_package
+
+    if slot_booking and patient_package and (
+        getattr(slot_booking, "is_package_session", False)
+        or getattr(slot_booking.crt_program_booking, "is_package_session", False)
+        or getattr(slot_booking.crt_program_booking, "patient_package_id", None)
+    ):
+        db.flush()
+        _sync_patient_package_paid_amount(patient_package)
         _recalculate_package_slot_payments(db, patient_package)
-        payment_due_after = package_due_before - paid_amount
-        payment_amount_snapshot = float(payload.get("amount") or 0) or (package_due_before if package_due_before > 0 else max(0, package_total - package_paid_before))
+        payment_due_after = _rebuild_patient_package_payment_due_snapshots(patient_package)
 
     should_record_transaction = paid_amount > 0 or fully_paid
     if should_record_transaction:
@@ -4852,6 +5306,17 @@ async def create_patient_transaction(
         user_note = str(raw_remark).strip() if raw_remark else ""
         if fully_paid and paid_amount <= 0:
             user_note = " - ".join(part for part in [user_note, "Marked as fully paid"] if part)
+        elif fully_paid and slot_booking:
+            waived_amount = max(0.0, float(selected_due_before or 0) - paid_amount)
+            user_note = " - ".join(
+                part
+                for part in [
+                    user_note,
+                    "Marked as fully paid",
+                    f"Waived Rs {waived_amount:.2f}" if waived_amount > 0 else "",
+                ]
+                if part
+            )
         session_text = "Payment recorded"
         if assessment_source_payment:
             source_label = re.sub(r"^\[[^\]]+\]\s*", "", assessment_source_payment.remark or "Assessment").split(" | Note: ", 1)[0]
@@ -4866,7 +5331,9 @@ async def create_patient_transaction(
             if not user_note:
                 user_note = "Package credit added"
         stored_payment_due = (
-            payment_due_after
+            0
+            if slot_booking and fully_paid
+            else payment_due_after
             if slot_booking or assessment_source_payment or patient_package
             else float(getattr(patient_package, "due_amount", 0) or 0)
         )
@@ -4894,7 +5361,7 @@ async def create_patient_transaction(
                 bool(payment_due_after is not None and payment_due_after <= 0)
                 if assessment_source_payment
                 else
-                bool(getattr(slot_booking, "fully_paid", False))
+                bool(fully_paid)
                 if slot_booking
                 else str(getattr(patient_package, "payment_status", "") or "").upper() == "PAID"
             ),
@@ -4961,6 +5428,9 @@ async def create_patient_transaction(
             db.flush()
             _sync_patient_package_paid_amount(patient_package)
             _recalculate_package_slot_payments(db, patient_package)
+            _rebuild_patient_package_payment_due_snapshots(patient_package)
+            if slot_booking and fully_paid:
+                payment.due_amount = 0
 
     db.commit()
     if slot_booking:
@@ -5222,6 +5692,9 @@ async def list_rows(
     if limit:
         query = query.limit(limit)
     rows = query.all()
+    if table == "patient_packages":
+        _normalize_patient_package_due_values(rows)
+        db.commit()
     data = [SHAPERS[table](row) for row in rows]
     if single:
         return {"data": data[0] if data else None, "count": total}
@@ -5368,7 +5841,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         adjustment_preview = _patient_package_preview(db, item["patient_id"], package.id)
         sessions_to_adjust = adjustment_preview["sessions_adjusted"] if adjust_today_unpaid else 0
         per_session_rate = total_amount / total_sessions if total_sessions > 0 else 0
-        due_amount = (sessions_to_adjust * per_session_rate) - paid_amount
+        due_amount = 0
         payment_status = "PAID" if total_amount > 0 and paid_amount >= total_amount else ("PARTIAL" if paid_amount > 0 else "UNPAID")
 
         row = PatientPackage(
@@ -5386,7 +5859,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         )
         db.add(row)
         db.flush()
-        db.add(Payment(
+        package_purchase_payment = Payment(
             patient_id=item["patient_id"],
             amount=total_amount,
             payment_amount=paid_amount,
@@ -5400,7 +5873,13 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             payment_note="Package purchased",
             created_by=user_id,
             updated_by=user_id,
-        ))
+        )
+        db.add(package_purchase_payment)
+
+        if paid_amount > 0:
+            row.paid_amount = paid_amount
+            row.due_amount = -paid_amount
+            package_purchase_payment.due_amount = row.due_amount
 
         if adjust_today_unpaid and sessions_to_adjust:
             today_sessions = _today_unpaid_completed_slot_query(db, item["patient_id"]).limit(sessions_to_adjust).all()
@@ -5411,6 +5890,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
                 slot_booking.paid_amount = 0
             _recalculate_package_slot_payments(db, row)
             db.flush()
+            package_purchase_payment.due_amount = float(row.due_amount or 0)
         return row
     elif table == "session_notes":
         row = SessionNote(

@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.core.security import hash_password
 from app.models.models import MASTER_LOOKUP_DATA
 
 
@@ -120,6 +121,22 @@ def _foreign_key_referenced_table(db: Session, table_name: str, constraint_name:
     return row[0] if row else None
 
 
+def _index_exists(db: Session, table_name: str, index_name: str) -> bool:
+    return bool(db.execute(
+        text(
+            """
+            SELECT 1
+            FROM information_schema.statistics
+            WHERE table_schema = DATABASE()
+              AND table_name = :table_name
+              AND index_name = :index_name
+            LIMIT 1
+            """
+        ),
+        {"table_name": table_name, "index_name": index_name},
+    ).first())
+
+
 def _ensure_lookup_table(db: Session, table_name: str):
     if not _table_exists(db, table_name):
         db.execute(text(
@@ -136,6 +153,200 @@ def _ensure_lookup_table(db: Session, table_name: str):
             )
             """
         ))
+
+
+def _ensure_rbac_schema(db: Session):
+    if _table_exists(db, "roles"):
+        for role_name, description in (
+            ("therapist", "Therapist read-only access to own appointments"),
+            ("central_head", "Central head read-only access across assigned centres"),
+        ):
+            db.execute(text("""
+                INSERT INTO roles (name, description)
+                SELECT :name, :description
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM roles WHERE name = :name AND deleted_at IS NULL
+                )
+            """), {"name": role_name, "description": description})
+
+    if _table_exists(db, "therapists") and not _column_exists(db, "therapists", "user_id"):
+        db.execute(text("ALTER TABLE therapists ADD COLUMN user_id INT NULL"))
+    if _table_exists(db, "therapists") and not _index_exists(db, "therapists", "idx_therapist_user_id"):
+        db.execute(text("CREATE INDEX idx_therapist_user_id ON therapists (user_id)"))
+
+
+def _split_seed_name(full_name: str) -> tuple[str, str]:
+    parts = [part for part in (full_name or "").strip().split() if part]
+    if not parts:
+        return "Test", "User"
+    if len(parts) == 1:
+        return parts[0], "User"
+    return " ".join(parts[:-1]), parts[-1]
+
+
+def _ensure_user_region_mapping(db: Session, user_id: int, region_id: int):
+    if not _table_exists(db, "user_region_mapping"):
+        return
+    db.execute(text("""
+        INSERT INTO user_region_mapping (userid, regionid, created_by, updated_by)
+        SELECT :user_id, :region_id, :user_id, :user_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM user_region_mapping
+            WHERE userid = :user_id
+              AND regionid = :region_id
+        )
+    """), {"user_id": user_id, "region_id": region_id})
+
+
+def _ensure_user_role(db: Session, user_id: int, role_name: str):
+    if not _table_exists(db, "roles") or not _table_exists(db, "user_roles"):
+        return
+    role = db.execute(text("""
+        SELECT id FROM roles
+        WHERE name = :role_name
+          AND deleted_at IS NULL
+        LIMIT 1
+    """), {"role_name": role_name}).first()
+    if not role:
+        return
+    db.execute(text("""
+        INSERT INTO user_roles (user_id, role_id)
+        SELECT :user_id, :role_id
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM user_roles
+            WHERE user_id = :user_id
+              AND role_id = :role_id
+              AND deleted_at IS NULL
+        )
+    """), {"user_id": user_id, "role_id": role[0]})
+
+
+def _upsert_test_user(
+    db: Session,
+    *,
+    email: str,
+    full_name: str,
+    phone: str,
+    role_name: str,
+    region_ids: list[int],
+    password_hash: str,
+) -> int | None:
+    if not _table_exists(db, "users"):
+        return None
+
+    first_name, last_name = _split_seed_name(full_name)
+    existing = db.execute(text("""
+        SELECT id FROM users
+        WHERE email = :email
+          AND deleted_at IS NULL
+        LIMIT 1
+    """), {"email": email}).first()
+
+    if existing:
+        user_id = int(existing[0])
+        db.execute(text("""
+            UPDATE users
+            SET username = :email,
+                hashed_password = :password_hash,
+                first_name = :first_name,
+                last_name = :last_name,
+                phone = :phone,
+                is_active = 1,
+                is_verified = 1
+            WHERE id = :user_id
+        """), {
+            "user_id": user_id,
+            "email": email,
+            "password_hash": password_hash,
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone": phone,
+        })
+    else:
+        db.execute(text("""
+            INSERT INTO users (
+                username, email, hashed_password, first_name, last_name,
+                phone, is_active, is_verified
+            )
+            VALUES (
+                :email, :email, :password_hash, :first_name, :last_name,
+                :phone, 1, 1
+            )
+        """), {
+            "email": email,
+            "password_hash": password_hash,
+            "first_name": first_name,
+            "last_name": last_name,
+            "phone": phone,
+        })
+        user_id = int(db.execute(text("SELECT LAST_INSERT_ID()")).scalar())
+
+    _ensure_user_role(db, user_id, role_name)
+    for region_id in region_ids:
+        _ensure_user_region_mapping(db, user_id, region_id)
+    return user_id
+
+
+def _ensure_rbac_test_users(db: Session):
+    if not _table_exists(db, "users") or not _table_exists(db, "roles"):
+        return
+
+    region_rows = []
+    if _table_exists(db, "regions"):
+        region_rows = db.execute(text("SELECT id FROM regions ORDER BY id")).all()
+    region_ids = [int(row[0]) for row in region_rows] or [1]
+
+    therapist_name = "Test Therapist"
+    therapist_region_ids = [region_ids[0]]
+    therapist_row = None
+    if _table_exists(db, "therapists"):
+        select_columns = "id, name"
+        if _column_exists(db, "therapists", "region_id"):
+            select_columns += ", region_id"
+        else:
+            select_columns += ", NULL AS region_id"
+        therapist_row = db.execute(text(f"""
+            SELECT {select_columns}
+            FROM therapists
+            WHERE is_active = 1
+              AND deleted_at IS NULL
+            ORDER BY id
+            LIMIT 1
+        """)).first()
+        if therapist_row:
+            therapist_name = therapist_row[1] or therapist_name
+            if therapist_row[2]:
+                therapist_region_ids = [int(therapist_row[2])]
+
+    password_hash = hash_password("Test@123456")
+    therapist_user_id = _upsert_test_user(
+        db,
+        email="therapist.test@sushiksha.local",
+        full_name=therapist_name,
+        phone="9000000001",
+        role_name="therapist",
+        region_ids=therapist_region_ids,
+        password_hash=password_hash,
+    )
+    _upsert_test_user(
+        db,
+        email="centralhead.test@sushiksha.local",
+        full_name="Central Head",
+        phone="9000000002",
+        role_name="central_head",
+        region_ids=region_ids,
+        password_hash=password_hash,
+    )
+
+    if therapist_user_id and therapist_row and _column_exists(db, "therapists", "user_id"):
+        db.execute(text("""
+            UPDATE therapists
+            SET user_id = :user_id
+            WHERE id = :therapist_id
+              AND (user_id IS NULL OR user_id = :user_id)
+        """), {"user_id": therapist_user_id, "therapist_id": int(therapist_row[0])})
 
 
 def _seed_master_lookups(db: Session):
@@ -292,6 +503,7 @@ def _ensure_package_region_rows(db: Session):
         db.execute(text("ALTER TABLE packages ADD COLUMN region_id INT NULL"))
 
     defaults = [
+        ("General 12 Session - Package", "General package", 12, 13200, 30),
         ("Therapy Package - 12 Sessions", "Standard therapy package", 12, 12000, 90),
         ("Therapy Package - 8 Sessions", "Short therapy package", 8, 8000, 60),
         ("Therapy Package - 16 Sessions", "Extended therapy package", 16, 16000, 120),
@@ -464,6 +676,9 @@ def align_database_schema():
         _ensure_program_table(db)
         _ensure_package_region_rows(db)
         _ensure_enquiries_table(db)
+        _ensure_rbac_schema(db)
+        _ensure_rbac_test_users(db)
+        db.commit()
         print("[OK] Database schema aligned")
     finally:
         db.close()

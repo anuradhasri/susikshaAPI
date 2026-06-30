@@ -247,11 +247,9 @@ def _mapped_assessment_ids(db: Session, user: User) -> set[int]:
 
 def _visible_assessment_ids(db: Session, user: User) -> set[int] | None:
     roles = _normalized_role_names(db, user.id)
-    if not roles or roles & ASSESSMENT_ADMIN_ROLES or roles & ASSESSMENT_CENTRAL_HEAD_ROLES:
+    if not roles or roles & ASSESSMENT_ADMIN_ROLES or roles & ASSESSMENT_CENTRAL_HEAD_ROLES or "therapist" in roles:
         return None
-    if "therapist" not in roles:
-        return set()
-    return _mapped_assessment_ids(db, user)
+    return set()
 
 
 def _assessment_is_allowed(assessment: AssessmentMaster, allowed_ids: set[int] | None) -> bool:
@@ -267,7 +265,7 @@ def _can_edit_assessment_for_user(db: Session, user: User, assessment_id: int) -
     if roles & ASSESSMENT_ADMIN_ROLES:
         return True
     if roles & ASSESSMENT_CENTRAL_HEAD_ROLES:
-        return assessment_id in _mapped_assessment_ids(db, user)
+        return True
     return False
 
 
