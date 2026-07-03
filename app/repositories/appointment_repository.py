@@ -17,6 +17,7 @@ from app.models.models import (
     PatientSessionPlanItem,
     PatientSlotBooking,
     Program,
+    CrtProgramBooking,
     SlotMaster,
     Therapist,
     TherapistAvailability,
@@ -556,6 +557,9 @@ class AppointmentRepository:
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
                 PatientSlotBooking.crt_program_booking_id,
+                CrtProgramBooking.due_amount.label("crt_due_amount"),
+                CrtProgramBooking.payment_status.label("crt_payment_status"),
+                CrtProgramBooking.fully_paid.label("crt_fully_paid"),
                 PatientSlotBooking.group_program_booking_id,
                 PatientSlotBooking.program_id,
                 PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
@@ -605,6 +609,10 @@ class AppointmentRepository:
             .outerjoin(
                 PlanPatient,
                 PlanPatient.id == PatientSessionPlan.patient_id
+            )
+            .outerjoin(
+                CrtProgramBooking,
+                CrtProgramBooking.id == PatientSlotBooking.crt_program_booking_id
             )
             .outerjoin(
                 PatientPackage,
@@ -671,6 +679,9 @@ class AppointmentRepository:
                 PatientSlotBooking.due_amount,
                 PatientSlotBooking.payment_status,
                 PatientSlotBooking.crt_program_booking_id,
+                CrtProgramBooking.due_amount.label("crt_due_amount"),
+                CrtProgramBooking.payment_status.label("crt_payment_status"),
+                CrtProgramBooking.fully_paid.label("crt_fully_paid"),
                 PatientSlotBooking.group_program_booking_id,
                 PatientSlotBooking.program_id,
                 PatientSlotBooking.duration_minutes.label("booking_duration_minutes"),
@@ -720,6 +731,10 @@ class AppointmentRepository:
             .outerjoin(
                 PlanPatient,
                 PlanPatient.id == PatientSessionPlan.patient_id
+            )
+            .outerjoin(
+                CrtProgramBooking,
+                CrtProgramBooking.id == PatientSlotBooking.crt_program_booking_id
             )
             .outerjoin(
                 PatientPackage,
