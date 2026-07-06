@@ -567,6 +567,13 @@ def _full_name(user: Optional[User]) -> str:
     return f"{user.first_name} {user.last_name}".strip()
 
 
+def _table_exists(db: Session, table_name: str) -> bool:
+    try:
+        return inspect(db.bind).has_table(table_name)
+    except Exception:
+        return False
+
+
 def _user_region_ids(db: Session, user: Optional[User]) -> list[int]:
     if not user:
         return []
@@ -1066,6 +1073,7 @@ def _patient_shape(patient: Patient) -> dict:
         "diagnosis": patient.diagnosis,
         "notes": patient.notes,
         "is_active": True,
+        "is_available": bool(patient.is_available),
         "region_id": patient.region_id,
         "created_at": _iso(patient.created_at),
         "updated_at": _iso(patient.updated_at),
@@ -1095,6 +1103,8 @@ def _enquiry_shape(enquiry: Enquiry) -> dict:
 def _therapist_shape(therapist: Therapist) -> dict:
     linked_user = getattr(therapist, "user", None)
     linked_name = _full_name(linked_user) if linked_user else None
+    leave = _therapist_leave_for_date(therapist, date.today())
+    on_full_day_leave = _leave_session_is_full_day(getattr(leave, "leave_session", None)) if leave else False
     return {
         "id": therapist.id,
         "user_id": therapist.user_id,
@@ -1104,7 +1114,11 @@ def _therapist_shape(therapist: Therapist) -> dict:
         "max_patients": 30,
         "region_id": therapist.region_id,
         "is_active": bool(therapist.is_active),
-        "is_available": True,
+        "is_available": bool(therapist.is_active) and not on_full_day_leave,
+        "availability_status": "leave" if leave else ("available" if therapist.is_active else "inactive"),
+        "leave_date": _iso(leave.leave_date) if leave else None,
+        "leave_session": leave.leave_session if leave else None,
+        "leave_reason": leave.reason if leave else None,
         "created_at": _iso(therapist.created_at),
         "updated_at": _iso(therapist.updated_at),
         "deleted_at": None,
@@ -1117,6 +1131,65 @@ def _therapist_shape(therapist: Therapist) -> dict:
         },
         "user": _user_shape_from_model(linked_user) if linked_user else None,
     }
+
+
+def _leave_session_is_full_day(leave_session: str | None) -> bool:
+    normalized = str(leave_session or "full_day").strip().lower().replace(" ", "_")
+    return normalized in {"full_day", "fullday", "full", "off_day", "offday", "leave"}
+
+
+def _therapist_leave_for_date(therapist: Therapist, leave_date: date) -> Optional[TherapistLeave]:
+    db = object_session(therapist)
+    if db is None:
+        return None
+    return (
+        db.query(TherapistLeave)
+        .filter(
+            TherapistLeave.therapist_id == therapist.id,
+            TherapistLeave.leave_date == leave_date,
+        )
+        .first()
+    )
+
+
+def _availability_status_requests_leave(status_value: str | None) -> bool:
+    normalized = str(status_value or "").strip().lower().replace(" ", "_")
+    return normalized in {"leave", "off_day", "offday", "full_day", "full"}
+
+
+def _sync_therapist_leave_from_availability(
+    db: Session,
+    therapist_id: int,
+    leave_date: date,
+    status_value: str | None,
+    notes: str | None,
+    user_id: Optional[int],
+) -> None:
+    existing = (
+        db.query(TherapistLeave)
+        .filter(
+            TherapistLeave.therapist_id == therapist_id,
+            TherapistLeave.leave_date == leave_date,
+        )
+        .first()
+    )
+    if _availability_status_requests_leave(status_value):
+        leave_session = "full_day"
+        if existing:
+            existing.leave_session = leave_session
+            existing.reason = notes
+            existing.updated_by = user_id
+            return
+        db.add(TherapistLeave(
+            therapist_id=therapist_id,
+            leave_date=leave_date,
+            leave_session=leave_session,
+            reason=notes,
+            created_by=user_id,
+            updated_by=user_id,
+        ))
+    elif existing:
+        db.delete(existing)
 
 
 def _minutes_between(start: Optional[time], end: Optional[time]) -> int:
@@ -1135,6 +1208,8 @@ def _availability_minutes(row: "TherapistAvailability") -> int:
 
 def _availability_shape(row: TherapistAvailability) -> dict:
     therapist = row.therapist
+    leave = _therapist_leave_for_date(therapist, row.availability_date) if therapist else None
+    status = "leave" if leave and _leave_session_is_full_day(leave.leave_session) else ("half" if leave else row.status)
     return {
         "id": row.id,
         "therapist_id": row.therapist_id,
@@ -1144,8 +1219,10 @@ def _availability_shape(row: TherapistAvailability) -> dict:
         "break_start": _iso(row.break_start),
         "break_end": _iso(row.break_end),
         "available_minutes": _availability_minutes(row),
-        "status": row.status,
-        "notes": row.notes,
+        "status": status,
+        "notes": leave.reason if leave and leave.reason else row.notes,
+        "leave_session": leave.leave_session if leave else None,
+        "leave_reason": leave.reason if leave else None,
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
         "deleted_at": _iso(row.deleted_at),
@@ -1165,6 +1242,29 @@ def _therapist_leave_shape(row: TherapistLeave) -> dict:
         "updated_at": _iso(row.updated_at),
         "created_by": row.created_by,
         "updated_by": row.updated_by,
+        "therapists": _therapist_shape(therapist) if therapist else None,
+    }
+
+
+def _therapist_leave_availability_shape(row: TherapistLeave) -> dict:
+    therapist = row.therapist
+    leave_session = row.leave_session or "full_day"
+    return {
+        "id": -int(row.id),
+        "therapist_id": row.therapist_id,
+        "availability_date": _iso(row.leave_date),
+        "start_time": "09:00:00",
+        "end_time": "17:00:00",
+        "break_start": None,
+        "break_end": None,
+        "available_minutes": 0,
+        "status": "half" if not _leave_session_is_full_day(leave_session) else "leave",
+        "notes": row.reason,
+        "leave_session": leave_session,
+        "leave_reason": row.reason,
+        "created_at": _iso(row.created_at),
+        "updated_at": _iso(row.updated_at),
+        "deleted_at": None,
         "therapists": _therapist_shape(therapist) if therapist else None,
     }
 
@@ -3199,7 +3299,12 @@ def _apply_order(query, table: str, order_by: Optional[str], ascending: bool):
         return query
     if table == "therapists" and order_by == "full_name":
         query = query.outerjoin(User, User.id == Therapist.user_id)
-        col = func.coalesce(User.full_name, Therapist.name, Therapist.full_name)
+        user_name = func.trim(func.concat(
+            func.coalesce(User.first_name, ""),
+            " ",
+            func.coalesce(User.last_name, ""),
+        ))
+        col = func.coalesce(func.nullif(user_name, ""), Therapist.name)
         return query.order_by(col.asc() if ascending else col.desc())
     col = _column_for(table, order_by)
     if col is None:
@@ -5788,6 +5893,22 @@ async def list_rows(
     parsed_filters = json.loads(filters or "[]")
     if table in {"alerts", "session_assignments", "waitlist_entries"}:
         return {"data": [], "count": 0 if count else None}
+    if table == "therapist_availability" and not _table_exists(db, "therapist_availability"):
+        leave_filters = []
+        for item in parsed_filters:
+            field = item.get("field")
+            leave_filters.append({
+                **item,
+                "field": "leave_date" if field == "availability_date" else field,
+            })
+        query = _base_query("therapist_leaves", db, user)
+        query = _apply_filters(query, "therapist_leaves", leave_filters)
+        total = query.count() if count else None
+        rows = query.order_by(TherapistLeave.therapist_id.asc(), TherapistLeave.leave_date.asc()).all()
+        data = [_therapist_leave_availability_shape(row) for row in rows]
+        if single:
+            return {"data": data[0] if data else None, "count": total}
+        return {"data": data, "count": total}
     if table in {"sessions", "patient_packages"}:
         _ensure_sessions_for_appointments(db, user)
     query = _base_query(table, db, user)
@@ -5812,6 +5933,38 @@ async def list_rows(
 async def create_rows(table: str, request: Request, payload: Any = Body(...), db: Session = Depends(get_db)):
     user = _current_user(request, db)
     items = payload if isinstance(payload, list) else [payload]
+    if table == "therapist_availability" and not _table_exists(db, "therapist_availability"):
+        user_id = user.id if user else None
+        created_rows = []
+        for item in items:
+            therapist_id = item.get("therapist_id")
+            current_therapist = _current_therapist(db, user)
+            if current_therapist:
+                therapist_id = current_therapist.id
+            if not therapist_id:
+                raise HTTPException(status_code=400, detail="therapist_id is required")
+            availability_date = _parse_date(item.get("availability_date")) or date.today()
+            _sync_therapist_leave_from_availability(
+                db,
+                int(therapist_id),
+                availability_date,
+                item.get("status") or "available",
+                item.get("notes"),
+                user_id,
+            )
+            row = (
+                db.query(TherapistLeave)
+                .filter(
+                    TherapistLeave.therapist_id == int(therapist_id),
+                    TherapistLeave.leave_date == availability_date,
+                )
+                .first()
+            )
+            if row:
+                created_rows.append(row)
+        db.commit()
+        data = [_therapist_leave_availability_shape(row) for row in created_rows]
+        return {"data": data[0] if len(data) == 1 else data}
     created = []
     for item in items:
         created.append(_create_one(table, item, db, user))
@@ -5826,6 +5979,32 @@ async def update_rows(table: str, request: Request, payload: dict = Body(...), f
 
     user = _current_user(request, db)
     parsed_filters = json.loads(filters or "[]")
+    if table == "therapist_availability" and not _table_exists(db, "therapist_availability"):
+        leave_filters = []
+        for item in parsed_filters:
+            field = item.get("field")
+            value = item.get("value")
+            if field == "id" and isinstance(value, int) and value < 0:
+                value = abs(value)
+            leave_filters.append({
+                **item,
+                "field": "leave_date" if field == "availability_date" else field,
+                "value": value,
+            })
+        query = _apply_filters(_base_query("therapist_leaves", db, user), "therapist_leaves", leave_filters)
+        rows = query.all()
+        if _availability_status_requests_leave(payload.get("status")):
+            for row in rows:
+                row.leave_session = "full_day"
+                row.reason = payload.get("notes", row.reason)
+                row.updated_by = user.id if user else None
+        else:
+            for row in rows:
+                db.delete(row)
+            rows = []
+        db.commit()
+        data = [_therapist_leave_availability_shape(row) for row in rows]
+        return {"data": data[0] if len(data) == 1 else data}
     query = _apply_filters(_base_query(table, db, user), table, parsed_filters)
     rows = query.all()
     for row in rows:
@@ -5886,6 +6065,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             referred_by=item.get("referred_by"),
             registration_at=_parse_dt(item.get("registration_at")) if item.get("registration_at") else _now(),
             clinical_observation=item.get("clinical_observation"),
+            is_available=item.get("is_available", True),
             region_id=region_id,
         )
     elif table == "enquiries":
@@ -6045,15 +6225,25 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             therapist_id = current_therapist.id
         if not therapist_id:
             raise HTTPException(status_code=400, detail="therapist_id is required")
+        availability_date = _parse_date(item.get("availability_date")) or date.today()
+        status_value = item.get("status") or "available"
         row = TherapistAvailability(
             therapist_id=therapist_id,
-            availability_date=_parse_date(item.get("availability_date")) or date.today(),
+            availability_date=availability_date,
             start_time=_parse_time(item.get("start_time")) or time(9, 0),
             end_time=_parse_time(item.get("end_time")) or time(17, 0),
             break_start=_parse_time(item.get("break_start")),
             break_end=_parse_time(item.get("break_end")),
-            status=item.get("status") or "available",
+            status=status_value,
             notes=item.get("notes"),
+        )
+        _sync_therapist_leave_from_availability(
+            db,
+            int(therapist_id),
+            availability_date,
+            status_value,
+            item.get("notes"),
+            user_id,
         )
     elif table == "therapist_leaves":
         therapist_id = item.get("therapist_id")
@@ -6215,6 +6405,7 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
             "emergency_contact": "alternate_contact",
             "emergency_phone": "emergency_phone",
             "referred_by": "referred_by",
+            "is_available": "is_available",
         }.items():
             if key in item:
                 setattr(row, attr, item[key])
@@ -6273,6 +6464,14 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
         for key in ["status", "notes"]:
             if key in item:
                 setattr(row, key, item[key])
+        _sync_therapist_leave_from_availability(
+            db,
+            int(row.therapist_id),
+            row.availability_date,
+            row.status,
+            row.notes,
+            user.id if user else None,
+        )
     elif table == "therapist_leaves":
         if "leave_date" in item:
             row.leave_date = _parse_date(item["leave_date"]) or row.leave_date
