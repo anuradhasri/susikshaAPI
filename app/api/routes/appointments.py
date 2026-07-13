@@ -27,6 +27,10 @@ def _is_front_office_role(roles: set[str]) -> bool:
     return bool(roles & {"admin", "front_office", "frontoffice", "front_officer"})
 
 
+def _is_therapist_scoped_role(roles: set[str]) -> bool:
+    return bool(roles & {"therapist", "assessment_session", "assessment_viewer_session"})
+
+
 def _user_region_ids(current_user: User) -> list[int]:
     region_ids = getattr(current_user, "region_ids", None)
     if region_ids is None:
@@ -137,7 +141,8 @@ async def get_programs(
     )
 
     try:
-        AppointmentService._ensure_program_schema(db)
+        AppointmentService._ensure_program_schema(db, force_seed=True)
+
         region_ids = [region_id] if region_id else _user_region_ids(current_user)
         if isinstance(region_ids, int):
             region_ids = [region_ids]
@@ -150,43 +155,6 @@ async def get_programs(
             query = query.filter(Program.region_id.in_(region_ids))
 
         programs = query.order_by(Program.program_name.asc(), Program.id.asc()).all()
-        order = {
-            "general": 0,
-            "crt": 1,
-            "crt (structured program)": 1,
-            "vocational": 2,
-            "vocational program": 2,
-            "social group": 3,
-            "social skills program": 3,
-            "parent training program: prewriting skills": 4,
-            "parent training program: toilet training": 5,
-            "parent training program: prewriting skills: toilet training": 5,
-            "parent training program: peg": 6,
-            "peg": 6,
-            "schooling": 7,
-        }
-        def canonical_program_name(name: str) -> str:
-            normalized = name.strip().lower()
-            if "peg" in normalized:
-                return "parent training program: peg"
-            if "toilet" in normalized:
-                return "parent training program: toilet training"
-            if "parent training" in normalized and ("prewriting" in normalized or "prewritting" in normalized):
-                return "parent training program: prewriting skills"
-            return normalized
-
-        deduped_programs = {}
-        for program in sorted(
-            programs,
-            key=lambda item: (
-                order.get(item.program_name.strip().lower(), 99),
-                item.program_name.lower(),
-                item.region_id,
-                item.id,
-            ),
-        ):
-            deduped_programs.setdefault(canonical_program_name(program.program_name), program)
-        programs = list(deduped_programs.values())
         segment_rows = (
             db.query(ProgramSegment)
             .filter(
@@ -826,7 +794,7 @@ async def get_appointment_calendar(
                 region_ids=[region_id] if region_id else _user_region_ids(current_user)
             )
 
-        if "therapist" in roles and not _is_front_office_role(roles):
+        if _is_therapist_scoped_role(roles) and not _is_front_office_role(roles):
             response = _filter_calendar_to_therapists(response, _therapist_ids_for_user(db, current_user))
 
         logger.info(

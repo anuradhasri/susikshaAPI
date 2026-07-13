@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,7 +28,7 @@ from app.models.models import (
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["assessments"])
 ASSESSMENT_ADMIN_ROLES = {"admin", "frontoffice", "front_office", "front_officer"}
-ASSESSMENT_CENTRAL_HEAD_ROLES = {"central_head"}
+ASSESSMENT_CENTRAL_HEAD_ROLES = {"central_head", "centralhead", "centre_head", "centrehead"}
 
 
 class AnswerPayload(BaseModel):
@@ -186,7 +187,7 @@ def _has_assessment_admin_access(db: Session, user_id: int) -> bool:
 
 def _normalized_role_names(db: Session, user_id: int) -> set[str]:
     return {
-        str(row.name or "").strip().lower().replace(" ", "_")
+        re.sub(r"[^a-z0-9]+", "_", str(row.name or "").strip().lower()).strip("_")
         for row in (
             db.query(Role.name)
             .join(UserRole, UserRole.role_id == Role.id)
@@ -304,9 +305,6 @@ def get_child_assessments(
     if not patient:
         raise HTTPException(status_code=404, detail="Child not found")
 
-    _ensure_assessment_billing_schema(db)
-    _ensure_default_assessments(db)
-
     answers = {
         answer.question_id: answer.answer_value
         for answer in db.query(ChildAssessmentAnswer)
@@ -353,6 +351,8 @@ def get_child_assessments(
         questions_by_assessment.setdefault(question.assessment_id, []).append(question)
 
     data = []
+    roles = _normalized_role_names(db, current_user.id)
+    can_edit_completed = bool(roles & ASSESSMENT_CENTRAL_HEAD_ROLES)
     for assessment in assessments:
         patient_assessment = patient_assessments.get(assessment.id)
         status = patient_assessment.status if patient_assessment else "PENDING"
@@ -367,7 +367,7 @@ def get_child_assessments(
                 "status": status,
                 "completed_date": patient_assessment.completed_date.isoformat() if patient_assessment and patient_assessment.completed_date else None,
                 "can_view": True,
-                "can_edit": _can_edit_assessment_for_user(db, current_user, assessment.id) and status != "COMPLETED",
+                "can_edit": _can_edit_assessment_for_user(db, current_user, assessment.id) and (status != "COMPLETED" or can_edit_completed),
                 "questions": [
                     {
                         "id": question.id,
@@ -424,7 +424,9 @@ def save_child_assessment_answers(
         )
         .first()
     )
-    if patient_assessment and patient_assessment.status == "COMPLETED":
+    roles = _normalized_role_names(db, current_user.id)
+    can_edit_completed = bool(roles & ASSESSMENT_CENTRAL_HEAD_ROLES)
+    if patient_assessment and patient_assessment.status == "COMPLETED" and not can_edit_completed:
         raise HTTPException(status_code=400, detail="Completed assessment cannot be edited")
 
     question_ids = [answer.question_id for answer in payload.answers]
@@ -466,7 +468,8 @@ def save_child_assessment_answers(
 
     in_progress_status_id = MASTER_LOOKUP_DATA["patient_assessment"]["IN_PROGRESS"]
     if patient_assessment:
-        patient_assessment.status_id = in_progress_status_id
+        if patient_assessment.status != "COMPLETED" or not can_edit_completed:
+            patient_assessment.status_id = in_progress_status_id
         patient_assessment.updated_by = current_user.id
     else:
         db.add(

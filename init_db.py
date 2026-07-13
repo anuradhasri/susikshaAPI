@@ -484,13 +484,22 @@ def _ensure_program_table(db: Session):
             db.execute(text(f"ALTER TABLE programs ADD COLUMN {column_name} {definition}"))
 
     db.execute(text("""
-        INSERT INTO programs (region_id, program_name, per_session_amount, is_active)
-        SELECT r.id, 'General', 1200, 1
+        INSERT INTO programs (region_id, program_name, per_session_amount, duration_minutes, capacity, session_type, is_active)
+        SELECT r.id, program_seed.program_name, program_seed.per_session_amount, program_seed.duration_minutes, program_seed.capacity, program_seed.session_type, 1
         FROM regions r
+        JOIN (
+            SELECT 'General' AS program_name, 1200 AS per_session_amount, 45 AS duration_minutes, 1 AS capacity, 'individual' AS session_type
+            UNION ALL SELECT 'Academic Intervention', 1200, 45, 1, 'individual'
+            UNION ALL SELECT 'Sushiksha Online', 1200, 45, 1, 'individual'
+        ) AS program_seed
         WHERE r.deleted_at IS NULL
         ON DUPLICATE KEY UPDATE
             is_active = VALUES(is_active),
-            per_session_amount = programs.per_session_amount
+            per_session_amount = VALUES(per_session_amount),
+            duration_minutes = VALUES(duration_minutes),
+            capacity = VALUES(capacity),
+            session_type = VALUES(session_type),
+            deleted_at = NULL
     """))
     db.commit()
 

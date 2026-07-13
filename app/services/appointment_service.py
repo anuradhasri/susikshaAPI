@@ -442,8 +442,8 @@ class AppointmentService:
         return group_booking
 
     @staticmethod
-    def _ensure_program_schema(db: Session) -> None:
-        if AppointmentService._PROGRAM_SCHEMA_READY:
+    def _ensure_program_schema(db: Session, force_seed: bool = False) -> None:
+        if AppointmentService._PROGRAM_SCHEMA_READY and not force_seed:
             return
 
         inspector = inspect(db.bind)
@@ -490,6 +490,8 @@ class AppointmentService:
             FROM regions r
             JOIN (
                 SELECT 'General' AS program_name, 1200 AS per_session_amount, 45 AS duration_minutes, 1 AS capacity, 'individual' AS session_type
+                UNION ALL SELECT 'Academic Intervention', 1200, 45, 1, 'individual'
+                UNION ALL SELECT 'Sushiksha Online', 1200, 45, 1, 'individual'
                 UNION ALL SELECT 'CRT', 1800, 120, 1, 'structured'
                 UNION ALL SELECT 'Vocational', 1200, 45, 10, 'group'
                 UNION ALL SELECT 'Social Group', 1200, 45, 8, 'group'
@@ -504,7 +506,8 @@ class AppointmentService:
                 per_session_amount = VALUES(per_session_amount),
                 duration_minutes = VALUES(duration_minutes),
                 capacity = VALUES(capacity),
-                session_type = VALUES(session_type)
+                session_type = VALUES(session_type),
+                deleted_at = NULL
         """))
         inspector = inspect(db.bind)
         if not inspector.has_table("program_segments"):
@@ -799,12 +802,16 @@ class AppointmentService:
             return
 
         completed_status_id = AppointmentService.PATIENT_SLOT_BOOKING_COMPLETED_ID
+        billable_status_ids = [
+            completed_status_id,
+            AppointmentService.PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
+        ]
         all_slot_bookings = (
             db.query(PatientSlotBooking)
             .filter(
                 PatientSlotBooking.patient_package_id == patient_package.id,
                 PatientSlotBooking.is_package_session.is_(True),
-                PatientSlotBooking.status_id != AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+                PatientSlotBooking.status_id.in_(billable_status_ids),
             )
             .order_by(PatientSlotBooking.created_at.asc(), PatientSlotBooking.id.asc())
             .all()
@@ -1011,18 +1018,19 @@ class AppointmentService:
         for patient_id, due_amount in crt_due_rows:
             buckets[int(patient_id)]["session_due_amount"] += float(due_amount or 0)
 
-        package_due_rows = (
-            db.query(PatientPackage.patient_id, func.coalesce(func.sum(PatientPackage.due_amount), 0))
+        package_rows = (
+            db.query(PatientPackage)
             .filter(
                 PatientPackage.patient_id.in_(patient_id_values),
                 PatientPackage.deleted_at.is_(None),
-                PatientPackage.due_amount > 0,
             )
-            .group_by(PatientPackage.patient_id)
             .all()
         )
-        for patient_id, due_amount in package_due_rows:
-            buckets[int(patient_id)]["package_due_amount"] = float(due_amount or 0)
+        for patient_package in package_rows:
+            AppointmentService._recalculate_package_slot_payments(db, patient_package)
+            due_amount = max(0, float(patient_package.due_amount or 0))
+            if due_amount > 0:
+                buckets[int(patient_package.patient_id)]["package_due_amount"] += due_amount
 
         assessment_due_rows = (
             db.query(PatientAssessmentBilling.patient_id, func.coalesce(func.sum(PatientAssessmentBilling.due_amount), 0))
@@ -1148,6 +1156,14 @@ class AppointmentService:
                 rows_without_crt.append(slot_booking)
         utilized = sum(AppointmentService._slot_booking_amount(slot_booking) for slot_booking in [*rows_by_crt_parent.values(), *rows_without_crt])
         return utilized - float(patient_package.paid_amount or 0)
+
+    @staticmethod
+    def _sync_patient_package_completion_status(patient_package: PatientPackage | None) -> None:
+        if not patient_package:
+            return
+        sessions_remaining = int(patient_package.sessions_remaining or 0)
+        due_amount = float(patient_package.due_amount or 0)
+        patient_package.status = "completed" if sessions_remaining <= 0 and due_amount <= 0 else "active"
 
     @staticmethod
     def _latest_package_payment_due(db: Session, patient_package: PatientPackage | None) -> float | None:
@@ -1995,14 +2011,6 @@ class AppointmentService:
 
         if plan_item:
             plan_item.assigned_sessions = assigned_sessions + 1
-        consume_package_session = program_type != "crt" or bool(getattr(booking_create, "is_primary", True))
-        if active_package and consume_package_session:
-            active_package.sessions_completed = (active_package.sessions_completed or 0) + 1
-            active_package.sessions_remaining = max(0, (active_package.sessions_remaining or 0) - 1)
-            if active_package.sessions_remaining == 0:
-                active_package.status = "completed"
-        if active_package:
-            AppointmentService._recalculate_package_slot_payments(db, active_package)
         if commit:
             db.commit()
             db.refresh(patient_slot_booking)
@@ -2032,27 +2040,43 @@ class AppointmentService:
             key = (group_id, patient_id)
             current = payment_state_by_group_child.get(key)
             slot_amount = float(slot.get("amount") or 0)
-            slot_paid = float(slot.get("paid_amount") or 0)
             slot_due = float(slot.get("due_amount") or 0)
+            slot_paid = float(slot.get("paid_amount") or 0) + float(slot.get("package_covered_amount") or 0)
             current_due = float(slot.get("current_due_amount", slot_due) or 0)
-            current_fully_paid = bool(slot.get("current_fully_paid")) or (
-                str(slot.get("payment_status") or "").upper() in {"PAID", "PACKAGE_COVERED"}
-                and current_due <= 0
-            )
-            if current is None or slot_amount > float(current.get("amount") or 0):
+            if current is None:
                 payment_state_by_group_child[key] = {
                     "amount": slot_amount,
                     "paid_amount": slot_paid,
-                    "due_amount": slot_due,
+                    "due_amount": max(0, slot_amount - slot_paid),
                     "current_due_amount": current_due,
-                    "current_fully_paid": current_fully_paid,
+                    "current_fully_paid": False,
                     "payment_status": slot.get("payment_status"),
-                    "fully_paid": current_fully_paid,
+                    "fully_paid": False,
                     "patient_slot_booking_id": slot.get("patient_slot_booking_id"),
                     "patient_package_id": slot.get("patient_package_id"),
                     "is_package_session": slot.get("is_package_session"),
                     "package_name": slot.get("package_name"),
                 }
+                current = payment_state_by_group_child[key]
+            else:
+                current["amount"] = max(float(current.get("amount") or 0), slot_amount)
+                current["paid_amount"] = float(current.get("paid_amount") or 0) + slot_paid
+                current["due_amount"] = max(0, float(current.get("amount") or 0) - float(current.get("paid_amount") or 0))
+                current["current_due_amount"] = min(float(current.get("current_due_amount") or 0), current_due)
+                if not current.get("patient_slot_booking_id") and slot.get("patient_slot_booking_id"):
+                    current["patient_slot_booking_id"] = slot.get("patient_slot_booking_id")
+                current["patient_package_id"] = current.get("patient_package_id") or slot.get("patient_package_id")
+                current["is_package_session"] = current.get("is_package_session") or slot.get("is_package_session")
+                current["package_name"] = current.get("package_name") or slot.get("package_name")
+
+            current_amount = float(current.get("amount") or 0)
+            current_paid = float(current.get("paid_amount") or 0)
+            fully_paid = current_amount > 0 and current_paid >= current_amount
+            current["due_amount"] = max(0, current_amount - current_paid)
+            current["current_due_amount"] = current["due_amount"]
+            current["current_fully_paid"] = fully_paid
+            current["fully_paid"] = fully_paid
+            current["payment_status"] = "PAID" if fully_paid else "UNPAID"
         passthrough = []
         for slot in slots:
             if slot.get("patient_slot_booking_id"):
@@ -2487,20 +2511,24 @@ class AppointmentService:
             child_session_due = float(due_buckets.get("session_due_amount", 0) or 0)
             child_package_due = float(due_buckets.get("package_due_amount", 0) or 0)
             child_assessment_due = float(due_buckets.get("assessment_due_amount", 0) or 0)
-            slot_amount = float(row.amount or (row.program_per_session_amount if program_type == "crt" and row.patient_slot_booking_id else 0) or 0)
+            is_crt_booking = bool(row.crt_program_booking_id)
+            slot_amount = float((row.crt_total_amount if is_crt_booking else row.amount) or (row.program_per_session_amount if program_type == "crt" and row.patient_slot_booking_id else 0) or 0)
+            slot_paid_amount = float((row.crt_paid_amount if is_crt_booking else row.paid_amount) or 0)
+            slot_due_amount = float((row.crt_due_amount if is_crt_booking else row.due_amount) or 0)
+            slot_package_covered_amount = float((row.crt_package_covered_amount if is_crt_booking else getattr(row, "package_covered_amount", 0)) or 0)
             current_payment_state = AppointmentService._slot_current_payment_state(
                 db,
                 row.patient_slot_booking_id,
                 row.crt_program_booking_id,
                 slot_amount,
-                float((row.crt_due_amount if row.crt_program_booking_id else row.due_amount) or 0),
-                row.crt_payment_status if row.crt_program_booking_id else row.payment_status,
+                slot_due_amount,
+                row.crt_payment_status if is_crt_booking else row.payment_status,
             )
-            if row.crt_program_booking_id and bool(getattr(row, "crt_fully_paid", False)):
+            if is_crt_booking and bool(getattr(row, "crt_fully_paid", False)):
                 current_payment_state = {
                     "current_due_amount": 0.0,
                     "current_fully_paid": True,
-                    "current_paid_amount": float(row.paid_amount or 0),
+                    "current_paid_amount": slot_paid_amount,
                 }
 
             therapist_map[therapist_id]["slots"].append({
@@ -2509,8 +2537,8 @@ class AppointmentService:
                 "therapist_name": therapist_name,
                 "patient_slot_booking_id": row.patient_slot_booking_id,
                 "crt_program_booking_id": row.crt_program_booking_id,
-                "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if row.crt_program_booking_id else False,
-                "crt_payment_status": row.crt_payment_status if row.crt_program_booking_id else None,
+                "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if is_crt_booking else False,
+                "crt_payment_status": row.crt_payment_status if is_crt_booking else None,
                 "group_program_booking_id": row.group_program_booking_id,
                 "slot_id": row.slot_id,
                 "slot_date": str(selected_date),
@@ -2545,12 +2573,14 @@ class AppointmentService:
                 "child_assessment_due_amount": child_assessment_due,
                 "package_payment_status": row.package_payment_status,
                 "amount": slot_amount,
-                "paid_amount": float(row.paid_amount or 0),
-                "due_amount": float(row.due_amount or 0),
+                "paid_amount": slot_paid_amount,
+                "due_amount": slot_due_amount,
+                "package_covered_amount": slot_package_covered_amount,
                 "current_due_amount": current_payment_state["current_due_amount"],
                 "current_fully_paid": current_payment_state["current_fully_paid"],
-                "fully_paid": bool(current_payment_state["current_fully_paid"]),
-                "payment_status": row.crt_payment_status if row.crt_program_booking_id else row.payment_status,
+                "is_fully_paid": bool(getattr(row, "fully_paid", False)),
+                "fully_paid": bool(getattr(row, "fully_paid", False)) if not is_crt_booking else bool(current_payment_state["current_fully_paid"]),
+                "payment_status": row.crt_payment_status if is_crt_booking else row.payment_status,
                 "program_id": row.program_id,
                 "program_name": row.program_name,
                 "program_type": program_type,
@@ -2564,21 +2594,23 @@ class AppointmentService:
                     "patient_code": f"CP-{patient_id}",
                     "patient_slot_booking_id": row.patient_slot_booking_id,
                     "crt_program_booking_id": row.crt_program_booking_id,
-                    "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if row.crt_program_booking_id else False,
-                    "crt_payment_status": row.crt_payment_status if row.crt_program_booking_id else None,
+                    "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if is_crt_booking else False,
+                    "crt_payment_status": row.crt_payment_status if is_crt_booking else None,
                     "group_program_booking_id": row.group_program_booking_id,
                     "patient_session_plan_id": row.patient_session_plan_id,
                     "patient_phone": patient_phone,
                     "amount": slot_amount,
-                    "paid_amount": float(row.paid_amount or 0),
-                    "due_amount": float(row.due_amount or 0),
+                    "paid_amount": slot_paid_amount,
+                    "due_amount": slot_due_amount,
+                    "package_covered_amount": slot_package_covered_amount,
                     "current_due_amount": current_payment_state["current_due_amount"],
                     "current_fully_paid": current_payment_state["current_fully_paid"],
+                    "is_fully_paid": bool(getattr(row, "fully_paid", False)),
                     "child_session_due_amount": child_session_due,
                     "child_package_due_amount": child_package_due,
                     "child_assessment_due_amount": child_assessment_due,
-                    "fully_paid": bool(current_payment_state["current_fully_paid"]),
-                    "payment_status": row.crt_payment_status if row.crt_program_booking_id else row.payment_status,
+                    "fully_paid": bool(getattr(row, "fully_paid", False)) if not is_crt_booking else bool(current_payment_state["current_fully_paid"]),
+                    "payment_status": row.crt_payment_status if is_crt_booking else row.payment_status,
                     "status": STATUS_ID_TO_CODE["patient_slot_booking"].get(row.patient_slot_booking_status_id),
                     "patient_package_id": row.patient_package_id,
                     "is_package_session": bool(row.is_package_session),
@@ -2747,20 +2779,24 @@ class AppointmentService:
             child_session_due = float(due_buckets.get("session_due_amount", 0) or 0)
             child_package_due = float(due_buckets.get("package_due_amount", 0) or 0)
             child_assessment_due = float(due_buckets.get("assessment_due_amount", 0) or 0)
-            slot_amount = float(row.amount or (row.program_per_session_amount if program_type == "crt" and row.patient_slot_booking_id else 0) or 0)
+            is_crt_booking = bool(row.crt_program_booking_id)
+            slot_amount = float((row.crt_total_amount if is_crt_booking else row.amount) or (row.program_per_session_amount if program_type == "crt" and row.patient_slot_booking_id else 0) or 0)
+            slot_paid_amount = float((row.crt_paid_amount if is_crt_booking else row.paid_amount) or 0)
+            slot_due_amount = float((row.crt_due_amount if is_crt_booking else row.due_amount) or 0)
+            slot_package_covered_amount = float((row.crt_package_covered_amount if is_crt_booking else getattr(row, "package_covered_amount", 0)) or 0)
             current_payment_state = AppointmentService._slot_current_payment_state(
                 db,
                 row.patient_slot_booking_id,
                 row.crt_program_booking_id,
                 slot_amount,
-                float((row.crt_due_amount if row.crt_program_booking_id else row.due_amount) or 0),
-                row.crt_payment_status if row.crt_program_booking_id else row.payment_status,
+                slot_due_amount,
+                row.crt_payment_status if is_crt_booking else row.payment_status,
             )
-            if row.crt_program_booking_id and bool(getattr(row, "crt_fully_paid", False)):
+            if is_crt_booking and bool(getattr(row, "crt_fully_paid", False)):
                 current_payment_state = {
                     "current_due_amount": 0.0,
                     "current_fully_paid": True,
-                    "current_paid_amount": float(row.paid_amount or 0),
+                    "current_paid_amount": slot_paid_amount,
                 }
 
             therapist_map[therapist_id]["slots"].append({
@@ -2769,8 +2805,8 @@ class AppointmentService:
                 "therapist_name": row.therapist_name,
                 "patient_slot_booking_id": row.patient_slot_booking_id,
                 "crt_program_booking_id": row.crt_program_booking_id,
-                "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if row.crt_program_booking_id else False,
-                "crt_payment_status": row.crt_payment_status if row.crt_program_booking_id else None,
+                "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if is_crt_booking else False,
+                "crt_payment_status": row.crt_payment_status if is_crt_booking else None,
                 "group_program_booking_id": row.group_program_booking_id,
                 "slot_id": row.slot_id,
                 "slot_date": str(slot_date),
@@ -2805,12 +2841,14 @@ class AppointmentService:
                 "child_assessment_due_amount": child_assessment_due,
                 "package_payment_status": row.package_payment_status,
                 "amount": slot_amount,
-                "paid_amount": float(row.paid_amount or 0),
-                "due_amount": float(row.due_amount or 0),
+                "paid_amount": slot_paid_amount,
+                "due_amount": slot_due_amount,
+                "package_covered_amount": slot_package_covered_amount,
                 "current_due_amount": current_payment_state["current_due_amount"],
                 "current_fully_paid": current_payment_state["current_fully_paid"],
-                "fully_paid": bool(current_payment_state["current_fully_paid"]),
-                "payment_status": row.crt_payment_status if row.crt_program_booking_id else row.payment_status,
+                "is_fully_paid": bool(getattr(row, "fully_paid", False)),
+                "fully_paid": bool(getattr(row, "fully_paid", False)) if not is_crt_booking else bool(current_payment_state["current_fully_paid"]),
+                "payment_status": row.crt_payment_status if is_crt_booking else row.payment_status,
                 "program_id": row.program_id,
                 "program_name": row.program_name,
                 "program_type": program_type,
@@ -2824,21 +2862,23 @@ class AppointmentService:
                     "patient_code": f"CP-{patient_id}",
                     "patient_slot_booking_id": row.patient_slot_booking_id,
                     "crt_program_booking_id": row.crt_program_booking_id,
-                    "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if row.crt_program_booking_id else False,
-                    "crt_payment_status": row.crt_payment_status if row.crt_program_booking_id else None,
+                    "crt_fully_paid": bool(getattr(row, "crt_fully_paid", False)) if is_crt_booking else False,
+                    "crt_payment_status": row.crt_payment_status if is_crt_booking else None,
                     "group_program_booking_id": row.group_program_booking_id,
                     "patient_session_plan_id": row.patient_session_plan_id,
                     "patient_phone": patient_phone,
                     "amount": slot_amount,
-                    "paid_amount": float(row.paid_amount or 0),
-                    "due_amount": float(row.due_amount or 0),
+                    "paid_amount": slot_paid_amount,
+                    "due_amount": slot_due_amount,
+                    "package_covered_amount": slot_package_covered_amount,
                     "current_due_amount": current_payment_state["current_due_amount"],
                     "current_fully_paid": current_payment_state["current_fully_paid"],
+                    "is_fully_paid": bool(getattr(row, "fully_paid", False)),
                     "child_session_due_amount": child_session_due,
                     "child_package_due_amount": child_package_due,
                     "child_assessment_due_amount": child_assessment_due,
-                    "fully_paid": bool(current_payment_state["current_fully_paid"]),
-                    "payment_status": row.crt_payment_status if row.crt_program_booking_id else row.payment_status,
+                    "fully_paid": bool(getattr(row, "fully_paid", False)) if not is_crt_booking else bool(current_payment_state["current_fully_paid"]),
+                    "payment_status": row.crt_payment_status if is_crt_booking else row.payment_status,
                     "status": STATUS_ID_TO_CODE["patient_slot_booking"].get(row.patient_slot_booking_status_id),
                     "patient_package_id": row.patient_package_id,
                     "is_package_session": bool(row.is_package_session),
@@ -3002,6 +3042,12 @@ class AppointmentService:
         therapist_slot_mapping = patient_slot_booking.therapist_slot_mapping
         plan_item = patient_slot_booking.patient_session_plan_item
         package = patient_slot_booking.patient_package
+        same_package_completed_sibling = any(
+            sibling.patient_package_id == patient_slot_booking.patient_package_id
+            and bool(sibling.is_package_session)
+            and str(sibling.status or "").upper() == "COMPLETED"
+            for sibling in sibling_slot_bookings
+        )
 
         if current_status in {"UNPAID_CANCELLED", "PAID_CANCELLED"}:
             raise ValueError("Slot booking already cancelled")
@@ -3023,6 +3069,10 @@ class AppointmentService:
                 if assigned_sessions > 0:
                     plan_item.assigned_sessions = assigned_sessions - 1
                 plan_item.completed_sessions = completed_sessions + 1
+            if package and patient_slot_booking.is_package_session and not same_package_completed_sibling:
+                package.sessions_completed = (package.sessions_completed or 0) + 1
+                package.sessions_remaining = max(0, (package.sessions_remaining or 0) - 1)
+                AppointmentService._sync_patient_package_completion_status(package)
         else:
             normalized_cancel_type = str(cancel_type or "unpaid").strip().lower()
             patient_slot_booking.status = "PAID_CANCELLED" if normalized_cancel_type == "paid" else "UNPAID_CANCELLED"
@@ -3033,11 +3083,16 @@ class AppointmentService:
                 patient_slot_booking,
                 target_status=patient_slot_booking.status,
             )
-            if package and patient_slot_booking.is_package_session:
+            remaining_completed_package_sibling = any(
+                sibling.patient_package_id == patient_slot_booking.patient_package_id
+                and bool(sibling.is_package_session)
+                and str(sibling.status or "").upper() == "COMPLETED"
+                for sibling in sibling_slot_bookings
+            )
+            if package and patient_slot_booking.is_package_session and current_status == "COMPLETED" and not remaining_completed_package_sibling:
                 package.sessions_completed = max(0, (package.sessions_completed or 0) - 1)
                 package.sessions_remaining = (package.sessions_remaining or 0) + 1
-                if package.status == "completed":
-                    package.status = "active"
+                AppointmentService._sync_patient_package_completion_status(package)
             if therapist_slot_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
                 db,
                 therapist_slot_mapping.id,
@@ -3200,6 +3255,7 @@ class AppointmentService:
                     latest_payment.due_amount = latest_due
                     if "Marked as fully paid" not in str(getattr(latest_payment, "payment_note", "") or ""):
                         latest_payment.fully_paid = False
+            AppointmentService._sync_patient_package_completion_status(package)
 
         AppointmentService._mirror_linked_program_slot_payment_state(
             patient_slot_booking,

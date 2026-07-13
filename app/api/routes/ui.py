@@ -561,6 +561,13 @@ def _iso(value: Any) -> Any:
     return value
 
 
+def _time_with_duration(start: Optional[time], duration_minutes: Optional[int]) -> Optional[time]:
+    if not start or not duration_minutes:
+        return None
+    base = datetime.combine(date.today(), start) + timedelta(minutes=int(duration_minutes))
+    return base.time()
+
+
 def _full_name(user: Optional[User]) -> str:
     if not user:
         return "Unknown"
@@ -884,7 +891,6 @@ def _ensure_rbac_tables(db: Session) -> None:
 
 
 def _permission_shape(db: Session, user: User) -> dict:
-    _ensure_rbac_tables(db)
     rows = db.execute(text("""
         SELECT
             resource.code,
@@ -911,8 +917,8 @@ def _permission_shape(db: Session, user: User) -> dict:
     }
 
 
-def _assessment_permission_shape(db: Session, user: User) -> dict:
-    permissions = _permission_shape(db, user)
+def _assessment_permission_shape(db: Session, user: User, permissions: Optional[dict] = None) -> dict:
+    permissions = permissions if permissions is not None else _permission_shape(db, user)
     role_names = _user_roles(db, user)
     can_view_assessment = permissions.get("child.tab.assessment", {}).get("view", False)
     can_edit_assessment = permissions.get("assessment.action.complete", {}).get("edit", False)
@@ -966,7 +972,7 @@ def _user_shape(user: User, db: Session) -> dict:
             if ur.deleted_at is None and ur.role and ur.role.deleted_at is None
         ],
         "permissions": permissions,
-        "assessment_permissions": _assessment_permission_shape(db, user),
+        "assessment_permissions": _assessment_permission_shape(db, user, permissions),
     }
 
 
@@ -1008,6 +1014,10 @@ def _user_roles(db: Session, user: Optional[User]) -> set[str]:
             .all()
         )
     }
+
+
+def _is_therapist_scoped_role(roles: set[str]) -> bool:
+    return bool(roles & {"therapist", "assessment_session", "assessment_viewer_session"})
 
 
 def _current_therapist(db: Session, user: Optional[User]) -> Optional[Therapist]:
@@ -1105,10 +1115,17 @@ def _therapist_shape(therapist: Therapist) -> dict:
     linked_name = _full_name(linked_user) if linked_user else None
     leave = _therapist_leave_for_date(therapist, date.today())
     on_full_day_leave = _leave_session_is_full_day(getattr(leave, "leave_session", None)) if leave else False
+    active_therapy_names = [
+        mapping.therapy.name
+        for mapping in (getattr(therapist, "therapy_mappings", None) or [])
+        if getattr(mapping, "is_active", False) and getattr(mapping, "therapy", None)
+    ]
     return {
         "id": therapist.id,
         "user_id": therapist.user_id,
-        "specialization": therapist.qualification,
+        "name": therapist.name,
+        "specialization": ", ".join(active_therapy_names) or None,
+        "qualification": therapist.qualification,
         "license_number": None,
         "bio": therapist.qualification,
         "max_patients": 30,
@@ -1125,7 +1142,7 @@ def _therapist_shape(therapist: Therapist) -> dict:
         "created_by": therapist.created_by,
         "updated_by": therapist.updated_by,
         "users": {
-            "full_name": linked_name or therapist.name,
+            "full_name": therapist.name or linked_name,
             "email": linked_user.email if linked_user else None,
             "phone": linked_user.phone if linked_user else None,
         },
@@ -1379,7 +1396,6 @@ def _package_session_stats(patient_package: PatientPackage) -> dict:
 
 
 def _today_unpaid_completed_slot_query(db: Session, patient_id: int):
-    _ensure_package_billing_schema(db)
     return (
         db.query(PatientSlotBooking)
         .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
@@ -1414,7 +1430,6 @@ def _slot_amount(slot_booking: PatientSlotBooking) -> float:
 
 
 def _patient_package_preview(db: Session, patient_id: int, package_id: int) -> dict:
-    _ensure_package_master_schema(db)
     package = db.query(Package).filter(Package.id == package_id, Package.deleted_at.is_(None)).first()
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -1483,7 +1498,18 @@ def _package_billable_usage_rows(patient_package: PatientPackage) -> list[Patien
     grouped_rows: dict[tuple[Any, ...], PatientSlotBooking] = {}
     rows_without_crt: list[PatientSlotBooking] = []
     for slot_booking in slots:
-        if slot_booking.crt_program_booking_id:
+        if getattr(slot_booking, "group_program_booking_id", None) and slot_booking.patient_id:
+            mapping = slot_booking.therapist_slot_mapping
+            slot = mapping.slot if mapping else None
+            group_key = (
+                "group-program-child",
+                int(slot_booking.group_program_booking_id),
+                int(slot_booking.patient_id),
+                getattr(mapping, "slot_date", None),
+                getattr(slot, "start_time", None),
+                getattr(slot, "end_time", None),
+            )
+        elif slot_booking.crt_program_booking_id:
             mapping = slot_booking.therapist_slot_mapping
             slot = mapping.slot if mapping else None
             group_key = (
@@ -1920,6 +1946,7 @@ def _package_shape(patient_package: PatientPackage) -> dict:
     due_amount = float(patient_package.due_amount or 0)
     paid_amount = float(patient_package.paid_amount or 0)
     total_amount = float(patient_package.total_amount or (patient_package.package.price if patient_package.package else 0) or 0)
+    effective_status = "completed" if int(stats["remaining"] or 0) <= 0 and due_amount <= 0 else "active"
     return {
         "id": patient_package.id,
         "patient_id": patient_package.patient_id,
@@ -1939,7 +1966,7 @@ def _package_shape(patient_package: PatientPackage) -> dict:
         "per_session_rate": _package_per_session_rate(patient_package),
         "due_amount": due_amount,
         "payment_status": patient_package.payment_status,
-        "status": patient_package.status,
+        "status": effective_status,
         "created_at": _iso(patient_package.created_at),
         "updated_at": _iso(patient_package.updated_at),
         "deleted_at": _iso(patient_package.deleted_at),
@@ -2665,14 +2692,7 @@ def _payment_transaction_shape(
         is_package_session = bool(getattr(slot_booking, "is_package_session", False)) or bool(getattr(crt_parent, "is_package_session", False))
         is_package_credit_row = is_package_session and "Package credit used" in str(payment.remark or "")
         display_session_name = base_row.get("session_name") or payment_session_text
-        if slot_fully_paid and not is_package_session:
-            due = 0
-        elif due_override is not None:
-            due = float(due_override)
-        elif previous_due is not None and not is_package_session:
-            due = max(0, float(previous_due) - payment_amount)
-        else:
-            due = payment_due
+        due = payment_due
         if display_amount_override is not None:
             display_amount = float(display_amount_override)
         elif is_package_credit_row:
@@ -3084,16 +3104,9 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             return db.query(TherapySession).filter(False)
         raise HTTPException(status_code=404, detail=f"Table is not present in the database: {table}")
 
-    if table in {"patients", "patient_packages", "invoices", "payments", "documents"}:
-        _ensure_patient_profile_schema(db)
-    if table in {"patient_packages", "payments"}:
-        _ensure_package_billing_schema(db)
-    if table == "enquiries":
-        _ensure_enquiry_schema(db)
-
     region_ids = _user_region_ids(db, user)
     roles = _user_roles(db, user)
-    current_therapist = _current_therapist(db, user) if "therapist" in roles else None
+    current_therapist = _current_therapist(db, user) if _is_therapist_scoped_role(roles) else None
     if table == "patients":
         query = db.query(Patient)
         if region_ids:
@@ -3115,7 +3128,10 @@ def _base_query(table: str, db: Session, user: Optional[User]):
     if table == "user_roles":
         return db.query(UserRole).filter(UserRole.deleted_at.is_(None))
     if table == "therapists":
-        query = db.query(Therapist).options(joinedload(Therapist.user))
+        query = db.query(Therapist).options(
+            joinedload(Therapist.user),
+            joinedload(Therapist.therapy_mappings).joinedload(TherapistTherapyMapping.therapy),
+        )
         if current_therapist:
             query = query.filter(Therapist.id == current_therapist.id)
         return query
@@ -3156,7 +3172,6 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.join(Patient, Patient.id == TherapySession.patient_id).filter(Patient.region_id.in_(region_ids))
         return query
     if table == "packages":
-        _ensure_package_master_schema(db)
         allowed_package_names = (
             "General 16 Session - Package",
             "General 12 Session - Package",
@@ -3169,7 +3184,6 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             Package.name.in_(allowed_package_names),
         )
     if table == "patient_packages":
-        _ensure_package_billing_schema(db)
         query = db.query(PatientPackage).options(joinedload(PatientPackage.package)).filter(PatientPackage.deleted_at.is_(None))
         if region_ids:
             query = query.join(Patient, Patient.id == PatientPackage.patient_id).filter(Patient.region_id.in_(region_ids))
@@ -3240,7 +3254,11 @@ def _apply_filters(query, table: str, filters: list[dict]):
         field, op, value = f.get("field"), f.get("op"), f.get("value")
         col = _column_for(table, field)
         if field == "full_name" and table == "patients":
-            expression = func.concat(Patient.first_name, " ", Patient.last_name)
+            expression = func.trim(func.concat(
+                func.coalesce(Patient.first_name, ""),
+                " ",
+                func.coalesce(Patient.last_name, ""),
+            ))
             if op == "ilike":
                 query = query.filter(expression.ilike(value.replace("*", "%")))
             elif op == "eq":
@@ -3257,7 +3275,7 @@ def _apply_filters(query, table: str, filters: list[dict]):
             if op == "eq":
                 query = query.filter(Therapist.region_id == value)
                 continue
-        elif table == "therapist_therapy_mapping" and field in {"therapist_id", "therapy_id"}:
+        elif table == "therapist_therapy_mapping" and field in {"id", "therapist_id", "therapy_id"}:
             col = getattr(TherapistTherapyMapping, field)
             if op == "eq":
                 query = query.filter(col == value)
@@ -3297,6 +3315,13 @@ def _apply_filters(query, table: str, filters: list[dict]):
 def _apply_order(query, table: str, order_by: Optional[str], ascending: bool):
     if not order_by:
         return query
+    if table == "patients" and order_by == "full_name":
+        full_name = func.trim(func.concat(
+            func.coalesce(Patient.first_name, ""),
+            " ",
+            func.coalesce(Patient.last_name, ""),
+        ))
+        return query.order_by(full_name.asc() if ascending else full_name.desc(), Patient.id.asc())
     if table == "therapists" and order_by == "full_name":
         query = query.outerjoin(User, User.id == Therapist.user_id)
         user_name = func.trim(func.concat(
@@ -3305,7 +3330,7 @@ def _apply_order(query, table: str, order_by: Optional[str], ascending: bool):
             func.coalesce(User.last_name, ""),
         ))
         col = func.coalesce(func.nullif(user_name, ""), Therapist.name)
-        return query.order_by(col.asc() if ascending else col.desc())
+        return query.order_by(col.asc() if ascending else col.desc(), Therapist.id.asc())
     col = _column_for(table, order_by)
     if col is None:
         return query
@@ -3625,7 +3650,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     period_end = period_info["end"]
     previous_period_start, previous_period_end = _previous_period_window(period_key, period_start, period_end)
     roles = _user_roles(db, user)
-    current_therapist = _current_therapist(db, user) if "therapist" in roles else None
+    current_therapist = _current_therapist(db, user) if _is_therapist_scoped_role(roles) else None
     patients = _base_query("patients", db, user).all()
     therapists = _base_query("therapists", db, user).all()
     invoices = _base_query("invoices", db, user).all()
@@ -3986,7 +4011,7 @@ def _therapist_session_report_payload(
         raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
 
     roles = _user_roles(db, user)
-    current_therapist = _current_therapist(db, user) if "therapist" in roles else None
+    current_therapist = _current_therapist(db, user) if _is_therapist_scoped_role(roles) else None
     if current_therapist:
         therapist_id = current_therapist.id
 
@@ -4003,6 +4028,7 @@ def _therapist_session_report_payload(
             joinedload(PatientSlotBooking.crt_program_booking),
             joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapist),
             joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+            joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.slot),
         )
         .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
         .join(Therapist, Therapist.id == TherapistSlotMapping.therapist_id)
@@ -4047,15 +4073,23 @@ def _therapist_session_report_payload(
             else row.amount
             or 0
         )
-        paid = float(
+        raw_paid = float(
             row.crt_program_booking.paid_amount
             if row.crt_program_booking_id and row.crt_program_booking
             else row.paid_amount
             or 0
         )
+        package_covered = float(
+            row.crt_program_booking.package_covered_amount
+            if row.crt_program_booking_id and row.crt_program_booking
+            else getattr(row, "package_covered_amount", 0)
+            or 0
+        )
+        is_package_involved = bool(row.is_package_session or row.patient_package_id or package_covered > 0)
+        paid = raw_paid + package_covered if is_package_involved else raw_paid
         due = 0.0 if _slot_is_paid(row, amount, paid, status) else max(0.0, amount - paid)
         is_paid = _slot_is_paid(row, amount, paid, status)
-        therapist_amount = paid if is_paid else amount
+        therapist_amount = paid if is_package_involved else (paid if is_paid else amount)
         month_key = _session_report_month_key(session_date)
 
         therapist_row = therapists.setdefault(
@@ -4093,10 +4127,32 @@ def _therapist_session_report_payload(
             if row.patient
             else "Unknown"
         )
+        slot = mapping.slot
+        group_booking = row.group_program_booking
+        crt_booking = row.crt_program_booking
+        start_time = (
+            getattr(group_booking, "start_time", None)
+            or getattr(slot, "start_time", None)
+            or getattr(getattr(crt_booking, "slot", None), "start_time", None)
+        )
+        end_time = (
+            getattr(group_booking, "end_time", None)
+            or getattr(slot, "end_time", None)
+            or getattr(getattr(crt_booking, "slot", None), "end_time", None)
+            or _time_with_duration(start_time, row.duration_minutes)
+        )
+        time_slot = (
+            f"{_iso(start_time)} - {_iso(end_time)}"
+            if start_time and end_time
+            else None
+        )
         detail = {
             "sessionId": row.id,
             "date": _iso(session_date),
             "month": month_key,
+            "startTime": _iso(start_time),
+            "endTime": _iso(end_time),
+            "timeSlot": time_slot,
             "patientId": row.patient_id,
             "patientName": patient_name,
             "therapyName": mapping.therapy.name if mapping.therapy else None,
@@ -4104,6 +4160,8 @@ def _therapist_session_report_payload(
             "paymentStatus": status or ("PAID" if is_paid else "UNPAID"),
             "sessionAmount": round(amount, 2),
             "paidAmount": round(paid, 2),
+            "cashPaidAmount": round(raw_paid, 2),
+            "packageCoveredAmount": round(package_covered, 2),
             "therapistAmount": round(therapist_amount, 2),
             "dueAmount": round(due, 2),
             "fullyPaid": is_paid,
@@ -4188,8 +4246,6 @@ async def get_patient_transactions(
     patient = _base_query("patients", db, user).filter(Patient.id == patient_id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
-    _ensure_package_billing_schema(db)
-    _ensure_assessment_billing_schema(db)
 
     packages = (
         db.query(PatientPackage)
@@ -4697,6 +4753,20 @@ async def get_patient_transactions(
         return None
 
     emitted_crt_payment_parent_ids: set[int] = set()
+    current_overall_session_due = sum(
+        max(0, float(row.due_amount or 0))
+        for row in slots
+        if not row.crt_program_booking_id
+        and not getattr(row, "group_program_booking_id", None)
+        and not bool(getattr(row, "is_package_session", False))
+        and not bool(getattr(row, "fully_paid", False))
+    ) + sum(
+        max(0, float(row.due_amount or 0))
+        for row in crt_parents
+        if not bool(getattr(row, "is_package_session", False))
+        and not getattr(row, "patient_package_id", None)
+        and not bool(getattr(row, "fully_paid", False))
+    )
     for slot_id, payments in payments_by_slot.items():
         slot_booking = slots_by_id.get(slot_id)
         if not slot_booking:
@@ -4768,12 +4838,14 @@ async def get_patient_transactions(
         )):
             previous_due = max(0, starting_due - cumulative_paid)
             cumulative_paid += float(payment.payment_amount or 0)
+            due_override = None
             transaction_rows.append(_payment_transaction_shape(
                 payment,
                 slot_booking=slot_booking,
                 cumulative_paid=cumulative_paid,
                 starting_due=starting_due,
                 previous_due=previous_due,
+                due_override=due_override,
             ))
 
     for package_id, payments in payments_by_package.items():
@@ -5014,8 +5086,11 @@ async def get_patient_transactions(
     for row in payable_slot_rows:
         if row.get("is_package_session"):
             continue
-        running_session_due += max(0, float(row.get("current_due_amount", row.get("due_amount")) or 0))
-        row["due_amount"] = running_session_due
+        row_due = max(0, float(row.get("current_due_amount", row.get("due_amount")) or 0))
+        running_session_due += row_due
+        row["current_due_amount"] = row_due
+        row["due_amount"] = row_due
+        row["overall_due_amount"] = running_session_due
     payable_slot_rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
 
     transaction_count = len(transaction_rows)
@@ -5327,12 +5402,19 @@ async def create_patient_transaction(
             if crt_parent
             else float(getattr(slot_booking, "due_amount", 0) or 0)
         )
-        if selected_due_before <= 0:
-            selected_due_before = float(payload.get("due_amount") or 0) or float(slot_booking.due_amount or 0)
-        if selected_due_before <= 0:
-            selected_due_before = session_due_cap or float(_slot_booking_amount(slot_booking) or 0)
-        if not is_non_package_session_payment and session_due_cap > 0:
-            selected_due_before = min(selected_due_before, session_due_cap)
+        payload_due_before = float(payload.get("due_amount") or 0)
+        payload_amount_before = float(payload.get("amount") or 0)
+        payload_selected_due = payload_due_before or payload_amount_before
+        if is_non_package_session_payment:
+            if selected_due_before <= 0:
+                selected_due_before = payload_selected_due or float(slot_booking.due_amount or 0)
+            if selected_due_before <= 0:
+                selected_due_before = session_due_cap or float(_slot_booking_amount(slot_booking) or 0)
+        else:
+            if payload_selected_due > 0:
+                selected_due_before = payload_selected_due
+            elif selected_due_before <= 0:
+                selected_due_before = session_due_cap or float(_slot_booking_amount(slot_booking) or 0)
         validate_paid_amount(selected_due_before, "session")
         if is_non_package_session_payment:
             slot_due_query = db.query(func.coalesce(func.sum(PatientSlotBooking.due_amount), 0)).filter(
@@ -5430,7 +5512,7 @@ async def create_patient_transaction(
             slot_booking.paid_amount = float(slot_booking.paid_amount or 0) + paid_amount
             amount = _slot_booking_amount(slot_booking)
             _recalculate_package_slot_payments(db, patient_package)
-            slot_booking.fully_paid = bool(fully_paid)
+            slot_booking.fully_paid = bool(fully_paid or selected_slot_due_after <= 0)
             if slot_booking.fully_paid:
                 existing_covered = min(amount, float(getattr(slot_booking, "package_covered_amount", 0) or 0))
                 _set_slot_payment_from_amounts(slot_booking, amount, float(slot_booking.paid_amount or 0), 0, existing_covered)
@@ -5537,9 +5619,7 @@ async def create_patient_transaction(
             if not user_note:
                 user_note = "Package credit added"
         stored_payment_due = (
-            0
-            if slot_booking and fully_paid
-            else payment_due_after
+            payment_due_after
             if slot_booking or assessment_source_payment or patient_package
             else float(getattr(patient_package, "due_amount", 0) or 0)
         )
@@ -5744,7 +5824,6 @@ def view_patient_photo(
     patient_id: int,
     db: Session = Depends(get_db),
 ):
-    _ensure_patient_profile_schema(db)
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -5874,6 +5953,54 @@ def package_adjustment_preview(
     return {"data": _patient_package_preview(db, patient_id, package_id)}
 
 
+@router.patch("/therapists/{therapist_id}/therapy-mappings")
+def sync_therapist_therapy_mappings(
+    therapist_id: int,
+    payload: dict = Body(...),
+    request: Request = None,
+    db: Session = Depends(get_db),
+):
+    user = _current_user(request, db) if request else None
+    therapist = db.query(Therapist).filter(Therapist.id == therapist_id).first()
+    if not therapist:
+        raise HTTPException(status_code=404, detail="Therapist not found")
+
+    selected_ids = {
+        int(therapy_id)
+        for therapy_id in payload.get("therapy_ids", [])
+        if str(therapy_id).strip()
+    }
+    existing = (
+        db.query(TherapistTherapyMapping)
+        .filter(TherapistTherapyMapping.therapist_id == therapist_id)
+        .all()
+    )
+    existing_by_therapy = {row.therapy_id: row for row in existing}
+
+    for row in existing:
+        row.is_active = row.therapy_id in selected_ids
+
+    for therapy_id in selected_ids:
+        if therapy_id not in existing_by_therapy:
+            db.add(TherapistTherapyMapping(
+                therapist_id=therapist_id,
+                therapy_id=therapy_id,
+                is_active=True,
+            ))
+
+    therapist.updated_by = user.id if user else therapist.updated_by
+    db.commit()
+
+    rows = (
+        db.query(TherapistTherapyMapping)
+        .options(joinedload(TherapistTherapyMapping.therapy))
+        .filter(TherapistTherapyMapping.therapist_id == therapist_id)
+        .order_by(TherapistTherapyMapping.id.asc())
+        .all()
+    )
+    return {"data": [_therapist_therapy_mapping_shape(row) for row in rows]}
+
+
 @router.get("/{table}")
 async def list_rows(
     table: str,
@@ -5909,8 +6036,6 @@ async def list_rows(
         if single:
             return {"data": data[0] if data else None, "count": total}
         return {"data": data, "count": total}
-    if table in {"sessions", "patient_packages"}:
-        _ensure_sessions_for_appointments(db, user)
     query = _base_query(table, db, user)
     query = _apply_filters(query, table, parsed_filters)
     total = query.count() if count else None
@@ -5920,9 +6045,6 @@ async def list_rows(
     if limit:
         query = query.limit(limit)
     rows = query.all()
-    if table == "patient_packages":
-        _normalize_patient_package_due_values(rows)
-        db.commit()
     data = [SHAPERS[table](row) for row in rows]
     if single:
         return {"data": data[0] if data else None, "count": total}
@@ -6192,7 +6314,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         row = Therapist(
             name=item.get("full_name") or item.get("name") or f"Therapist {int(datetime.utcnow().timestamp())}",
             user_id=item.get("user_id"),
-            qualification=item.get("qualification") or item.get("specialization") or item.get("bio"),
+            qualification=item.get("qualification") or item.get("bio"),
             region_id=item.get("region_id") or region_id,
             created_by=user_id,
             updated_by=user_id,
@@ -6291,10 +6413,19 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             updated_by=user_id,
         )
     elif table == "users":
+        email_value = (item.get("email") or "").strip() if item.get("email") else None
+        if email_value:
+            existing_user = (
+                db.query(User)
+                .filter(User.email == email_value, User.deleted_at.is_(None))
+                .first()
+            )
+            if existing_user:
+                raise HTTPException(status_code=400, detail="Email already exists")
         first, last = _split_name(item.get("full_name", ""))
         row = User(
             username=item.get("email"),
-            email=item.get("email"),
+            email=email_value,
             hashed_password=hash_password(item.get("password") or "Temp@123456"),
             first_name=first,
             last_name=last,
@@ -6443,13 +6574,33 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
     elif table == "therapists":
         if "full_name" in item:
             row.name = item["full_name"]
+            if row.user:
+                row.user.first_name, row.user.last_name = _split_name(item["full_name"])
         if "name" in item:
             row.name = item["name"]
         if "user_id" in item:
             row.user_id = item["user_id"]
         if "region_id" in item:
             row.region_id = item["region_id"]
-        for key, attr in {"specialization": "qualification", "qualification": "qualification", "bio": "qualification"}.items():
+        if "email" in item and row.user:
+            email_value = (item.get("email") or "").strip()
+            if email_value:
+                existing_user = (
+                    db.query(User)
+                    .filter(
+                        User.email == email_value,
+                        User.id != row.user.id,
+                        User.deleted_at.is_(None),
+                    )
+                    .first()
+                )
+                if existing_user:
+                    raise HTTPException(status_code=400, detail="Email already exists")
+                row.user.email = email_value
+                row.user.username = email_value
+        if "phone" in item and row.user:
+            row.user.phone = item["phone"]
+        for key, attr in {"qualification": "qualification", "bio": "qualification"}.items():
             if key in item:
                 setattr(row, attr, item[key])
     elif table == "therapist_therapy_mapping":
@@ -6481,6 +6632,22 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
     elif table == "users":
         if "full_name" in item:
             row.first_name, row.last_name = _split_name(item["full_name"])
+        if "email" in item:
+            email_value = (item.get("email") or "").strip()
+            if email_value:
+                existing_user = (
+                    db.query(User)
+                    .filter(
+                        User.email == email_value,
+                        User.id != row.id,
+                        User.deleted_at.is_(None),
+                    )
+                    .first()
+                )
+                if existing_user:
+                    raise HTTPException(status_code=400, detail="Email already exists")
+            row.email = email_value or row.email
+            row.username = email_value or row.username
         if "phone" in item:
             row.phone = item["phone"]
     elif table == "invoices":
