@@ -493,8 +493,8 @@ class AppointmentService:
                 UNION ALL SELECT 'Academic Intervention', 1200, 45, 1, 'individual'
                 UNION ALL SELECT 'Sushiksha Online', 1200, 45, 1, 'individual'
                 UNION ALL SELECT 'CRT', 1800, 120, 1, 'structured'
-                UNION ALL SELECT 'Vocational', 1200, 45, 10, 'group'
-                UNION ALL SELECT 'Social Group', 1200, 45, 8, 'group'
+                UNION ALL SELECT 'Vocational', 1200, 60, 10, 'group'
+                UNION ALL SELECT 'Social Group', 1200, 60, 8, 'group'
                 UNION ALL SELECT 'Parent Training Program: Prewriting Skills', 1200, 60, 10, 'group'
                 UNION ALL SELECT 'Parent Training Program: Toilet Training', 1200, 60, 10, 'group'
                 UNION ALL SELECT 'Parent Training Program: PEG', 1200, 60, 10, 'group'
@@ -503,7 +503,6 @@ class AppointmentService:
             WHERE r.deleted_at IS NULL
             ON DUPLICATE KEY UPDATE
                 is_active = VALUES(is_active),
-                per_session_amount = VALUES(per_session_amount),
                 duration_minutes = VALUES(duration_minutes),
                 capacity = VALUES(capacity),
                 session_type = VALUES(session_type),
@@ -1055,6 +1054,8 @@ class AppointmentService:
         amount: float,
         stored_due: float,
         payment_status: str | None,
+        is_package_session: bool = False,
+        package_covered_amount: float = 0.0,
     ) -> dict[str, float | bool]:
         filters = []
         if slot_booking_id:
@@ -1074,6 +1075,20 @@ class AppointmentService:
 
         status = str(payment_status or "").upper()
         if latest_payment:
+            if is_package_session:
+                paid_total = float(
+                    db.query(func.coalesce(func.sum(Payment.payment_amount), 0))
+                    .filter(or_(*filters))
+                    .scalar()
+                    or 0
+                )
+                current_due = max(0.0, float(amount or 0) - float(package_covered_amount or 0) - paid_total)
+                current_fully_paid = bool(getattr(latest_payment, "fully_paid", False)) or (float(amount or 0) > 0 and current_due <= 0)
+                return {
+                    "current_due_amount": 0.0 if current_fully_paid else current_due,
+                    "current_fully_paid": current_fully_paid,
+                    "current_paid_amount": paid_total,
+                }
             latest_due = float(latest_payment.due_amount or 0)
             latest_paid = float(latest_payment.payment_amount or 0)
             latest_fully_paid = bool(getattr(latest_payment, "fully_paid", False))
@@ -1430,9 +1445,9 @@ class AppointmentService:
     def _program_default_duration(program_type: str) -> int:
         return {
             "crt": 120,
-            "vocational": 45,
+            "vocational": 60,
             "schooling": 30,
-            "social": 45,
+            "social": 60,
             "parent_training": 60,
             "peg": 60,
             "general": 45,
@@ -1611,6 +1626,7 @@ class AppointmentService:
 
         if not patients:
             patient_query = db.query(Patient).filter(
+                Patient.is_available == True,
                 Patient.status == True,
                 Patient.region_id.in_(current_user.region_ids),
             )
@@ -2523,6 +2539,8 @@ class AppointmentService:
                 slot_amount,
                 slot_due_amount,
                 row.crt_payment_status if is_crt_booking else row.payment_status,
+                bool(row.is_package_session) if not is_crt_booking else False,
+                slot_package_covered_amount,
             )
             if is_crt_booking and bool(getattr(row, "crt_fully_paid", False)):
                 current_payment_state = {
@@ -2530,6 +2548,10 @@ class AppointmentService:
                     "current_fully_paid": True,
                     "current_paid_amount": slot_paid_amount,
                 }
+            display_paid_amount = max(
+                slot_paid_amount,
+                float(current_payment_state.get("current_paid_amount") or 0),
+            )
 
             therapist_map[therapist_id]["slots"].append({
                 "slot_mapping_id": row.slot_mapping_id,
@@ -2573,7 +2595,7 @@ class AppointmentService:
                 "child_assessment_due_amount": child_assessment_due,
                 "package_payment_status": row.package_payment_status,
                 "amount": slot_amount,
-                "paid_amount": slot_paid_amount,
+                "paid_amount": display_paid_amount,
                 "due_amount": slot_due_amount,
                 "package_covered_amount": slot_package_covered_amount,
                 "current_due_amount": current_payment_state["current_due_amount"],
@@ -2600,7 +2622,7 @@ class AppointmentService:
                     "patient_session_plan_id": row.patient_session_plan_id,
                     "patient_phone": patient_phone,
                     "amount": slot_amount,
-                    "paid_amount": slot_paid_amount,
+                    "paid_amount": display_paid_amount,
                     "due_amount": slot_due_amount,
                     "package_covered_amount": slot_package_covered_amount,
                     "current_due_amount": current_payment_state["current_due_amount"],
@@ -2791,6 +2813,8 @@ class AppointmentService:
                 slot_amount,
                 slot_due_amount,
                 row.crt_payment_status if is_crt_booking else row.payment_status,
+                bool(row.is_package_session) if not is_crt_booking else False,
+                slot_package_covered_amount,
             )
             if is_crt_booking and bool(getattr(row, "crt_fully_paid", False)):
                 current_payment_state = {
@@ -2798,6 +2822,10 @@ class AppointmentService:
                     "current_fully_paid": True,
                     "current_paid_amount": slot_paid_amount,
                 }
+            display_paid_amount = max(
+                slot_paid_amount,
+                float(current_payment_state.get("current_paid_amount") or 0),
+            )
 
             therapist_map[therapist_id]["slots"].append({
                 "slot_mapping_id": row.slot_mapping_id,
@@ -2841,7 +2869,7 @@ class AppointmentService:
                 "child_assessment_due_amount": child_assessment_due,
                 "package_payment_status": row.package_payment_status,
                 "amount": slot_amount,
-                "paid_amount": slot_paid_amount,
+                "paid_amount": display_paid_amount,
                 "due_amount": slot_due_amount,
                 "package_covered_amount": slot_package_covered_amount,
                 "current_due_amount": current_payment_state["current_due_amount"],
@@ -2868,7 +2896,7 @@ class AppointmentService:
                     "patient_session_plan_id": row.patient_session_plan_id,
                     "patient_phone": patient_phone,
                     "amount": slot_amount,
-                    "paid_amount": slot_paid_amount,
+                    "paid_amount": display_paid_amount,
                     "due_amount": slot_due_amount,
                     "package_covered_amount": slot_package_covered_amount,
                     "current_due_amount": current_payment_state["current_due_amount"],

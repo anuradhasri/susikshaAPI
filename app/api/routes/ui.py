@@ -615,8 +615,12 @@ def _split_name(full_name: str) -> tuple[str, str]:
     if not parts:
         return "User", ""
     if len(parts) == 1:
-        return parts[0], ""
-    return parts[0], " ".join(parts[1:])
+        return _title_case_name(parts[0]), ""
+    return _title_case_name(parts[0]), _title_case_name(" ".join(parts[1:]))
+
+
+def _title_case_name(value: Optional[str]) -> str:
+    return " ".join(part[:1].upper() + part[1:].lower() for part in (value or "").strip().split())
 
 
 def _document_type(value: Optional[str]) -> str:
@@ -2012,7 +2016,7 @@ def _ensure_package_master_schema(db: Session) -> None:
             SELECT 'General' AS program_name, 'General 12 Session - Package' AS package_name, 12 AS total_sessions, 13200 AS price, 30 AS duration_days
             UNION ALL SELECT 'General', 'General 16 Session - Package', 16, 17600, 120
             UNION ALL SELECT 'CRT', 'CRT 5 Session - Package', 5, 45000, 30
-            UNION ALL SELECT 'CRT (Structured Program)', 'CRT 5 Session - Package', 5, 45000, 30
+            UNION ALL SELECT 'Structured Program', 'CRT 5 Session - Package', 5, 45000, 30
             UNION ALL SELECT 'Vocational', 'Vocational 8 Session - Package', 8, 10000, 60
             UNION ALL SELECT 'Vocational Program', 'Vocational 8 Session - Package', 8, 10000, 60
         """
@@ -2701,6 +2705,10 @@ def _payment_transaction_shape(
             display_amount = stored_amount if stored_amount > 0 else _slot_booking_amount(slot_booking)
         else:
             display_amount = stored_amount if stored_amount > 0 else _slot_booking_amount(slot_booking)
+        if due_override is not None:
+            due = max(0, float(due_override))
+        elif is_package_session:
+            due = max(0, float(display_amount or 0) - payment_amount)
         return {
             **base_row,
             "id": f"payment-{payment.id}",
@@ -4234,12 +4242,86 @@ async def get_patient_detail(
     return {"data": _patient_shape(patient)}
 
 
+@router.get("/patients/{patient_id}/booked-slots")
+async def get_patient_booked_slots(
+    patient_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = _current_user(request, db)
+    patient = _base_query("patients", db, user).filter(Patient.id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    rows = (
+        db.query(PatientSlotBooking)
+        .options(
+            joinedload(PatientSlotBooking.patient),
+            joinedload(PatientSlotBooking.program),
+            joinedload(PatientSlotBooking.crt_program_booking).joinedload(CrtProgramBooking.program),
+            joinedload(PatientSlotBooking.group_program_booking).joinedload(GroupProgramBooking.program),
+            joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapist),
+            joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.slot),
+            joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+            joinedload(PatientSlotBooking.patient_slot_booking_status_master),
+        )
+        .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
+        .filter(
+            PatientSlotBooking.patient_id == patient_id,
+            TherapistSlotMapping.status_id != MASTER_LOOKUP_DATA["therapist_slot_mapping"]["CANCELLED"],
+        )
+        .order_by(TherapistSlotMapping.slot_date.desc(), TherapistSlotMapping.id.desc(), PatientSlotBooking.id.desc())
+        .all()
+    )
+
+    child_name = f"{patient.first_name} {patient.last_name}".strip()
+    patient_code = f"PT-{patient.id:04d}"
+    booked_slots = []
+    for row in rows:
+        mapping = row.therapist_slot_mapping
+        slot = mapping.slot if mapping else None
+        therapist = mapping.therapist if mapping else None
+        therapy = mapping.therapy if mapping else None
+        program = row.program or (row.crt_program_booking.program if row.crt_program_booking else None) or (row.group_program_booking.program if row.group_program_booking else None)
+        status_label = (
+            row.patient_slot_booking_status_master.name
+            if row.patient_slot_booking_status_master
+            else row.status
+        )
+        booked_slots.append({
+            "id": row.id,
+            "patient_id": row.patient_id,
+            "child_name": child_name,
+            "patient_code": patient_code,
+            "slot_date": _iso(mapping.slot_date if mapping else getattr(row.crt_program_booking, "slot_date", None)),
+            "slot_name": getattr(slot, "slot_name", None),
+            "start_time": _iso(getattr(slot, "start_time", None)),
+            "end_time": _iso(getattr(slot, "end_time", None)),
+            "therapist_id": getattr(therapist, "id", None),
+            "therapist_name": getattr(therapist, "name", None),
+            "program_id": getattr(program, "id", None),
+            "program_name": getattr(program, "program_name", None),
+            "therapy_name": getattr(therapy, "therapy_name", None) or getattr(therapy, "name", None),
+            "status": status_label,
+            "duration_minutes": row.duration_minutes or getattr(slot, "duration_minutes", None),
+            "booking_type": "CRT" if row.crt_program_booking_id else "Group Program" if row.group_program_booking_id else "Session",
+            "created_at": _iso(row.created_at),
+        })
+
+    return {"data": {"patient": _patient_shape(patient), "booked_slots": booked_slots}}
+
+
 @router.get("/patients/{patient_id}/transactions")
 async def get_patient_transactions(
     patient_id: int,
     request: Request,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=10, ge=1, le=100),
+    search: str | None = Query(default=None),
+    product: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     user = _current_user(request, db)
@@ -5063,6 +5145,80 @@ async def get_patient_transactions(
         return (group_created_at, priority, row.get("created_at") or "")
 
     transaction_rows.sort(key=transaction_sort_key, reverse=True)
+
+    search_query = (search or "").strip().lower()
+    product_filter = (product or "all").strip().lower()
+    status_filter = (status or "all").strip().lower()
+
+    def transaction_product_key(row: dict) -> str:
+        session_name = str(row.get("session_name") or "")
+        transaction_type = str(row.get("transaction_type") or "")
+        is_assessment = (
+            bool(row.get("assessment_payment_id"))
+            or bool(row.get("assessment_billing_id"))
+            or transaction_type == "Assessment Due"
+            or bool(re.search(r"\[assessment(?::|-payment:)\d+\]", session_name, re.I))
+        )
+        if transaction_type == "Package Purchase" or row.get("is_package_session") or row.get("patient_package_id"):
+            return "package"
+        if is_assessment:
+            return "assessment"
+        return "session"
+
+    def transaction_product_label(row: dict) -> str:
+        if row.get("package_name"):
+            return str(row.get("package_name") or "")
+        if row.get("transaction_type") == "Package Purchase":
+            return str(row.get("session_name") or "")
+        if transaction_product_key(row) == "assessment":
+            return "Assessment"
+        if row.get("is_package_session") and row.get("patient_package_id"):
+            return f"Package #{row.get('patient_package_id')}"
+        return "Session"
+
+    def transaction_session_label(row: dict) -> str:
+        session_name = str(row.get("session_name") or "")
+        if transaction_product_key(row) == "assessment":
+            cleaned = re.sub(r"\[assessment(?::|-payment:)\d+\]\s*", "", session_name, flags=re.I)
+            cleaned = re.sub(r"^Assessment completed\s*-\s*", "", cleaned, flags=re.I).strip()
+            return cleaned or "Assessment"
+        return re.sub(r"^Payment\s+(done\s+)?for\s+Payment\s+(done\s+)?for\s+", "Payment done for ", session_name, flags=re.I)
+
+    def transaction_row_date(row: dict) -> str:
+        return str(row.get("payment_date") or row.get("created_at") or row.get("slot_date") or "")[:10]
+
+    def transaction_row_status(row: dict) -> str:
+        due = float(row.get("due_amount") or 0)
+        paid = float(row.get("paid_amount") or 0)
+        amount = float(row.get("amount") or 0)
+        if bool(row.get("fully_paid")) or due <= 0 or (amount > 0 and paid >= amount):
+            return "paid"
+        if paid > 0:
+            return "partial"
+        return "due"
+
+    if search_query or product_filter != "all" or status_filter != "all" or date_from or date_to:
+        filtered_transaction_rows = []
+        for row in transaction_rows:
+            row_date = transaction_row_date(row)
+            searchable_values = [
+                transaction_product_label(row),
+                transaction_session_label(row),
+                str(row.get("payment_remark") or ""),
+                str(row.get("transaction_id") or ""),
+            ]
+            if search_query and not any(search_query in value.lower() for value in searchable_values):
+                continue
+            if product_filter != "all" and transaction_product_key(row) != product_filter:
+                continue
+            if status_filter != "all" and transaction_row_status(row) != status_filter:
+                continue
+            if date_from and (not row_date or row_date < date_from):
+                continue
+            if date_to and (not row_date or row_date > date_to):
+                continue
+            filtered_transaction_rows.append(row)
+        transaction_rows = filtered_transaction_rows
     payable_slot_rows.sort(key=lambda row: row.get("created_at") or "")
     running_package_due_by_id: dict[int, float] = defaultdict(float)
     for row in payable_slot_rows:
@@ -5075,11 +5231,12 @@ async def get_patient_transactions(
             continue
         package_id = int(row["patient_package_id"])
         previous_due = running_package_due_by_id[package_id]
-        row_due = min(package_rate, max(0, package_due - previous_due))
+        row_balance_due = max(0, float(row.get("current_due_amount", row.get("due_amount")) or 0))
+        row_due = min(row_balance_due, package_rate, max(0, package_due - previous_due))
         next_due = min(package_due, previous_due + row_due)
         running_package_due_by_id[package_id] = next_due
         row["current_due_amount"] = row_due
-        row["due_amount"] = next_due
+        row["due_amount"] = row_due
         row["overall_due_amount"] = package_due
 
     running_session_due = 0.0

@@ -13,8 +13,16 @@ class PatientRepository:
     """Database access for patients and patient-owned records."""
 
     @staticmethod
+    def _title_case_name(value: str | None) -> str | None:
+        if value is None:
+            return None
+        return " ".join(part[:1].upper() + part[1:].lower() for part in value.strip().split())
+
+    @staticmethod
     def _create_payload(patient_create: PatientCreate) -> dict:
         data = patient_create.model_dump()
+        data["first_name"] = PatientRepository._title_case_name(data.get("first_name")) or data.get("first_name")
+        data["last_name"] = PatientRepository._title_case_name(data.get("last_name")) or data.get("last_name")
         data["alternate_contact"] = data.pop("emergency_contact", None)
         data.pop("medical_history", None)
         return data
@@ -58,6 +66,10 @@ class PatientRepository:
     @staticmethod
     def update(db: Session, patient: Patient, patient_update: PatientUpdate) -> Patient:
         data = patient_update.model_dump(exclude_unset=True)
+        if "first_name" in data:
+            data["first_name"] = PatientRepository._title_case_name(data.get("first_name")) or data.get("first_name")
+        if "last_name" in data:
+            data["last_name"] = PatientRepository._title_case_name(data.get("last_name")) or data.get("last_name")
         field_map = {
             "emergency_contact": "alternate_contact",
         }
