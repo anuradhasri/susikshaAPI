@@ -593,7 +593,7 @@ async def reschedule_slot(
             plan_item.allocated_sessions
             - (plan_item.assigned_sessions or 0)
             - (plan_item.completed_sessions or 0)
-        )
+        ) if plan_item else None
 
         return {
             "success": True,
@@ -601,10 +601,10 @@ async def reschedule_slot(
             "patient_slot_booking_id": patient_slot_booking.id,
             "therapist_slot_mapping_id": therapist_slot_mapping.id,
             "appointment_id": None,
-            "patient_session_plan_item_id": plan_item.id,
-            "allocated_sessions": plan_item.allocated_sessions,
-            "assigned_sessions": plan_item.assigned_sessions,
-            "completed_sessions": plan_item.completed_sessions,
+            "patient_session_plan_item_id": plan_item.id if plan_item else None,
+            "allocated_sessions": plan_item.allocated_sessions if plan_item else None,
+            "assigned_sessions": plan_item.assigned_sessions if plan_item else None,
+            "completed_sessions": plan_item.completed_sessions if plan_item else None,
             "remaining_sessions": remaining_sessions
         }
 

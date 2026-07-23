@@ -2358,7 +2358,17 @@ class AppointmentService:
 
         current_mapping = patient_slot_booking.therapist_slot_mapping
         plan_item = patient_slot_booking.patient_session_plan_item
-        if not current_mapping or not current_mapping.slot or not plan_item:
+        if not plan_item:
+            plan_item = AppointmentRepository.get_plan_item_for_booking(
+                db,
+                patient_slot_booking.patient_id,
+                booking_create.patient_session_plan_id,
+                booking_create.therapy_id,
+            )
+            if plan_item:
+                patient_slot_booking.patient_session_plan_item_id = plan_item.id
+                db.flush()
+        if not current_mapping or not current_mapping.slot:
             raise ValueError("Slot booking details are incomplete")
 
         slot = AppointmentRepository.get_slot(db, booking_create.slot_id)
@@ -2408,7 +2418,8 @@ class AppointmentService:
         db.commit()
         db.refresh(patient_slot_booking)
         db.refresh(current_mapping)
-        db.refresh(plan_item)
+        if plan_item:
+            db.refresh(plan_item)
 
         return {
             "patient_slot_booking": patient_slot_booking,
