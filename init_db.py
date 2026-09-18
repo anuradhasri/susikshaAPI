@@ -492,14 +492,13 @@ def _ensure_program_table(db: Session):
             UNION ALL SELECT 'Academic Intervention', 1200, 45, 1, 'individual'
             UNION ALL SELECT 'Sushiksha Online', 1200, 45, 1, 'individual'
         ) AS program_seed
-        WHERE r.deleted_at IS NULL
-        ON DUPLICATE KEY UPDATE
-            is_active = VALUES(is_active),
-            per_session_amount = VALUES(per_session_amount),
-            duration_minutes = VALUES(duration_minutes),
-            capacity = VALUES(capacity),
-            session_type = VALUES(session_type),
-            deleted_at = NULL
+            WHERE r.deleted_at IS NULL
+            ON DUPLICATE KEY UPDATE
+                is_active = VALUES(is_active),
+                duration_minutes = VALUES(duration_minutes),
+                capacity = VALUES(capacity),
+                session_type = VALUES(session_type),
+                deleted_at = NULL
     """))
     db.commit()
 

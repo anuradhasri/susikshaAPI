@@ -1,0 +1,3006 @@
+{
+  "goals": [
+    {
+      "level": "LEVEL 1",
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "description": "During dyadic sensorimotor and social routines, the child will demonstrate emerging joint engagement by orienting to and matching the adult's pace, timing, or affect in coordinated exchanges (e.g., mutual gaze, turn-based vocal or motor play), moving from Onlooking/Object-Focused toward Supported Joint Engagement across a minimum of 3--5 consecutive exchanges, with adult scaffolding as needed."
+    },
+    {
+      "level": "LEVEL 1",
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "description": "During caregiving and play routines, the child will orient to and register the adult's facial expression, tone, or affect shift (e.g., pausing, gaze shift, seeking proximity) in response to at least three distinct affective changes introduced by the adult across a session, evidencing early Recognising Emotional Cues."
+    },
+    {
+      "level": "LEVEL 1",
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "description": "During play and caregiving routines, the child will follow the adult's proximal and distal point or gaze to locate a shared object or event across at least 8--10 trials, and will begin to initiate simple joint-attention bids (showing, pointing) to direct the adult's attention, evidencing the shift from Experience Learning toward early Experience Seeking."
+    },
+    {
+      "level": "LEVEL 1",
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "description": "During adult-guided joint tasks (e.g., simple cause-and-effect play, clean-up routines), the child will participate in a complementary role with the adult (e.g., holds an item while the adult places it) across at least three trials, and will demonstrate emerging awareness of self and partner as engaged in a shared activity, evidenced by shared affect or gaze alternation between partner and task."
+    },
+    {
+      "level": "LEVEL 1",
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "description": "During modelled play or motor sequences, the child will sustain visual attention to the adult's demonstration for five or more seconds prior to acting, and will imitate at least 10 single-step actions on objects across sessions, evidencing the shift from passive observation toward Focused Observation and early Selective Imitation."
+    },
+    {
+      "level": "LEVEL 1",
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "description": "During sorting and matching play, the child will match or sort at least 10 identical objects or pictures across a session, and will show an orienting or attentional shift (pause, look longer) in response to a novel versus familiar stimulus, evidencing the pre-verbal categorisation that underlies later Recognising Equivalence and Difference."
+    },
+    {
+      "level": "LEVEL 1",
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "description": "During play with adult-introduced variation, the child will tolerate and, with support, adapt to at least two novel variations of a familiar activity without significant distress, and will show visible enjoyment or curiosity (smile, laugh, sustained engagement) in response to the novelty, across a session."
+    },
+    {
+      "level": "LEVEL 1",
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "description": "During transitions and mildly dysregulating moments, the child will demonstrate co-regulated recovery (returning to baseline within one to two minutes) with adult support (proximity, voice, rhythm) across daily routines, and will begin to reference the adult's face for information in an ambiguous situation at least once per session."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "description": "Within structured and semi-structured play routines, the child will sustain Coordinated Joint Engagement with an adult and, with support, a peer, by synchronising turn-taking actions and adjusting timing or role across 4--6 reciprocal exchanges, and will begin to tolerate role reversal without extended preparation."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "description": "Within social routines and picture-based activities, the child will demonstrate Recognising and Responding to Emotional Signals by differentially reacting to at least two basic emotional expressions (happy/sad) and by offering or seeking comfort or affiliative behaviour (hug, approach) when the adult displays distress, across daily interactions."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "description": "Within play routines, the child will spontaneously initiate joint-attention bids (showing, pointing, vocalising) to share an interesting object or event with a partner across at least five spontaneous opportunities per session, and will check the partner's face for a reaction after sharing, evidencing Experience Seeking (Initiating Shared Reference)."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "description": "Within simple two-step joint tasks, the child will perform an assigned complementary role (e.g., holds while the adult pours) and will demonstrate pride or joy at joint completion (clapping, smiling, vocalising) across at least three shared activities per session, evidencing Experiencing Collaborative Unity."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "description": "Within modelled multi-step play sequences, the child will imitate the essential or relevant features of a 2--3 step action sequence (rather than copying every detail) and will spontaneously repeat a learned sequence without prompting in a subsequent session, evidencing Selective Imitation and Spontaneous Practice."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "description": "Within categorisation play, the child will sort common objects into 'same' and 'different' groups across at least two attributes (shape, size) and will verbalise or gesture a simple reason for the grouping ('these both roll'), across at least three opportunities."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "description": "Within independent play, the child will initiate exploration of unfamiliar toys or materials without prompting and will attempt a learned action independently (without adult modelling) at least twice per session, showing positive affect during self-directed problem-solving, evidencing early Motivation for Increased Agency."
+    },
+    {
+      "level": "LEVEL 2",
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "description": "Within play and daily routines, the child will follow a one- to two-step instruction to stop or wait without physical prompting, and will demonstrate an early self-inhibition behaviour (pausing before acting on impulse) in at least two observed opportunities, evidencing the earliest form of General Regulation of Action."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "description": "During cooperative games and turn-based play with peers and adults, the child will demonstrate Coordinated to Symbol-Infused Joint Engagement by anticipating a partner's next move, adjusting to introduced variations in the activity, and independently repairing brief coordination breakdowns (e.g., re-initiating after a missed turn), sustained across a full game or activity sequence."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "description": "In structured social activities, the child will demonstrate Sharing Emotional Experience by identifying happy/sad/mad/scared in photos and in a partner's face, matching own facial affect to the identified emotion, and joining the partner's emotional tone (e.g., shared laughter), across at least four opportunities."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "description": "During shared book-reading, games, or conversation, the child will draw a partner's attention to an object or event verbally or gesturally to comment, show, share, or request, and will respond to the partner's own joint-attention bids by looking and commenting, across a minimum of five reciprocal exchanges."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "description": "During cooperative games and constructive play with an adult or peer, the child will coordinate roles and responsibilities (e.g., alternates turns, adjusts pace to a partner) to sustain a joint task to completion, and will suggest or accept an idea to solve a shared problem (e.g., which piece goes where), across at least two collaborative activities."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "description": "During therapist-modelled problem-solving tasks, the child will pause briefly before acting (internal rehearsal) and will verbally or gesturally narrate a planning step ('first... then...') prior to completing a familiar sequence independently, across at least three opportunities."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "description": "Following a completed activity or a minor disruption, the child will construct a simple causal statement about what happened ('it fell because...') and will recall or reference a prior similar event or session ('we did this before'), across at least three spontaneous instances per week, evidencing early Meaning-Making and Recognising Recurrence."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "description": "During structured and free play, the child will request to 'try alone' or self-initiate a task without adult prompting across at least three opportunities per session, and will verbalise or display pride upon independent completion ('I did it'), while tolerating at least one introduced variation without disengaging."
+    },
+    {
+      "level": "LEVEL 3",
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "description": "During structured tasks, the child will use a simple self-talk phrase ('wait,' 'my turn') to regulate an impulse or sustain attention on task for three to five minutes, and will detect and self-correct at least one action-outcome mismatch with minimal adult cueing, across at least two sessions per week."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "description": "In group play and cooperative tasks involving two or more peers, the child will demonstrate Collaborative Joint Engagement by taking on and flexibly exchanging complementary roles, adjusting to changes improvised by peers, and independently repairing coordination breakdowns without adult mediation, sustained across an extended (10+ minute) activity."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "description": "During peer interaction and structured emotion-coaching activities, the child will demonstrate Understanding Cause and Perspective by identifying the situational cause of another's emotion, naming their own feelings appropriately, and applying at least one self-generated coping or repair strategy when upset, across real or simulated scenarios."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "description": "In peer conversation and cooperative play, the child will engage in Experience Comparing by initiating dialogue to compare their own and a partner's reactions or preferences to a shared event, and will tolerate and show curiosity about differing perspectives, across at least three conversational exchanges."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "description": "In peer-directed dramatic and constructive play, the child will engage in Co-Regulated Problem Solving by negotiating next steps, accepting or refining a peer's idea, and reflecting on the joint outcome ('it worked' / 'let's try again'), sustaining the cooperative activity across a 10+ minute play episode without adult mediation."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "description": "Across novel but related tasks, the child will apply a previously modelled strategy to a new context with minimal re-demonstration, and will verbally reflect on what was observed and how it informed their own action, across at least two documented instances per month."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "description": "During reflective conversation after an activity, the child will narrate personal learning ('I figured it out') or a self-generated strategy ('I told myself to wait') in response to open prompts, and will acknowledge that a partner may think or feel differently about the same event, across at least two documented opportunities."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "description": "Across therapy and home tasks, the child will voluntarily select a moderately challenging activity over an easy or repetitive one, will persist through initial difficulty using a self-generated coping strategy (pause, retry, ask for help appropriately), and will express a growth-oriented statement ('I can try again') after an unsuccessful first attempt, across at least two documented opportunities per week."
+    },
+    {
+      "level": "LEVEL 4",
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "description": "Across home and therapy tasks, the child will independently sustain attention to a task for 10 or more minutes with self-redirection after distraction, will follow a two-step conditional rule (e.g., 'do A until B, then C'), and will use social referencing constructively (checking with an adult under uncertainty) rather than withdrawing, across weekly documented instances."
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "description": "Across structured group activities (games, projects, sports) involving multiple peers, the child will demonstrate sustained co-regulated collaboration by independently negotiating roles, monitoring group coordination, and initiating repair when the group's joint focus breaks down, without requiring adult facilitation."
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "description": "Across group and one-to-one social contexts, the child will demonstrate Expressing Empathic Intent by spontaneously offering comfort or assistance to a distressed peer, recognising the boundaries or comfort level of others, and adjusting their own behaviour based on an inferred emotional perspective, without adult prompting, in at least three naturally occurring opportunities per week."
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "description": "Across academic, social, and conversational contexts, the child will independently monitor and maintain shared reference or topic during multi-turn conversation, redirect a partner's attention when misaligned, and repair the joint focus after a distraction, sustaining topic maintenance and appropriate shifting across a five-minute or longer exchange."
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "description": "Across group projects, games, and creative tasks, the child will engage in Creative Co-Participation by contributing an original idea that builds on a peer's contribution, maintaining coordinated rhythm or pace during novelty, and acknowledging the joint product, sustaining shared planning and mutual responsibility for an outcome across a multi-step or multi-session project."
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "description": "In academic and social problem-solving contexts, the child will independently transfer an observed strategy to a novel situation without prompting, retain and recall the strategy after a delay (across sessions or days), and articulate the reasoning behind the applied strategy in response to 'what helped you know that?'"
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "description": "Across academic and social contexts, the child will independently identify and describe a personal learning or self-regulation strategy used to complete a task, and will construct multi-step causal or temporal narratives ('first--then--next--because') about their own and others' experiences, evidencing mature inner dialogue."
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "description": "Across academic, social, and extracurricular contexts, the child will independently select and sustain engagement in a self-chosen challenging task, will tolerate ambiguity or uncertainty in an unfamiliar task by pausing to observe and gather information rather than withdrawing, and will demonstrate a stable growth-mindset statement in response to a setback without requiring external reassurance, across observed opportunities per month."
+    },
+    {
+      "level": "LEVEL 5",
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "description": "Across academic, social, and community settings, the child will independently self-monitor progress toward a self-generated goal, adjust strategy proactively in response to changing task demands, and tolerate uncertainty in novel situations by alternating between 'studying' (observing) and 'acting' without requiring adult mediation, evidencing full Joint-to-Self Regulation Transition."
+    }
+  ],
+  "skills": [
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A2",
+      "skillDesc": "Takes a preferred item from two choices presented"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A4",
+      "skillDesc": "Takes a common object when offered by the adult"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A5",
+      "skillDesc": "Approaches the adult when a response is required to access a preferred item"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A7",
+      "skillDesc": "Responds to multiple different adults"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A21",
+      "skillDesc": "Regulates timing and matches the adult's actions across a number of coordinated activities"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A24",
+      "skillDesc": "Synchronises actions with the adult in face-to-face coordinated activities"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A25",
+      "skillDesc": "Coordinates movements with adult guidance — alternating standing and moving face-to-face, back-to-back, and side by side at a varying pace"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "A33",
+      "skillDesc": "Reverses roles with the adult in a familiar reciprocal game (e.g., rolling a ball back and forth, give-and-take) when the adult signals the switch."
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "B11",
+      "skillDesc": "Takes turns in mutual gaze and vocalisation patterns with an adult"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "B15",
+      "skillDesc": "Responds to routinised words and phrases (e.g. hi, bye-bye) and gesture games (e.g. peek-a-boo)"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "E10",
+      "skillDesc": "Looks, reaches, or smiles in response to adult gestures and voice in social games"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "E11",
+      "skillDesc": "Looks, reaches, smiles, or gestures in response to adult language or gesture during songs"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "F4",
+      "skillDesc": "Takes turns vocalising with a communication partner"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "K15",
+      "skillDesc": "Adjusts grip force to the object — gentle grasp for soft/fragile items, firmer grasp for slippery items — during play or self-help tasks."
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "L8",
+      "skillDesc": "Rolls a ball back and forth with another person"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "L17",
+      "skillDesc": "Adjusts the pace, force, and direction of passing, pushing, or rolling an object back and forth with a partner to keep the exchange going."
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "N3",
+      "skillDesc": "Raises hands to be picked up"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "N12",
+      "skillDesc": "Enjoys finger play and action songs"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "A1",
+      "skillDesc": "Makes eye contact and smiles, inviting shared excitement and joy"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "A11",
+      "skillDesc": "References facial expressions and other non-verbal signals to determine what action to take"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "A12",
+      "skillDesc": "Follows facial signals — head nods, head shakes, smiles, frowns — to know where to look"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "A22",
+      "skillDesc": "Uses the adult's facial expressions to coordinate behaviour in joint activities"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "A34",
+      "skillDesc": "Exhibits typical wariness toward unfamiliar adults, distinguishing them from familiar caregivers (developmental observation, not a therapy target)."
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "B3",
+      "skillDesc": "Produces differentiated cries — different cries for hunger, pain, and discomfort"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "B4",
+      "skillDesc": "Produces cooing — vowel-like sounds during comfortable, calm states"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "B7",
+      "skillDesc": "Exhibits a social smile in response to familiar faces"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "B9",
+      "skillDesc": "Responds to voice and face by smiling when the adult engages"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "B12",
+      "skillDesc": "Coos, chuckles, or laughs during interaction"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "B14",
+      "skillDesc": "Recognises others' emotions through facial expressions and vocal tone"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "B23",
+      "skillDesc": "Responds to different tones of the adult's voice"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "F5",
+      "skillDesc": "Expresses refusal by pushing away an object or handing it back to the adult"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "N4",
+      "skillDesc": "Enjoys various movement activities — being swung, roughhousing with a parent"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "A8",
+      "skillDesc": "Responds to the adult's voice by orienting toward the speaker at least 5 times"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "A13",
+      "skillDesc": "Obtains the adult's attention before communicating"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "A14",
+      "skillDesc": "Keeps track of the adult's whereabouts during interaction and when not directly interacting"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "A31",
+      "skillDesc": "Anticipates the reappearance of a hidden or removed item in a simple peekaboo-style or hide-and-reveal game, looking to the expected location before the event occurs."
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "A32",
+      "skillDesc": "Shifts gaze to an object the adult has just placed in the child's visual field, without additional pointing or verbal cue."
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B2",
+      "skillDesc": "Localises to sound — turns toward sound source, especially the human voice"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B8",
+      "skillDesc": "Quiets and attends when an adult voice is heard or a person enters the visual field"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B10",
+      "skillDesc": "Responds to voice and face by vocalising"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B13",
+      "skillDesc": "Coordinates listening and looking simultaneously"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B17",
+      "skillDesc": "Recognises own name when spoken"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B18",
+      "skillDesc": "Expresses intentions to obtain objects or share attention through gestures and vocalisation"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B25",
+      "skillDesc": "Responds to adult gesture and gaze-shifting with appropriate action"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B26",
+      "skillDesc": "Initiates joint attention — points, shows, or directs the adult's attention toward something"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B27",
+      "skillDesc": "Uses instrumental and experience-sharing gesturing to communicate"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E1",
+      "skillDesc": "Localises to sounds by turning toward the sound source"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E2",
+      "skillDesc": "Looks toward playful vocal sounds (e.g. whistle, car sounds)"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E3",
+      "skillDesc": "Responds to voice by turning toward the person"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E4",
+      "skillDesc": "Looks at indicated pictures as the adult points to them in a book"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E5",
+      "skillDesc": "Follows a proximal point to place objects in containers, complete puzzles, etc."
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E7",
+      "skillDesc": "Looks to the adult when name is called"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E8",
+      "skillDesc": "Follows a proximal point to an object or location"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E9",
+      "skillDesc": "Follows a distal point to retrieve a toy"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "F2",
+      "skillDesc": "Vocalises with intent — communicative purpose"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "F7",
+      "skillDesc": "Makes eye contact to obtain a desired object when the adult blocks access or withholds it"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "F9",
+      "skillDesc": "Combines vocalisation and eye gaze for an intentional request"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "A15",
+      "skillDesc": "Communicates when complying with the adult's instructions as a helper"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "A18",
+      "skillDesc": "Readily accepts a partner to coach or guide during a play activity"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "A23",
+      "skillDesc": "Enjoys shared, coordinated pretend play and role play when led by an adult"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "B19",
+      "skillDesc": "Uses gestures to indicate wants and needs"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "E13",
+      "skillDesc": "Gives an object as verbally requested when paired with the adult's outstretched hand"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F1",
+      "skillDesc": "Uses a goal-directed reach to request"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F3",
+      "skillDesc": "Asks for help by handing an object to the adult"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F6",
+      "skillDesc": "Points proximally to request a desired object"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F8",
+      "skillDesc": "Points to indicate a choice between two objects"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F10",
+      "skillDesc": "Points distally to request a desired object"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F11",
+      "skillDesc": "Points distally to indicate a choice between two objects"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "G1",
+      "skillDesc": "Manipulates and explores toys that are presented"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "G2",
+      "skillDesc": "Shows at least three variations while playing with a preferred toy"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "G3",
+      "skillDesc": "Demonstrates generalisation by engaging in exploratory movement and play with toys in a novel environment"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "G4",
+      "skillDesc": "Independently engages in movement play for at least 2 minutes"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "G5",
+      "skillDesc": "Independently engages in cause-and-effect play for at least 2 minutes"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "A16",
+      "skillDesc": "Matches the adult's actions to learn a new skill or activity"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "A17",
+      "skillDesc": "Observes to ensure actions are at the appropriate pace and level of care"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "A26",
+      "skillDesc": "Matches sounds and words to produce playful nonsense sound and word combinations"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "B5",
+      "skillDesc": "Produces one or more single-syllable consonant-vowel sounds"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "B6",
+      "skillDesc": "Repeats single-syllable consonant-vowel sounds in close succession (e.g. ba-ba, da-da)"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "B16",
+      "skillDesc": "Exhibits babbling that is increasingly varied in sounds and syllable structure"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "B21",
+      "skillDesc": "Exhibits vocal play and jargon with adult-like intonation"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "B28",
+      "skillDesc": "Produces at least 3 of the following consonant sounds in babbling or word attempts: p, d, k, g, m."
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "C4",
+      "skillDesc": "Maintains longer, detailed conversations or narratives about present, remote, and imaginary topics"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "C5",
+      "skillDesc": "Understands 10,000+ words including relative concepts of time — before/after, yesterday/tomorrow — and quantity — more/less, most/least"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "C6",
+      "skillDesc": "Produces five to eight word sentences with few grammatical errors"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "C8",
+      "skillDesc": "Tells relatively detailed narratives about own experiences in recent and remote past"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "C9",
+      "skillDesc": "Answers simple logic questions"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D1",
+      "skillDesc": "Imitates at least 10 actions with various objects presented one at a time"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D2",
+      "skillDesc": "Produces a vocal approximation of a sound associated with a preferred item during play"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D3",
+      "skillDesc": "Imitates at least 10 motor activities requiring discrimination of objects"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D4",
+      "skillDesc": "Imitates gross motor movements with a verbal prompt"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D5",
+      "skillDesc": "Imitates arm and hand movements on request"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D6",
+      "skillDesc": "Imitates both kinetic and static movements"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D7",
+      "skillDesc": "Imitates a variety of vowel and consonant sounds in meaningful communication contexts"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D8",
+      "skillDesc": "Imitates animal sounds and environmental sounds"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D9",
+      "skillDesc": "Imitates recognisable single words spontaneously and frequently during interaction"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D10",
+      "skillDesc": "Imitates movements to five songs; imitates at least 10 different actions"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D11",
+      "skillDesc": "Imitates or approximates novel actions in songs"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "D12",
+      "skillDesc": "Imitates multi-step actions on objects (simple play sequences)"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F12",
+      "skillDesc": "Vocalises with CVCV reduplicative babbling"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F13",
+      "skillDesc": "Produces five or more consonants in spontaneous vocalisation"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F14",
+      "skillDesc": "Produces CVCV with differing CV sequences (variegated babbling)"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K1",
+      "skillDesc": "Places one to two shapes in a shape sorter"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K2",
+      "skillDesc": "Places rings on a ring stacker"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K3",
+      "skillDesc": "Completes a three-piece wooden handle puzzle"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K4",
+      "skillDesc": "Puts pegs in a pegboard"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K7",
+      "skillDesc": "Uses a pincer grasp and a three-finger grasp as appropriate to the toy"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K8",
+      "skillDesc": "Stacks three large blocks in a tower (or stacking cups)"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K9",
+      "skillDesc": "Makes marks, lines, scribbles, and dots with markers or crayons"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K12",
+      "skillDesc": "Stacks large Lego blocks"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "K16",
+      "skillDesc": "Nests a set of 3–4 graduated cups, rings, or boxes by size."
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L1",
+      "skillDesc": "Kicks a large ball"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L2",
+      "skillDesc": "Walks up and down stairs with support — non-alternating feet"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L3",
+      "skillDesc": "Climbs one to two steps up a small ladder to a slide"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L4",
+      "skillDesc": "Gets on and off pieces of playground equipment"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L7",
+      "skillDesc": "Throws a ball and beanbags in any direction"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L12",
+      "skillDesc": "Crosses an obstacle of 6 inches high"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L13",
+      "skillDesc": "Runs a distance of 2 metres or more"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L14",
+      "skillDesc": "Jumps in place"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L15",
+      "skillDesc": "Jumps a small distance forward"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "L16",
+      "skillDesc": "Jumps from a small height of approximately 1 foot"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B20",
+      "skillDesc": "Searches for family members or favourite objects when named"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B22",
+      "skillDesc": "Names or requests objects with phonetically consistent sound forms"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C7",
+      "skillDesc": "Uses indirect requests, requests clarification, and adjusts speaking style for listeners of different ages or roles"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E6",
+      "skillDesc": "Looks when shown an object and told: Name, look"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E17",
+      "skillDesc": "Identifies by pointing or showing several named body parts on self or another person"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E19",
+      "skillDesc": "Identifies by pointing and attending to three named pictures"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E20",
+      "skillDesc": "Understands early spatial concepts (in, on)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E21",
+      "skillDesc": "Looks to people and photos of people when named — family members, pets, teachers"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M1",
+      "skillDesc": "Matches and sorts identical objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M2",
+      "skillDesc": "Matches and sorts identical pictures"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M3",
+      "skillDesc": "Matches and sorts identical pictures to objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M4",
+      "skillDesc": "Matches and sorts objects by colour"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M5",
+      "skillDesc": "Recognises and demonstrates the use of common objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M6",
+      "skillDesc": "Begins to understand slow and fast, light and heavy"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M7",
+      "skillDesc": "Is aware of the order of events — first and last, before and after"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M8",
+      "skillDesc": "Names and identifies a few colours and shapes and matches them"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M9",
+      "skillDesc": "Understands daytime and night-time"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M10",
+      "skillDesc": "Understands concepts of big-small, tall-short, thick-thin"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M11",
+      "skillDesc": "Makes comparisons with reference to two objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M12",
+      "skillDesc": "Categorises based on conceptual relationships, not only physical similarity"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M13",
+      "skillDesc": "Recognises cause-and-effect of actions toward objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "M16",
+      "skillDesc": "Begins to show short-term recall — searches for a hidden object, anticipates next step in a familiar routine (Memory — developmental reference)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "N7",
+      "skillDesc": "Distinguishes similar and different sounds"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "N8",
+      "skillDesc": "Can differentiate taste and smell to some extent"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "N9",
+      "skillDesc": "Notices change and understands cause and effect in the sensory environment"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "N10",
+      "skillDesc": "Differentiates textures and begins to describe qualities such as rough, smooth, hard, and soft"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "A9",
+      "skillDesc": "Responds to at least 3 different preferred items in learning activities"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "A19",
+      "skillDesc": "Accepts changes in the activity or schedule without becoming upset or resisting"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "A27",
+      "skillDesc": "Enjoys activities more when the adult adds variations to familiar activities"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "A28",
+      "skillDesc": "Adapts behaviour to match the adult's actions after a variation is introduced"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "A29",
+      "skillDesc": "Shares enjoyment after successfully adapting behaviour to match an activity variation"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "C10",
+      "skillDesc": "Discriminates between real and similar nonsense words"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "K5",
+      "skillDesc": "Pushes buttons on five different types of cause-and-effect toys"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "K6",
+      "skillDesc": "Takes apart pop beads and Duplo blocks"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "K10",
+      "skillDesc": "Bangs a toy hammer with balls, pegs, etc."
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "K11",
+      "skillDesc": "Scoops, rakes, and pours with sand, water, rice, etc."
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "K13",
+      "skillDesc": "Tears paper"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "K14",
+      "skillDesc": "Pulls and turns knobs and handles"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "M15",
+      "skillDesc": "Physically explores surroundings actively"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "N1",
+      "skillDesc": "Enjoys playing with toys of varied textures"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "N2",
+      "skillDesc": "Enjoys listening and playing with musical toys"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "N11",
+      "skillDesc": "Enjoys manipulative materials such as sand, water, and clay"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "A3",
+      "skillDesc": "Looks at a non-preferred item when it is presented"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "A6",
+      "skillDesc": "Responds to an adult-selected activity for at least 5 presentations in a sequence"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "A10",
+      "skillDesc": "Waits appropriately when access to a preferred item is briefly delayed — at least one minute"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "A20",
+      "skillDesc": "Stops an activity and makes a change without becoming upset or resisting"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "A30",
+      "skillDesc": "Waits to add variations to joint activities and looks for the adult's approval"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B1",
+      "skillDesc": "Shows a startle response to sudden loud sounds"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B24",
+      "skillDesc": "Understands and briefly complies with inhibitory words — no, stop"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C1",
+      "skillDesc": "Produces predominantly four or five word sentences and an increasing number of compound or complex sentences"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C2",
+      "skillDesc": "Reaches peak of question-asking phase with frequent wh-questions — Why? How? Where? When?"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C3",
+      "skillDesc": "Includes plurals, possessives, and multiple adjectives in sentences when appropriate"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E12",
+      "skillDesc": "Responds by stopping momentarily in response to inhibitory words (no, stop)"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E14",
+      "skillDesc": "Performs a one-step routine instruction involving body actions paired with verbal and gesture cue"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E15",
+      "skillDesc": "Performs a one-step routine instruction involving body actions without an accompanying gesture"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E16",
+      "skillDesc": "Follows 8–10 one-step verbal instructions involving body actions and actions on objects"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E18",
+      "skillDesc": "Responds to verbal instruction to give, point, or show 8–10 specific objects in natural routines"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "L5",
+      "skillDesc": "Protects self when off balance"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "L6",
+      "skillDesc": "Walks around objects on the floor rather than stepping on them"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "L9",
+      "skillDesc": "Plays in a squatting position for at least 10 seconds"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "L10",
+      "skillDesc": "Holds an object overhead for at least 5 to 10 seconds"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "L11",
+      "skillDesc": "Pulls and pushes heavy objects on request"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "M14",
+      "skillDesc": "Attends to an ongoing sound or activity for 15 or more seconds"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "N5",
+      "skillDesc": "Plays with toys without mouthing them"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "N6",
+      "skillDesc": "Participates in messy play such as finger painting and textured play without significant distress"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "E2",
+      "skillDesc": "Looks toward playful vocal sounds (e.g. whistle, car sounds)"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "E8",
+      "skillDesc": "Follows a proximal point to an object or location"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "E9",
+      "skillDesc": "Follows a distal point to retrieve a toy"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "E12",
+      "skillDesc": "Responds by stopping momentarily in response to inhibitory words (no, stop)"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "E15",
+      "skillDesc": "Performs a one-step routine instruction involving body actions without an accompanying gesture"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "EC6",
+      "skillDesc": "Uses a variety of verb phrases — e.g. he cries, she likes him, he fell, he was happy"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "J1",
+      "skillDesc": "Assists in dressing by raising hands and lifting legs"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "C13",
+      "skillDesc": "Understands simple negations"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "E3",
+      "skillDesc": "Responds to voice by turning toward the person"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "E5",
+      "skillDesc": "Follows a proximal point to place objects in containers, complete puzzles, etc."
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "E14",
+      "skillDesc": "Performs a one-step routine instruction involving body actions paired with verbal and gesture cue"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "EC10",
+      "skillDesc": "Uses plural forms"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "EC11",
+      "skillDesc": "Uses later possessives — e.g. his, hers, mommy's hat"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "C5",
+      "skillDesc": "Understands 10,000+ words including relative concepts of time — before/after, yesterday/tomorrow — and quantity — more/less, most/least"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B7",
+      "skillDesc": "Exhibits a social smile in response to familiar faces"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D1",
+      "skillDesc": "Imitates at least 10 actions with various objects presented one at a time"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D2",
+      "skillDesc": "Produces a vocal approximation of a sound associated with a preferred item during play"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D3",
+      "skillDesc": "Imitates at least 10 motor activities requiring discrimination of objects"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D4",
+      "skillDesc": "Imitates gross motor movements with a verbal prompt"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D5",
+      "skillDesc": "Imitates arm and hand movements on request"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D6",
+      "skillDesc": "Imitates both kinetic and static movements"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D7",
+      "skillDesc": "Imitates a variety of vowel and consonant sounds in meaningful communication contexts"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D8",
+      "skillDesc": "Imitates animal sounds and environmental sounds"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "E10",
+      "skillDesc": "Looks, reaches, or smiles in response to adult gestures and voice in social games"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC3",
+      "skillDesc": "Speaks in three to four word utterances consistently"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "G1",
+      "skillDesc": "Manipulates and explores toys that are presented"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "I10",
+      "skillDesc": "Understands and participates in bedtime rituals"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "C14",
+      "skillDesc": "Uses five or six word sentences"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "C15",
+      "skillDesc": "Associates spoken words with pictures"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "E6",
+      "skillDesc": "Looks when shown an object and told: Name, look"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "E11",
+      "skillDesc": "Looks, reaches, smiles, or gestures in response to adult language or gesture during songs"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "E17",
+      "skillDesc": "Identifies by pointing or showing several named body parts on self or another person"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "E18",
+      "skillDesc": "Responds to verbal instruction to give, point, or show 8–10 specific objects in natural routines"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "EC1",
+      "skillDesc": "Responds to complex wh-questions — why and how"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "EC7",
+      "skillDesc": "Demonstrates accurate production of at least 80% of all consonants and blends within connected speech"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "H1",
+      "skillDesc": "Eats meals and snacks at the table"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "H4",
+      "skillDesc": "Uses a spoon"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "C3",
+      "skillDesc": "Includes plurals, possessives, and multiple adjectives in sentences when appropriate"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "EC2",
+      "skillDesc": "Describes object functions in response to question — e.g. What do you do with a spoon?"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F1",
+      "skillDesc": "Uses a goal-directed reach to request"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F2",
+      "skillDesc": "Vocalises with intent — communicative purpose"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F3",
+      "skillDesc": "Asks for help by handing an object to the adult"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F4",
+      "skillDesc": "Takes turns vocalising with a communication partner"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F5",
+      "skillDesc": "Expresses refusal by pushing away an object or handing it back to the adult"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F6",
+      "skillDesc": "Points proximally to request a desired object"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F7",
+      "skillDesc": "Makes eye contact to obtain a desired object when the adult blocks access or withholds it"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F8",
+      "skillDesc": "Points to indicate a choice between two objects"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "F9",
+      "skillDesc": "Combines vocalisation and eye gaze for an intentional request"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "H2",
+      "skillDesc": "Eats a meal independently"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "I1",
+      "skillDesc": "Wipes face with a cloth when instructed"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "I2",
+      "skillDesc": "Wipes nose when instructed"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "I5",
+      "skillDesc": "Participates in and enjoys bath time"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "I8",
+      "skillDesc": "Brushes toothbrush over teeth"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "I9",
+      "skillDesc": "Spits and rinses mouth with water during teeth brushing"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "I10",
+      "skillDesc": "Understands and participates in bedtime rituals"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "J1",
+      "skillDesc": "Assists in dressing by raising hands and lifting legs"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "J2",
+      "skillDesc": "Pulls a t-shirt down"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "J4",
+      "skillDesc": "Wears different types and textures of clothing without distress"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "E19",
+      "skillDesc": "Identifies by pointing and attending to three named pictures"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C1",
+      "skillDesc": "Produces predominantly four or five word sentences and an increasing number of compound or complex sentences"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C2",
+      "skillDesc": "Reaches peak of question-asking phase with frequent wh-questions — Why? How? Where? When?"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C4",
+      "skillDesc": "Maintains longer, detailed conversations or narratives about present, remote, and imaginary topics"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C6",
+      "skillDesc": "Produces five to eight word sentences with few grammatical errors"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C8",
+      "skillDesc": "Tells relatively detailed narratives about own experiences in recent and remote past"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C9",
+      "skillDesc": "Answers simple logic questions"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C12",
+      "skillDesc": "Understands regular plural forms"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C16",
+      "skillDesc": "Engages in meaningful dialogue — maintains topic across multiple turns"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C17",
+      "skillDesc": "Recalls main events from short story presented orally"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C18",
+      "skillDesc": "Answers what would you do if... questions about personal situations"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C19",
+      "skillDesc": "Compares the sizes of familiar objects not in view"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C20",
+      "skillDesc": "Identifies sources of common actions — e.g. What makes the light go on?"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C21",
+      "skillDesc": "Follows three-step verbal commands"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C22",
+      "skillDesc": "Holds and uses a three-step verbal instruction in working memory to complete a task independently (Memory — developmental reference)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C23",
+      "skillDesc": "Fast maps new words to objects — often after a single exposure"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C24",
+      "skillDesc": "Begins to recall recently experienced events when prompted — points to or vocalises about something that happened earlier in the day (Memory — developmental reference)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B3",
+      "skillDesc": "Produces differentiated cries — different cries for hunger, pain, and discomfort"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B5",
+      "skillDesc": "Produces one or more single-syllable consonant-vowel sounds"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B6",
+      "skillDesc": "Repeats single-syllable consonant-vowel sounds in close succession (e.g. ba-ba, da-da)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B10",
+      "skillDesc": "Responds to voice and face by vocalising"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "D9",
+      "skillDesc": "Imitates recognisable single words spontaneously and frequently during interaction"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC4",
+      "skillDesc": "Uses a variety of noun phrases"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC5",
+      "skillDesc": "Uses prepositional phrases — e.g. under, next to, behind, in back of, in front of"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC8",
+      "skillDesc": "Describes recent experience using three-to-four word sentence"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC9",
+      "skillDesc": "Requests permission to pursue an activity"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "G1",
+      "skillDesc": "Manipulates and explores toys that are presented"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "G2",
+      "skillDesc": "Shows at least three variations while playing with a preferred toy"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "G3",
+      "skillDesc": "Demonstrates generalisation by engaging in exploratory movement and play with toys in a novel environment"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "G4",
+      "skillDesc": "Independently engages in movement play for at least 2 minutes"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "G5",
+      "skillDesc": "Independently engages in cause-and-effect play for at least 2 minutes"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "H3",
+      "skillDesc": "Uses an open cup"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "EC12",
+      "skillDesc": "Uses regular past tense"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "H5",
+      "skillDesc": "Uses a fork"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "I4",
+      "skillDesc": "Cooperates with hair washing and cutting"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "I6",
+      "skillDesc": "Hands over items (e.g. soap) and assists with shower or mug during bath time"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "I7",
+      "skillDesc": "Assists with applying lotion"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "I10",
+      "skillDesc": "Understands and participates in bedtime rituals"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "J3",
+      "skillDesc": "Pulls pants up"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "J4",
+      "skillDesc": "Wears different types and textures of clothing without distress"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C10",
+      "skillDesc": "Discriminates between real and similar nonsense words"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C11",
+      "skillDesc": "Gives three objects on request"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B2",
+      "skillDesc": "Localises to sound — turns toward sound source, especially the human voice"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B4",
+      "skillDesc": "Produces cooing — vowel-like sounds during comfortable, calm states"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B8",
+      "skillDesc": "Quiets and attends when an adult voice is heard or a person enters the visual field"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B9",
+      "skillDesc": "Responds to voice and face by smiling when the adult engages"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "G1",
+      "skillDesc": "Manipulates and explores toys that are presented"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "H6",
+      "skillDesc": "Eats a variety of food textures, types, and food groups"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "H7",
+      "skillDesc": "Tolerates new foods on the plate"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "H8",
+      "skillDesc": "Drinks from a straw"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "I10",
+      "skillDesc": "Understands and participates in bedtime rituals"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "J1",
+      "skillDesc": "Assists in dressing by raising hands and lifting legs"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "D1",
+      "skillDesc": "Imitates at least 10 actions with various objects presented one at a time"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "D3",
+      "skillDesc": "Imitates at least 10 motor activities requiring discrimination of objects"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "D5",
+      "skillDesc": "Imitates arm and hand movements on request"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "D7",
+      "skillDesc": "Imitates a variety of vowel and consonant sounds in meaningful communication contexts"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "H4",
+      "skillDesc": "Uses a spoon"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "C11",
+      "skillDesc": "Gives three objects on request"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "D8",
+      "skillDesc": "Imitates animal sounds and environmental sounds"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "D12",
+      "skillDesc": "Imitates multi-step actions on objects (simple play sequences)"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "EC9",
+      "skillDesc": "Requests permission to pursue an activity"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "C8",
+      "skillDesc": "Tells relatively detailed narratives about own experiences in recent and remote past"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "C10",
+      "skillDesc": "Discriminates between real and similar nonsense words"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "B1",
+      "skillDesc": "Shows a startle response to sudden loud sounds"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D11",
+      "skillDesc": "Imitates or approximates novel actions in songs"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "D12",
+      "skillDesc": "Imitates multi-step actions on objects (simple play sequences)"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC2",
+      "skillDesc": "Describes object functions in response to question — e.g. What do you do with a spoon?"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC7",
+      "skillDesc": "Demonstrates accurate production of at least 80% of all consonants and blends within connected speech"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC11",
+      "skillDesc": "Uses later possessives — e.g. his, hers, mommy's hat"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "D2",
+      "skillDesc": "Produces a vocal approximation of a sound associated with a preferred item during play"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "D6",
+      "skillDesc": "Imitates both kinetic and static movements"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "D10",
+      "skillDesc": "Imitates movements to five songs; imitates at least 10 different actions"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "EC4",
+      "skillDesc": "Uses a variety of noun phrases"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "EC8",
+      "skillDesc": "Describes recent experience using three-to-four word sentence"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "E21",
+      "skillDesc": "Looks to people and photos of people when named — family members, pets, teachers"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "G1",
+      "skillDesc": "Manipulates and explores toys that are presented"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "G2",
+      "skillDesc": "Shows at least three variations while playing with a preferred toy"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "G3",
+      "skillDesc": "Demonstrates generalisation by engaging in exploratory movement and play with toys in a novel environment"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "G4",
+      "skillDesc": "Independently engages in movement play for at least 2 minutes"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "G5",
+      "skillDesc": "Independently engages in cause-and-effect play for at least 2 minutes"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "H1",
+      "skillDesc": "Eats meals and snacks at the table"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "H5",
+      "skillDesc": "Uses a fork"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "H6",
+      "skillDesc": "Eats a variety of food textures, types, and food groups"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "H7",
+      "skillDesc": "Tolerates new foods on the plate"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "H8",
+      "skillDesc": "Drinks from a straw"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C3",
+      "skillDesc": "Includes plurals, possessives, and multiple adjectives in sentences when appropriate"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C5",
+      "skillDesc": "Understands 10,000+ words including relative concepts of time — before/after, yesterday/tomorrow — and quantity — more/less, most/least"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C14",
+      "skillDesc": "Uses five or six word sentences"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C15",
+      "skillDesc": "Associates spoken words with pictures"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B4",
+      "skillDesc": "Produces cooing — vowel-like sounds during comfortable, calm states"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B7",
+      "skillDesc": "Exhibits a social smile in response to familiar faces"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B8",
+      "skillDesc": "Quiets and attends when an adult voice is heard or a person enters the visual field"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B9",
+      "skillDesc": "Responds to voice and face by smiling when the adult engages"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B11",
+      "skillDesc": "Takes turns in mutual gaze and vocalisation patterns with an adult"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B12",
+      "skillDesc": "Coos, chuckles, or laughs during interaction"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B13",
+      "skillDesc": "Coordinates listening and looking simultaneously"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B15",
+      "skillDesc": "Responds to routinised words and phrases (e.g. hi, bye-bye) and gesture games (e.g. peek-a-boo)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC3",
+      "skillDesc": "Speaks in three to four word utterances consistently"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC10",
+      "skillDesc": "Uses plural forms"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC12",
+      "skillDesc": "Uses regular past tense"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC13",
+      "skillDesc": "Uses articles — a, an, the"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC14",
+      "skillDesc": "Uses comparatives and superlatives"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC15",
+      "skillDesc": "Uses negation with auxiliary verbs"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC18",
+      "skillDesc": "Responds to questions about physical states"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E1",
+      "skillDesc": "Localises to sounds by turning toward the sound source"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E2",
+      "skillDesc": "Looks toward playful vocal sounds (e.g. whistle, car sounds)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E3",
+      "skillDesc": "Responds to voice by turning toward the person"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E4",
+      "skillDesc": "Looks at indicated pictures as the adult points to them in a book"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E5",
+      "skillDesc": "Follows a proximal point to place objects in containers, complete puzzles, etc."
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E7",
+      "skillDesc": "Looks to the adult when name is called"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E8",
+      "skillDesc": "Follows a proximal point to an object or location"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E9",
+      "skillDesc": "Follows a distal point to retrieve a toy"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E10",
+      "skillDesc": "Looks, reaches, or smiles in response to adult gestures and voice in social games"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E11",
+      "skillDesc": "Looks, reaches, smiles, or gestures in response to adult language or gesture during songs"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E12",
+      "skillDesc": "Responds by stopping momentarily in response to inhibitory words (no, stop)"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E13",
+      "skillDesc": "Gives an object as verbally requested when paired with the adult's outstretched hand"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E14",
+      "skillDesc": "Performs a one-step routine instruction involving body actions paired with verbal and gesture cue"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E15",
+      "skillDesc": "Performs a one-step routine instruction involving body actions without an accompanying gesture"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E16",
+      "skillDesc": "Follows 8–10 one-step verbal instructions involving body actions and actions on objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "E18",
+      "skillDesc": "Responds to verbal instruction to give, point, or show 8–10 specific objects in natural routines"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "J1",
+      "skillDesc": "Assists in dressing by raising hands and lifting legs"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "J2",
+      "skillDesc": "Pulls a t-shirt down"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "C9",
+      "skillDesc": "Answers simple logic questions"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "EC16",
+      "skillDesc": "Uses present progressive verb form"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "EC17",
+      "skillDesc": "Uses words to describe physical states"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "F4",
+      "skillDesc": "Takes turns vocalising with a communication partner"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "F5",
+      "skillDesc": "Expresses refusal by pushing away an object or handing it back to the adult"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "F6",
+      "skillDesc": "Points proximally to request a desired object"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "F7",
+      "skillDesc": "Makes eye contact to obtain a desired object when the adult blocks access or withholds it"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "G1",
+      "skillDesc": "Manipulates and explores toys that are presented"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "H3",
+      "skillDesc": "Uses an open cup"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C13",
+      "skillDesc": "Understands simple negations"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C20",
+      "skillDesc": "Identifies sources of common actions — e.g. What makes the light go on?"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B6",
+      "skillDesc": "Repeats single-syllable consonant-vowel sounds in close succession (e.g. ba-ba, da-da)"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B14",
+      "skillDesc": "Recognises others' emotions through facial expressions and vocal tone"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "D4",
+      "skillDesc": "Imitates gross motor movements with a verbal prompt"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E17",
+      "skillDesc": "Identifies by pointing or showing several named body parts on self or another person"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E20",
+      "skillDesc": "Understands early spatial concepts (in, on)"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "H1",
+      "skillDesc": "Eats meals and snacks at the table"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "EC6",
+      "skillDesc": "Uses a variety of verb phrases — e.g. he cries, she likes him, he fell, he was happy"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "H1",
+      "skillDesc": "Eats meals and snacks at the table"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "H2",
+      "skillDesc": "Eats a meal independently"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "H8",
+      "skillDesc": "Drinks from a straw"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "D2",
+      "skillDesc": "Produces a vocal approximation of a sound associated with a preferred item during play"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "D3",
+      "skillDesc": "Imitates at least 10 motor activities requiring discrimination of objects"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "D4",
+      "skillDesc": "Imitates gross motor movements with a verbal prompt"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "D7",
+      "skillDesc": "Imitates a variety of vowel and consonant sounds in meaningful communication contexts"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "C4",
+      "skillDesc": "Maintains longer, detailed conversations or narratives about present, remote, and imaginary topics"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "C7",
+      "skillDesc": "Uses indirect requests, requests clarification, and adjusts speaking style for listeners of different ages or roles"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "C16",
+      "skillDesc": "Engages in meaningful dialogue — maintains topic across multiple turns"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC8",
+      "skillDesc": "Describes recent experience using three-to-four word sentence"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC23",
+      "skillDesc": "Participates in a conversation initiated by an adult for two to three consecutive turns"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC24",
+      "skillDesc": "Initiates and maintains a conversation on a self-generated topic with an adult"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC25",
+      "skillDesc": "Describes a two-to-three event sequence of activities"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC27",
+      "skillDesc": "Asks for clarification if doesn't understand what is said"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC28",
+      "skillDesc": "Engages in a variety of topics during conversation"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "EC29",
+      "skillDesc": "Repairs own communication when listener does not understand"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "EC9",
+      "skillDesc": "Requests permission to pursue an activity"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "EC22",
+      "skillDesc": "Answers telephone appropriately"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F5",
+      "skillDesc": "Expresses refusal by pushing away an object or handing it back to the adult"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "F9",
+      "skillDesc": "Combines vocalisation and eye gaze for an intentional request"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "EC7",
+      "skillDesc": "Demonstrates accurate production of at least 80% of all consonants and blends within connected speech"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "H4",
+      "skillDesc": "Uses a spoon"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C10",
+      "skillDesc": "Discriminates between real and similar nonsense words"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "C13",
+      "skillDesc": "Understands simple negations"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B1",
+      "skillDesc": "Shows a startle response to sudden loud sounds"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B14",
+      "skillDesc": "Recognises others' emotions through facial expressions and vocal tone"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B16",
+      "skillDesc": "Exhibits babbling that is increasingly varied in sounds and syllable structure"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "B17",
+      "skillDesc": "Recognises own name when spoken"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC1",
+      "skillDesc": "Responds to complex wh-questions — why and how"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC2",
+      "skillDesc": "Describes object functions in response to question — e.g. What do you do with a spoon?"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC6",
+      "skillDesc": "Uses a variety of verb phrases — e.g. he cries, she likes him, he fell, he was happy"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC11",
+      "skillDesc": "Uses later possessives — e.g. his, hers, mommy's hat"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC16",
+      "skillDesc": "Uses present progressive verb form"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC17",
+      "skillDesc": "Uses words to describe physical states"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC19",
+      "skillDesc": "Uses category names for familiar objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC20",
+      "skillDesc": "Describes features of objects"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC21",
+      "skillDesc": "Uses reflexive pronouns"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "EC30",
+      "skillDesc": "Answers questions about self and others"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "F3",
+      "skillDesc": "Asks for help by handing an object to the adult"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "C2",
+      "skillDesc": "Reaches peak of question-asking phase with frequent wh-questions — Why? How? Where? When?"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "C18",
+      "skillDesc": "Answers what would you do if... questions about personal situations"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "F2",
+      "skillDesc": "Vocalises with intent — communicative purpose"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "F8",
+      "skillDesc": "Points to indicate a choice between two objects"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "C21",
+      "skillDesc": "Follows three-step verbal commands"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "B18",
+      "skillDesc": "Expresses intentions to obtain objects or share attention through gestures and vocalisation"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "D9",
+      "skillDesc": "Imitates recognisable single words spontaneously and frequently during interaction"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "EC26",
+      "skillDesc": "Expresses I don't know paired with gesture"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "E21",
+      "skillDesc": "Looks to people and photos of people when named — family members, pets, teachers"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "G2",
+      "skillDesc": "Shows at least three variations while playing with a preferred toy"
+    },
+    {
+      "title": "EFF · D1 — Joint Engagement & Coordination",
+      "code": "6A.7",
+      "skillDesc": "Enacts simple sequential parallel activity role with guide while both face a large mirror — self-awareness in action"
+    },
+    {
+      "title": "EFF · D2 — Emotional Awareness & Empathic Connection",
+      "code": "1B.7",
+      "skillDesc": "Understands and uses humour, sarcasm, irony, and indirect communication appropriately"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "1A.5",
+      "skillDesc": "Engages in sustained conversations across multiple topics with appropriate topic maintenance and shifting"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "1B.6",
+      "skillDesc": "Demonstrates awareness of listener perspective and adjusts language complexity and formality accordingly"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "3A.1",
+      "skillDesc": "Anticipates locations of visual events — looks to an area prior to the repetition of an expected event"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "3A.2",
+      "skillDesc": "Coordinates attention with partner's focus when partner places an object in visual field"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "3A.3",
+      "skillDesc": "Selectively processes features of complex visual stimuli in a visual context"
+    },
+    {
+      "title": "EFF · D3 — Shared Attention & Experience Sharing",
+      "code": "5A.4",
+      "skillDesc": "Demonstrates ability to show and tell — integrates language, memory and social performance"
+    },
+    {
+      "title": "EFF · D4 — Collaborative Problem Solving & Co-Participation",
+      "code": "1B.5",
+      "skillDesc": "Uses language to construct and defend an argument with reasoning"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "2B.5",
+      "skillDesc": "Performs an observed but not enacted task after a day's delay — delayed imitation"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "2D.1",
+      "skillDesc": "Remembers a series of steps that if applied in sequence lead to a result — procedural memory"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "2D.2",
+      "skillDesc": "Remembers procedures and later uses them in a functional manner when they have been carefully demonstrated"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "2D.3",
+      "skillDesc": "Reproduces a three-step sequence — initiation, modification, and completion — representing the minimum narrative"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "4B.4",
+      "skillDesc": "Copies words with upper and lower case letters"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "4B.5",
+      "skillDesc": "Assembles a six-piece puzzle of a person — spatial reasoning"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "4B.7",
+      "skillDesc": "Joins the quarters of a circle to complete a circle — spatial assembly"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "5B.5",
+      "skillDesc": "Uses a knife to cut soft food without assistance — tool use and safety regulation"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7A.1",
+      "skillDesc": "Copies a diamond shape with accuracy"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7A.2",
+      "skillDesc": "Copies directional arrows — spatial orientation in drawing"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7A.3",
+      "skillDesc": "Copies words with upper and lower case letters"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7A.5",
+      "skillDesc": "Ties a single overhand knot around a crayon with a string — bimanual fine motor coordination"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7A.6",
+      "skillDesc": "Crumples paper into a ball with each hand independently — unimanual manipulation"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7A.7",
+      "skillDesc": "Copies a square, numerals 1–5, and simple words — graphic motor control"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7A.9",
+      "skillDesc": "Uses a knife to cut soft food without assistance — tool use precision"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7B.1",
+      "skillDesc": "Throws a ball at a target with directionality and accuracy"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7B.4",
+      "skillDesc": "Does a standing broad jump — explosive lower body power"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7B.5",
+      "skillDesc": "Catches a ball reliably — visual-motor coordination"
+    },
+    {
+      "title": "PMF · D1 — Observational Learning & Internalized Guidance",
+      "code": "7B.6",
+      "skillDesc": "Rides a bicycle confidently with training wheels — dynamic bilateral coordination and steering"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.1",
+      "skillDesc": "Demonstrates vocabulary for almost everything in daily experience, with definitions based on function and category"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.2",
+      "skillDesc": "Evidences syntagmatic-paradigmatic shift — begins to organise words according to hierarchical categories"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.3",
+      "skillDesc": "Applies verbal strategies in describing ideas and reasoning about relationships"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.4",
+      "skillDesc": "Exhibits understanding of figurative language — idioms, metaphors — and ambiguous word meanings"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.6",
+      "skillDesc": "Demonstrates ability to define words using categorical or functional language rather than personal experience"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.7",
+      "skillDesc": "Recalls main events from a story presented orally and retells in logical order"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.10",
+      "skillDesc": "Identifies the middle object in a row; sequences familiar events in logical order"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.11",
+      "skillDesc": "Knows the right and left sides of own body"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.12",
+      "skillDesc": "Recognises visual differences among similar numerals, geometric forms and letters"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.13",
+      "skillDesc": "Solves simple addition and subtraction problems involving numbers 1–5"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1A.14",
+      "skillDesc": "Writes letters that stand for sounds — early phonemic awareness"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1B.1",
+      "skillDesc": "Exhibits general mastery of remaining grammatical features — irregular nouns and verbs, comparatives, superlatives"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1B.2",
+      "skillDesc": "Expands vocabulary skills including definitions based on categorical or taxonomic style"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1B.4",
+      "skillDesc": "Exhibits emerging formal expository writing skills — organises ideas in written form for a reader"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1B.8",
+      "skillDesc": "Conserves two-dimensional space and length — understands spatial constancy"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1B.9",
+      "skillDesc": "Groups objects by shape and colour simultaneously — multi-attribute classification"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1B.10",
+      "skillDesc": "Solves simple word problems involving subtraction and multiplication"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "1B.11",
+      "skillDesc": "Tells time to hour and half hour"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2A.1",
+      "skillDesc": "Shows recognition of settings, persons, objects, and tasks that have been seen or experienced before"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2A.2",
+      "skillDesc": "Recognises several simple activity frameworks and distinguishes them from each other — complex recognition memory"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2A.3",
+      "skillDesc": "Responds clearly differently to photographs in which self is present versus absent — self-recognition memory"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2B.1",
+      "skillDesc": "Remembers the relation of simple actions and their immediate consequences"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2B.3",
+      "skillDesc": "Seeks to avoid events that have resulted in an immediate negative response — aversive memory"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2B.4",
+      "skillDesc": "Anticipates repetition of emotions experienced in similar activities — emotional memory"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2C.1",
+      "skillDesc": "Remembers that certain cause-effect relationships are mediated by specific activities, settings, or persons"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2C.2",
+      "skillDesc": "Associates specific settings with role-actions typically performed in the setting and persons typically present"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2C.4",
+      "skillDesc": "Expects that if a partner initiates one role of a familiar complementary role enactment, it signals the partnered role"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2D.4",
+      "skillDesc": "Recalls facts from an oral story presented without visual support"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "2D.5",
+      "skillDesc": "Repeats four-digit sequences — auditory sequential memory"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "3B.1",
+      "skillDesc": "Identifies the middle object in a row — spatial attention and ordinal understanding"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "3B.2",
+      "skillDesc": "Sequences familiar events in logical order — temporal attentional organisation"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.2",
+      "skillDesc": "Employs concept of relative degrees of category membership — understands that some things are better examples of a category"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.3",
+      "skillDesc": "Sorts exhaustively — finds a category for every object presented in an array"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.5",
+      "skillDesc": "Groups objects by shape and colour simultaneously — multi-attribute classification"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.6",
+      "skillDesc": "Conserves two-dimensional space and length — Piagetian conservation task"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.7",
+      "skillDesc": "Identifies missing parts of objects — part-whole reasoning"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.8",
+      "skillDesc": "Identifies colours of familiar objects not in view — mental imagery and memory-based reasoning"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.9",
+      "skillDesc": "Identifies first and last objects in a row; identifies the middle object — ordinal concepts"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.10",
+      "skillDesc": "Recognises picture absurdities — logical reasoning and anomaly detection"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.11",
+      "skillDesc": "Selects single words from visual presentation — early reading and symbol-word correspondence"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.12",
+      "skillDesc": "Solves simple addition and subtraction problems involving numbers 1–5"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.13",
+      "skillDesc": "Solves simple word problems involving subtraction and multiplication"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.14",
+      "skillDesc": "Tells time to hour and half hour"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4A.16",
+      "skillDesc": "Identifies sources of common actions — causal reasoning"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4B.1",
+      "skillDesc": "Knows the right and left sides of own body reliably"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4B.2",
+      "skillDesc": "Recognises visual differences among similar numerals, geometric forms and letters"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4B.3",
+      "skillDesc": "Writes letters that stand for sounds — phonemic awareness and early literacy"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4B.6",
+      "skillDesc": "Identifies textures — rough, smooth, and soft — tactile discrimination"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4B.8",
+      "skillDesc": "Recalls main events from a short story presented orally"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4B.9",
+      "skillDesc": "Demonstrates vocabulary for almost everything in daily experience with functional definitions"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "4B.10",
+      "skillDesc": "Evidences syntagmatic-paradigmatic shift — organises words hierarchically rather than situationally"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "5B.2",
+      "skillDesc": "Knows own home address — personal identity and safety information"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "5C.1",
+      "skillDesc": "Tells time to hour and half hour — temporal self-regulation"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6A.1",
+      "skillDesc": "Reacts differently when listening to recordings of own vocalisations compared to unfamiliar but similar vocalisations"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6A.2",
+      "skillDesc": "Particularly attends to parts of recordings containing own voice — self-recognition in audio"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6A.3",
+      "skillDesc": "Recognises that sounds they make are distinctly different from sounds made by others or the environment"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6A.5",
+      "skillDesc": "Reacts differently to seeing own face in a mirror compared to seeing other people's faces — visual self-recognition"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6A.6",
+      "skillDesc": "Demonstrates self-other visual discrimination and communicates recognition of self-other differentiation"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6B.1",
+      "skillDesc": "Responds clearly differently to photographs in which self is present versus absent — self-recognition in photographs"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6B.2",
+      "skillDesc": "Correctly labels mirror image of self"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6B.3",
+      "skillDesc": "Identifies self in photographs and video recordings — self-representation across media"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6B.4",
+      "skillDesc": "Understands the relationship between the present self vis-à-vis the recent and more distant past — temporal self"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6B.5",
+      "skillDesc": "Demonstrates awareness of degrees of personal preference across a variety of areas"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6B.7",
+      "skillDesc": "Uses pronoun to refer to self appropriately across contexts"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "6B.8",
+      "skillDesc": "Knows own first and last name, age, and address"
+    },
+    {
+      "title": "PMF · D2 — Meaning-Making & Internal Dialogue",
+      "code": "7A.8",
+      "skillDesc": "Draws a person with six identifiable parts — representational drawing"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "1A.9",
+      "skillDesc": "Talks about hypothetical events and possibilities — what might happen if..."
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "1B.3",
+      "skillDesc": "Exhibits flexibility and creativity in using multiple word meanings — polysemy, ambiguity"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "2B.2",
+      "skillDesc": "Motivated to repeat actions that have resulted in an immediate pleasurable response — early cause-effect memory"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "3B.5",
+      "skillDesc": "Talks about things that might be — imagination-based attentional flexibility"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "4A.1",
+      "skillDesc": "Considers what if and contemplates as if — deduces what must have been without perceptual support"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "4A.15",
+      "skillDesc": "Answers what would you do if... questions about personal responsibility — social reasoning"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "5A.1",
+      "skillDesc": "Answers what would you do if... questions about personal responsibility — social problem solving"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "5A.2",
+      "skillDesc": "Continues to work on a learning task unassisted for an extended period — volitional persistence"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "6A.8",
+      "skillDesc": "Has spent long bouts of self-exploration in front of mirrors observing own movements — visual-proprioceptive integration"
+    },
+    {
+      "title": "PMF · D3 — Growth-Seeking Motivation",
+      "code": "6B.6",
+      "skillDesc": "Speaks positively about self and shows pride in achievements"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "1A.8",
+      "skillDesc": "Follows three-step verbal commands reliably and independently"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "2C.3",
+      "skillDesc": "Applies conditional performance — Keep doing A until you get to this point and then do B — while in progress"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "3A.4",
+      "skillDesc": "Attends to a learning task or story in a small group setting"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "3A.5",
+      "skillDesc": "Focuses attention on one task while simultaneously monitoring another activity — divided attention"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "3A.6",
+      "skillDesc": "Responds to instructions given in a small group and initiates task without being reminded — self-directed attention"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "3B.3",
+      "skillDesc": "Continues to work on a learning task unassisted for extended periods — sustained voluntary attention"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "3B.4",
+      "skillDesc": "Initiates and organises own activities without adult direction — self-regulated attentional control"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "4A.4",
+      "skillDesc": "Understands when informed that a desired outcome will occur after a delay — delayed gratification and planning"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5A.3",
+      "skillDesc": "Crosses the street safely when accompanied — safety awareness"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5A.6",
+      "skillDesc": "Goes to bed without assistance — independent self-management of routines"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5A.7",
+      "skillDesc": "Initiates and organises own activities independently"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5B.1",
+      "skillDesc": "Handles small sums of money responsibly — financial self-regulation"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5B.3",
+      "skillDesc": "Takes bath or shower without assistance — fully independent self-care"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5B.4",
+      "skillDesc": "Uses the telephone appropriately — instrumental communication and social regulation"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5B.6",
+      "skillDesc": "Walks a line 6 feet long heel to toe independently — motor self-regulation"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5C.2",
+      "skillDesc": "Handles simple responsibilities that involve time and planning"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "5C.4",
+      "skillDesc": "Responds to instructions given in a small group and initiates task without being reminded — self-initiation"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "6A.4",
+      "skillDesc": "Demonstrates deliberate use of vocalisation — either for self-stimulation or communication"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "7A.4",
+      "skillDesc": "Bends over and touches the floor with two hands — axial flexibility"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "7B.2",
+      "skillDesc": "Walks a line 6 feet long heel to toe — dynamic balance"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "7B.3",
+      "skillDesc": "Stands on each foot alternately with eyes closed — vestibular and proprioceptive balance"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "7B.7",
+      "skillDesc": "Moves around the vicinity of the house safely and independently"
+    },
+    {
+      "title": "PMF · D4 — Self-Regulation — Attention, Behaviour, Goals & Uncertainty",
+      "code": "7B.8",
+      "skillDesc": "Crosses the street safely when accompanied — environmental navigation and safety awareness"
+    }
+  ]
+}

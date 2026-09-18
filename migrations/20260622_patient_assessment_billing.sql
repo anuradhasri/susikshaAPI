@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS patient_assessment_billing (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    patient_id INT NOT NULL,
+    assessment_id INT NOT NULL,
+    patient_assessment_id INT NULL,
+    source_payment_id BIGINT NULL,
+    assessment_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    due_amount DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    fully_paid BOOLEAN NOT NULL DEFAULT 0,
+    payment_status VARCHAR(50) NOT NULL DEFAULT 'UNPAID',
+    completed_at DATETIME NULL,
+    created_by INT NULL,
+    updated_by INT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_patient_assessment_billing (patient_id, assessment_id),
+    KEY idx_patient_assessment_billing_patient_id (patient_id),
+    KEY idx_patient_assessment_billing_assessment_id (assessment_id),
+    KEY idx_patient_assessment_billing_patient_assessment_id (patient_assessment_id),
+    KEY idx_patient_assessment_billing_source_payment_id (source_payment_id),
+    KEY idx_patient_assessment_billing_status (payment_status)
+);
