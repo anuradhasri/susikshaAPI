@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from app.core.database import get_db
 from app.models.models import User, Region, Patient, Therapist
-from app.models.report_sheets import REPORT_TABLES, GoalLevelMaster, GoalTitleMaster, GoalSkillMaster, GoalTitleSkillMapping, GoalObjectiveTypeMaster, PatientObservationSheetEntry
+from app.models.report_sheets import REPORT_TABLES, GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster, GoalTitleSkillMapping, GoalObjectiveTypeMaster, PatientObservationSheetEntry
 from app.services.report_sheet_catalog import provision_report_sheets
 from app.api.routes import report_sheets as routes
 
@@ -30,7 +30,9 @@ class ReportSheetTests(unittest.TestCase):
         self.db.add_all([Patient(id=1, first_name='Test', last_name='Child', date_of_birth=date(2020, 1, 1), region_id=1), Patient(id=2, first_name='Other', last_name='Child', date_of_birth=date(2020, 1, 1), region_id=2), Therapist(id=1, name='Therapist One', region_id=1), Therapist(id=2, name='Therapist Two', region_id=1), Therapist(id=3, name='Other Centre', region_id=2)])
         self.db.add_all([GoalLevelMaster(id=1, name='LEVEL 1'), GoalLevelMaster(id=2, name='LEVEL 2')])
         self.db.flush()
-        self.db.add_all([GoalTitleMaster(id=1, level_id=1, title='Engagement', description='Engage in play'), GoalSkillMaster(id=1, code='A1', description='Participates'), GoalSkillMaster(id=2, code='A2', description='Other skill'), GoalObjectiveTypeMaster(id=1, code='lang', name='Language Objective')])
+        self.db.add(GoalDomainMaster(id=1, level_id=1, code='A', description='Engagement domain'))
+        self.db.flush()
+        self.db.add_all([GoalTitleMaster(id=1, level_id=1, title='Engagement', description='Engage in play'), GoalSkillMaster(id=1, level_id=1, domain_id=1, code='A1', description='Participates'), GoalSkillMaster(id=2, level_id=1, domain_id=1, code='A2', description='Other skill'), GoalObjectiveTypeMaster(id=1, code='lang', name='Language Objective')])
         self.db.flush()
         self.db.add(GoalTitleSkillMapping(title_id=1, skill_id=1))
         self.db.commit()
@@ -54,7 +56,7 @@ class ReportSheetTests(unittest.TestCase):
         return self.client.post(self.base + '/observations', json=payload)
 
     def goal(self, **overrides):
-        payload = {'patient_id': 1, 'planning_month': '2026-09-01', 'review_month': '2026-10-01', 'therapist_id': 1, 'parent_name': 'Test Parent', 'parental_objectives': 'Home practice', 'items': [{'level_id': 1, 'title_id': 1, 'description': 'Goal text', 'skill_ids': [1], 'objectives': [{'type_id': 1, 'text': 'Language goal'}]}]}
+        payload = {'patient_id': 1, 'planning_month': '2026-09-01', 'review_month': '2026-10-01', 'therapist_id': 1, 'parent_name': 'Test Parent', 'parental_objectives': 'Home practice', 'items': [{'level_id': 1, 'title_id': 1, 'description': 'Goal text', 'domain_ids': [1], 'skill_ids': [1], 'objectives': [{'type_id': 1, 'text': 'Language goal'}]}]}
         payload.update(overrides)
         return self.client.post(self.base + '/goals', json=payload)
 
@@ -171,7 +173,7 @@ class ReportSheetTests(unittest.TestCase):
         self.assertEqual(self.observation(entries=[]).status_code, 422)
 
     def test_master_hierarchy_and_invalid_skills(self):
-        for item in [{'level_id': 2, 'title_id': 1, 'description': 'Goal'}, {'level_id': 1, 'title_id': 1, 'description': 'Goal', 'skill_ids': [2]}, {'description': 'Goal', 'skill_ids': [1]}]:
+        for item in [{'level_id': 2, 'title_id': 1, 'description': 'Goal'}, {'level_id': 1, 'title_id': 1, 'description': 'Goal', 'skill_ids': [999]}, {'description': 'Goal', 'skill_ids': [1]}]:
             self.assertEqual(self.goal(items=[item]).status_code, 422)
         self.assertEqual(self.goal(review_month='2026-08-01').status_code, 422)
         self.assertEqual(len(self.client.get(self.base + '/masters?region_id=1').json()['data']['patients']), 1)

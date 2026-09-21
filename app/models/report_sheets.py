@@ -29,9 +29,21 @@ class GoalTitleMaster(Base):
     __table_args__ = (UniqueConstraint('level_id', 'title'),)
 
 
+class GoalDomainMaster(Base):
+    __tablename__ = 'goal_domain_master'
+    id = Column(Integer, primary_key=True)
+    level_id = Column(Integer, ForeignKey('goal_level_master.id'), nullable=False, index=True)
+    code = Column(String(20), nullable=False)
+    description = Column(Text, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    __table_args__ = (UniqueConstraint('level_id', 'code'),)
+
+
 class GoalSkillMaster(Base):
     __tablename__ = 'goal_skill_master'
     id = Column(Integer, primary_key=True)
+    level_id = Column(Integer, ForeignKey('goal_level_master.id'), index=True)
+    domain_id = Column(Integer, ForeignKey('goal_domain_master.id'), index=True)
     code = Column(String(50), nullable=False)
     description = Column(Text, nullable=False)
 
@@ -85,6 +97,7 @@ class PatientGoalSheetItem(Base):
     description = Column(Text, nullable=False)
     sort_order = Column(Integer, nullable=False)
     skills = relationship('PatientGoalSheetItemSkill', cascade='all, delete-orphan')
+    domains = relationship('PatientGoalSheetItemDomain', cascade='all, delete-orphan')
     objectives = relationship('PatientGoalSheetItemObjective', cascade='all, delete-orphan')
 
 
@@ -94,6 +107,14 @@ class PatientGoalSheetItemSkill(Base):
     item_id = Column(Integer, ForeignKey('patient_goal_sheet_item.id'), nullable=False, index=True)
     skill_id = Column(Integer, ForeignKey('goal_skill_master.id'), nullable=False)
     __table_args__ = (UniqueConstraint('item_id', 'skill_id'),)
+
+
+class PatientGoalSheetItemDomain(Base):
+    __tablename__ = 'patient_goal_sheet_item_domain'
+    id = Column(Integer, primary_key=True)
+    item_id = Column(Integer, ForeignKey('patient_goal_sheet_item.id'), nullable=False, index=True)
+    domain_id = Column(Integer, ForeignKey('goal_domain_master.id'), nullable=False)
+    __table_args__ = (UniqueConstraint('item_id', 'domain_id'),)
 
 
 class PatientGoalSheetItemObjective(Base):
@@ -129,6 +150,7 @@ class PatientObservationSheetEntry(Base):
     __tablename__ = 'patient_observation_sheet_entry'
     id = Column(Integer, primary_key=True)
     sheet_id = Column(Integer, ForeignKey('patient_observation_sheet.id'), nullable=False, index=True)
+    level_id = Column(Integer, ForeignKey('goal_level_master.id'))
     title_id = Column(Integer, ForeignKey('goal_title_master.id'))
     objective = Column(String(255), nullable=False, default='')
     goal = Column(Text, nullable=False)
@@ -140,9 +162,28 @@ class PatientObservationSheetEntry(Base):
     concerns = Column(Text, nullable=False, default='')
     strategy = Column(Text, nullable=False, default='')
     sort_order = Column(Integer, nullable=False)
+    domains = relationship('PatientObservationSheetEntryDomain', cascade='all, delete-orphan')
+    skills = relationship('PatientObservationSheetEntrySkill', cascade='all, delete-orphan')
 
 
-REPORT_TABLES = [GoalLevelMaster, GoalTitleMaster, GoalSkillMaster, GoalTitleSkillMapping,
+class PatientObservationSheetEntryDomain(Base):
+    __tablename__ = 'patient_observation_sheet_entry_domain'
+    id = Column(Integer, primary_key=True)
+    entry_id = Column(Integer, ForeignKey('patient_observation_sheet_entry.id'), nullable=False, index=True)
+    domain_id = Column(Integer, ForeignKey('goal_domain_master.id'), nullable=False)
+    __table_args__ = (UniqueConstraint('entry_id', 'domain_id'),)
+
+
+class PatientObservationSheetEntrySkill(Base):
+    __tablename__ = 'patient_observation_sheet_entry_skill'
+    id = Column(Integer, primary_key=True)
+    entry_id = Column(Integer, ForeignKey('patient_observation_sheet_entry.id'), nullable=False, index=True)
+    skill_id = Column(Integer, ForeignKey('goal_skill_master.id'), nullable=False)
+    __table_args__ = (UniqueConstraint('entry_id', 'skill_id'),)
+
+
+REPORT_TABLES = [GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster, GoalTitleSkillMapping,
                 GoalObjectiveTypeMaster, PatientGoalSheet, PatientGoalSheetTherapist, PatientGoalSheetItem,
-                PatientGoalSheetItemSkill, PatientGoalSheetItemObjective,
-                PatientObservationSheet, PatientObservationSheetTherapist, PatientObservationSheetEntry]
+                PatientGoalSheetItemDomain, PatientGoalSheetItemSkill, PatientGoalSheetItemObjective,
+                PatientObservationSheet, PatientObservationSheetTherapist, PatientObservationSheetEntry,
+                PatientObservationSheetEntryDomain, PatientObservationSheetEntrySkill]

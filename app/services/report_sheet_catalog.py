@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from sqlalchemy import inspect, text
 from app.models.report_sheets import (
-    REPORT_TABLES, GoalLevelMaster, GoalTitleMaster, GoalSkillMaster,
+    REPORT_TABLES, GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster,
     GoalTitleSkillMapping, GoalObjectiveTypeMaster, PatientGoalSheet, PatientGoalSheetTherapist,
 )
 
@@ -11,6 +11,17 @@ def provision_report_sheets(db):
     """Explicit additive migration; safe to rerun without replacing existing records."""
     for model in REPORT_TABLES:
         model.__table__.create(db.get_bind(), checkfirst=True)
+    inspector = inspect(db.get_bind())
+    additive_columns = {
+        'goal_skill_master': [('level_id', 'INT NULL' if db.get_bind().dialect.name == 'mysql' else 'INTEGER'),
+                              ('domain_id', 'INT NULL' if db.get_bind().dialect.name == 'mysql' else 'INTEGER')],
+        'patient_observation_sheet_entry': [('level_id', 'INT NULL' if db.get_bind().dialect.name == 'mysql' else 'INTEGER')],
+    }
+    for table_name, columns in additive_columns.items():
+        existing = {column['name'] for column in inspector.get_columns(table_name)}
+        for column_name, column_type in columns:
+            if column_name not in existing:
+                db.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'))
     existing_pairs = {(r.sheet_id, r.therapist_id) for r in db.query(PatientGoalSheetTherapist).all()}
     for sheet in db.query(PatientGoalSheet.id, PatientGoalSheet.therapist_id).all():
         if (sheet.id, sheet.therapist_id) not in existing_pairs:
@@ -31,23 +42,54 @@ def provision_report_sheets(db):
             db.add(title)
             db.flush()
             titles[key] = title
+    domains = {(r.level_id, r.code): r for r in db.query(GoalDomainMaster).all()}
+    for index, source in enumerate(catalog.get('code_skills', [])):
+        level = levels[source['level']]
+        key = (level.id, source['alpha'])
+        domain = domains.get(key)
+        if not domain:
+            domain = GoalDomainMaster(level_id=level.id, code=source['alpha'], description=source['alphaDesc'], sort_order=index)
+            db.add(domain)
+            db.flush()
+            domains[key] = domain
     skills = {(r.code, r.description): r for r in db.query(GoalSkillMaster).all()}
-    mappings = {(r.title_id, r.skill_id) for r in db.query(GoalTitleSkillMapping).all()}
-    for source in catalog['skills']:
-        key = (source['code'], source['skillDesc'])
+    for source in catalog.get('code_skills', []):
+        level = levels[source['level']]
+        domain = domains[(level.id, source['alpha'])]
+        key = (source['code'], source['skill'])
         skill = skills.get(key)
         if not skill:
-            skill = GoalSkillMaster(code=key[0], description=key[1])
+            skill = GoalSkillMaster(code=source['code'], description=source['skill'], level_id=level.id, domain_id=domain.id)
             db.add(skill)
             db.flush()
             skills[key] = skill
-        for title in titles.values():
-            pair = (title.id, skill.id)
-            if title.title == source['title'] and pair not in mappings:
-                db.add(GoalTitleSkillMapping(title_id=title.id, skill_id=skill.id))
-                mappings.add(pair)
+        elif skill.level_id != level.id or skill.domain_id != domain.id:
+            skill.level_id = level.id
+            skill.domain_id = domain.id
+    mapping_rows = db.query(GoalTitleSkillMapping).all()
+    mappings = {(r.title_id, r.skill_id) for r in mapping_rows}
+    desired_mappings = set()
+    mapping_skills = {(r.level_id, r.code, r.description): r for r in db.query(GoalSkillMaster).all()}
+    for source in catalog['skills']:
+        level = levels.get(source.get('level'))
+        if not level:
+            continue
+        title = titles.get((level.id, source['title']))
+        skill = mapping_skills.get((level.id, source['code'], source['skillDesc']))
+        if not title or not skill:
+            continue
+        pair = (title.id, skill.id)
+        desired_mappings.add(pair)
+        if pair not in mappings:
+            db.add(GoalTitleSkillMapping(title_id=title.id, skill_id=skill.id))
+            mappings.add(pair)
+    catalog_title_ids = {title.id for title in titles.values()}
+    for mapping in mapping_rows:
+        pair = (mapping.title_id, mapping.skill_id)
+        if mapping.title_id in catalog_title_ids and pair not in desired_mappings:
+            db.delete(mapping)
     types = {r.code for r in db.query(GoalObjectiveTypeMaster).all()}
-    for code, name in [('lang', 'Language Objective'), ('pt', 'PT Objective'), ('ot', 'OT Objective')]:
+    for code, name in [('lang', 'Language Objective'), ('pt', 'PT Objective'), ('ot', 'OT Objective'), ('academic', 'Academic Objective')]:
         if code not in types:
             db.add(GoalObjectiveTypeMaster(code=code, name=name))
     if db.get_bind().dialect.name == 'mysql' and inspect(db.get_bind()).has_table('rbac_resources'):

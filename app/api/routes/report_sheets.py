@@ -8,10 +8,11 @@ from sqlalchemy.orm import Session, selectinload, joinedload
 from app.core.database import get_db
 from app.models.models import Patient, Therapist
 from app.models.report_sheets import (
-    GoalLevelMaster, GoalTitleMaster, GoalSkillMaster, GoalTitleSkillMapping,
+    GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster, GoalTitleSkillMapping,
     GoalObjectiveTypeMaster, PatientGoalSheet, PatientGoalSheetTherapist, PatientGoalSheetItem,
-    PatientGoalSheetItemSkill, PatientGoalSheetItemObjective,
+    PatientGoalSheetItemDomain, PatientGoalSheetItemSkill, PatientGoalSheetItemObjective,
     PatientObservationSheet, PatientObservationSheetTherapist, PatientObservationSheetEntry,
+    PatientObservationSheetEntryDomain, PatientObservationSheetEntrySkill,
 )
 from app.api.routes.ui import _require_user, _permission_shape, _user_region_ids, _user_roles
 
@@ -28,6 +29,7 @@ class GoalInput(BaseModel):
     level_id: Optional[int] = None
     title_id: Optional[int] = None
     description: str = Field(min_length=1, max_length=20000)
+    domain_ids: list[int] = Field(default_factory=list, max_length=100)
     skill_ids: list[int] = Field(default_factory=list, max_length=100)
     objectives: list[ObjectiveInput] = Field(default_factory=list, max_length=20)
 
@@ -44,7 +46,10 @@ class GoalSheetInput(BaseModel):
 
 
 class ObservationEntryInput(BaseModel):
+    level_id: Optional[int] = None
     title_id: Optional[int] = None
+    domain_ids: list[int] = Field(default_factory=list, max_length=100)
+    skill_ids: list[int] = Field(default_factory=list, max_length=200)
     objective: str = Field(default='', max_length=255)
     goal: str = Field(min_length=1, max_length=20000)
     activities: str = Field(default='', max_length=20000)
@@ -97,6 +102,37 @@ def validate_therapists(db, ids, region_id):
     return sorted(unique_ids)
 
 
+def validate_catalog_selection(db, level_id, title_id, domain_ids, skill_ids):
+    domains = set(domain_ids)
+    skills = set(skill_ids)
+    title = db.get(GoalTitleMaster, title_id) if title_id else None
+    if not level_id and title:
+        level_id = title.level_id
+    skill_rows = db.query(GoalSkillMaster).filter(GoalSkillMaster.id.in_(skills)).all() if skills else []
+    if skills and not domains:
+        domains = {row.domain_id for row in skill_rows if row.domain_id is not None}
+    if not level_id:
+        if title_id or domains or skills:
+            raise HTTPException(422, 'Select a level before selecting a Common Goal, domain, or skill.')
+        return None, []
+    if not db.get(GoalLevelMaster, level_id):
+        raise HTTPException(422, 'Invalid level.')
+    if title_id and (not title or title.level_id != level_id):
+        raise HTTPException(422, 'Select a Common Goal belonging to the selected level.')
+    valid_domains = {row.id for row in db.query(GoalDomainMaster.id).filter(GoalDomainMaster.level_id == level_id, GoalDomainMaster.id.in_(domains)).all()} if domains else set()
+    if valid_domains != domains:
+        raise HTTPException(422, 'Selected domains must belong to the selected level.')
+    if skills and not domains:
+        legacy_linked = {row.skill_id for row in db.query(GoalTitleSkillMapping.skill_id).filter(GoalTitleSkillMapping.title_id == title_id, GoalTitleSkillMapping.skill_id.in_(skills)).all()} if title_id else set()
+        if legacy_linked != skills:
+            raise HTTPException(422, 'Selected skills are not assigned to a domain.')
+        return level_id, []
+    valid_skills = {row.id for row in db.query(GoalSkillMaster.id).filter(GoalSkillMaster.level_id == level_id, GoalSkillMaster.domain_id.in_(domains), GoalSkillMaster.id.in_(skills)).all()} if skills else set()
+    if valid_skills != skills:
+        raise HTTPException(422, 'Selected skills must belong to the selected level and domains.')
+    return level_id, sorted(domains)
+
+
 def model_for(kind):
     return PatientGoalSheet if kind == 'goals' else PatientObservationSheet
 
@@ -108,8 +144,8 @@ def query_for(db, user, kind):
     if ids:
         query = query.filter(model.region_id.in_(ids))
     if kind == 'goals':
-        return query.options(selectinload(model.patient), selectinload(model.region), selectinload(model.therapist), selectinload(model.therapists).selectinload(PatientGoalSheetTherapist.therapist), selectinload(model.items).selectinload(PatientGoalSheetItem.skills), selectinload(model.items).selectinload(PatientGoalSheetItem.objectives))
-    return query.options(selectinload(model.patient), selectinload(model.region), selectinload(model.therapists).selectinload(PatientObservationSheetTherapist.therapist), selectinload(model.entries))
+        return query.options(selectinload(model.patient), selectinload(model.region), selectinload(model.therapist), selectinload(model.therapists).selectinload(PatientGoalSheetTherapist.therapist), selectinload(model.items).selectinload(PatientGoalSheetItem.domains), selectinload(model.items).selectinload(PatientGoalSheetItem.skills), selectinload(model.items).selectinload(PatientGoalSheetItem.objectives))
+    return query.options(selectinload(model.patient), selectinload(model.region), selectinload(model.therapists).selectinload(PatientObservationSheetTherapist.therapist), selectinload(model.entries).selectinload(PatientObservationSheetEntry.domains), selectinload(model.entries).selectinload(PatientObservationSheetEntry.skills))
 
 
 def shape(row, kind, detail=False):
@@ -125,15 +161,15 @@ def shape(row, kind, detail=False):
         if detail:
             result.update(parent_name=row.parent_name, parental_objectives=row.parental_objectives,
                           items=[{'id': i.id, 'level_id': i.level_id, 'title_id': i.title_id,
-                                  'description': i.description, 'skill_ids': [s.skill_id for s in i.skills],
+                                  'description': i.description, 'domain_ids': [d.domain_id for d in i.domains], 'skill_ids': [s.skill_id for s in i.skills],
                                   'objectives': [{'type_id': o.type_id, 'text': o.text} for o in i.objectives]} for i in row.items])
     else:
         result.update(observation_date=row.observation_date,
                       therapist_ids=[t.therapist_id for t in row.therapists],
                       therapist_names=[t.therapist.name for t in row.therapists], item_count=len(row.entries))
         if detail:
-            fields = ['id', 'title_id', 'objective', 'goal', 'activities', 'accuracy', 'accuracy_status', 'prompts', 'responses', 'concerns', 'strategy']
-            result['entries'] = [{key: getattr(e, key) for key in fields} for e in row.entries]
+            fields = ['id', 'level_id', 'title_id', 'objective', 'goal', 'activities', 'accuracy', 'accuracy_status', 'prompts', 'responses', 'concerns', 'strategy']
+            result['entries'] = [{**{key: getattr(e, key) for key in fields}, 'domain_ids': [d.domain_id for d in e.domains], 'skill_ids': [s.skill_id for s in e.skills]} for e in row.entries]
     return result
 
 
@@ -155,7 +191,8 @@ def masters(request: Request, region_id: Optional[int] = None, db: Session = Dep
         'therapists': [{'id': t.id, 'name': t.name, 'region_id': t.region_id} for t in therapists.order_by(Therapist.name).all()],
         'levels': [{'id': l.id, 'name': l.name} for l in db.query(GoalLevelMaster).order_by(GoalLevelMaster.sort_order).all()],
         'titles': [{'id': t.id, 'level_id': t.level_id, 'title': t.title, 'description': t.description} for t in db.query(GoalTitleMaster).order_by(GoalTitleMaster.id).all()],
-        'skills': [{'id': s.id, 'code': s.code, 'description': s.description} for s in db.query(GoalSkillMaster).order_by(GoalSkillMaster.id).all()],
+        'domains': [{'id': d.id, 'level_id': d.level_id, 'code': d.code, 'description': d.description} for d in db.query(GoalDomainMaster).order_by(GoalDomainMaster.level_id, GoalDomainMaster.sort_order, GoalDomainMaster.id).all()],
+        'skills': [{'id': s.id, 'level_id': s.level_id, 'domain_id': s.domain_id, 'code': s.code, 'description': s.description} for s in db.query(GoalSkillMaster).order_by(GoalSkillMaster.level_id, GoalSkillMaster.id).all()],
         'title_skills': [{'title_id': m.title_id, 'skill_id': m.skill_id} for m in db.query(GoalTitleSkillMapping).all()],
         'objective_types': [{'id': t.id, 'code': t.code, 'name': t.name} for t in db.query(GoalObjectiveTypeMaster).order_by(GoalObjectiveTypeMaster.id).all()],
         'prompts': PROMPTS[1:],
@@ -259,17 +296,11 @@ def create_goal(payload: GoalSheetInput, request: Request, db: Session = Depends
     for index, item in enumerate(payload.items):
         if not item.description.strip():
             raise HTTPException(422, 'Each goal needs a description.')
-        if item.level_id and not db.get(GoalLevelMaster, item.level_id):
-            raise HTTPException(422, 'Invalid level.')
-        title = db.get(GoalTitleMaster, item.title_id) if item.title_id else None
-        if item.title_id and (not title or title.level_id != item.level_id):
-            raise HTTPException(422, 'Select a title belonging to the selected level.')
-        allowed_skills = {s.skill_id for s in db.query(GoalTitleSkillMapping).filter(GoalTitleSkillMapping.title_id == item.title_id).all()} if title else set()
-        if not set(item.skill_ids).issubset(allowed_skills):
-            raise HTTPException(422, 'Selected skills must belong to the goal title.')
+        normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, item.level_id, item.title_id, item.domain_ids, item.skill_ids)
         if any(o.type_id not in valid_types for o in item.objectives) or len({o.type_id for o in item.objectives}) != len(item.objectives):
             raise HTTPException(422, 'Select distinct valid objective types.')
-        child = PatientGoalSheetItem(level_id=item.level_id, title_id=item.title_id, description=item.description.strip(), sort_order=index)
+        child = PatientGoalSheetItem(level_id=normalized_level_id, title_id=item.title_id, description=item.description.strip(), sort_order=index)
+        child.domains = [PatientGoalSheetItemDomain(domain_id=d) for d in normalized_domain_ids]
         child.skills = [PatientGoalSheetItemSkill(skill_id=s) for s in sorted(set(item.skill_ids))]
         child.objectives = [PatientGoalSheetItemObjective(type_id=o.type_id, text=o.text) for o in item.objectives]
         row.items.append(child)
@@ -291,14 +322,19 @@ def create_observation(payload: ObservationSheetInput, request: Request, db: Ses
             raise HTTPException(422, 'Each observation entry needs a goal.')
         if entry.prompts not in PROMPTS:
             raise HTTPException(422, 'Select a valid prompt.')
+        normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, entry.level_id, entry.title_id, entry.domain_ids, entry.skill_ids)
         title = db.get(GoalTitleMaster, entry.title_id) if entry.title_id else None
-        if entry.title_id and not title:
-            raise HTTPException(422, 'Invalid objective title.')
         values = entry.model_dump()
+        domain_ids = values.pop('domain_ids')
+        skill_ids = values.pop('skill_ids')
+        values['level_id'] = normalized_level_id
         if title:
             values['objective'] = title.title
         values['goal'] = entry.goal.strip()
-        row.entries.append(PatientObservationSheetEntry(**values, sort_order=index))
+        child = PatientObservationSheetEntry(**values, sort_order=index)
+        child.domains = [PatientObservationSheetEntryDomain(domain_id=d) for d in normalized_domain_ids]
+        child.skills = [PatientObservationSheetEntrySkill(skill_id=s) for s in sorted(set(skill_ids))]
+        row.entries.append(child)
     db.add(row)
     db.commit()
     return {'data': shape(row, 'observations', True)}

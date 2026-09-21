@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.models.models import MASTER_LOOKUP_DATA
+from app.services.report_sheet_catalog import provision_report_sheets
 
 
 PATIENT_ASSESSMENT_COLUMNS = {
@@ -303,15 +304,18 @@ def _ensure_rbac_test_users(db: Session):
     therapist_row = None
     if _table_exists(db, "therapists"):
         select_columns = "id, name"
+        active_filters = ["is_active = 1"]
         if _column_exists(db, "therapists", "region_id"):
             select_columns += ", region_id"
         else:
             select_columns += ", NULL AS region_id"
+        if _column_exists(db, "therapists", "deleted_at"):
+            active_filters.append("deleted_at IS NULL")
+        therapist_where = " AND ".join(active_filters)
         therapist_row = db.execute(text(f"""
             SELECT {select_columns}
             FROM therapists
-            WHERE is_active = 1
-              AND deleted_at IS NULL
+            WHERE {therapist_where}
             ORDER BY id
             LIMIT 1
         """)).first()
@@ -686,6 +690,7 @@ def align_database_schema():
         _ensure_enquiries_table(db)
         _ensure_rbac_schema(db)
         _ensure_rbac_test_users(db)
+        provision_report_sheets(db)
         db.commit()
         print("[OK] Database schema aligned")
     finally:
