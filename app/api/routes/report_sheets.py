@@ -211,7 +211,8 @@ def child_goal_titles(patient_id: int, request: Request, db: Session = Depends(g
     titles = {}
     for item, title in rows:
         if title.id not in titles:
-            titles[title.id] = {'id': title.id, 'title': title.title, 'description': item.description}
+            titles[title.id] = {'id': title.id, 'level_id': item.level_id or title.level_id,
+                                'title': title.title, 'description': item.description}
     return {'data': sorted(titles.values(), key=lambda t: (t['title'].casefold(), t['id']))}
 
 

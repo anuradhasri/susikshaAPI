@@ -108,7 +108,7 @@ class ReportSheetTests(unittest.TestCase):
         self.goal(items=[{'level_id': 1, 'title_id': 1, 'description': 'Child-specific goal'}])
         self.goal(items=[{'level_id': 1, 'title_id': 1, 'description': 'Latest child-specific goal'}, {'description': 'Untitled goal'}])
         titles = self.client.get(endpoint + '1').json()['data']
-        self.assertEqual(titles, [{'id': 1, 'title': 'Engagement', 'description': 'Latest child-specific goal'}])
+        self.assertEqual(titles, [{'id': 1, 'level_id': 1, 'title': 'Engagement', 'description': 'Latest child-specific goal'}])
         self.assertEqual(self.client.get(endpoint + '2').status_code, 404)
         with patch.object(routes, '_user_region_ids', return_value=[1, 2]):
             self.assertEqual(self.client.get(endpoint + '2').json()['data'], [])
