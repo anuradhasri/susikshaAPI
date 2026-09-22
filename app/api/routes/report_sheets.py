@@ -152,7 +152,8 @@ def shape(row, kind, detail=False):
     result = {'id': row.id, 'patient_id': row.patient_id,
               'patient_name': f'{row.patient.first_name} {row.patient.last_name}'.strip(),
               'region_id': row.region_id, 'region_name': row.region.name,
-              'created_at': row.created_at, 'updated_at': row.updated_at}
+              'created_at': row.created_at, 'updated_at': row.updated_at,
+              'can_edit': bool(row.created_at and row.created_at.date() == date.today())}
     if kind == 'goals':
         therapists = sorted([t.therapist for t in row.therapists] or [row.therapist], key=lambda t: (t.name.casefold(), t.id))
         result.update(planning_month=row.planning_month, review_month=row.review_month,
@@ -337,5 +338,86 @@ def create_observation(payload: ObservationSheetInput, request: Request, db: Ses
         child.skills = [PatientObservationSheetEntrySkill(skill_id=s) for s in sorted(set(skill_ids))]
         row.entries.append(child)
     db.add(row)
+    db.commit()
+    return {'data': shape(row, 'observations', True)}
+
+
+def require_same_day_edit(row):
+    if not row.created_at or row.created_at.date() != date.today():
+        raise HTTPException(403, 'This sheet can only be edited on the day it was created.')
+
+
+@router.put('/goals/{sheet_id}')
+def update_goal(sheet_id: int, payload: GoalSheetInput, request: Request, db: Session = Depends(get_db)):
+    user = authorize(request, db, 'create')
+    row = query_for(db, user, 'goals').filter(PatientGoalSheet.id == sheet_id).first()
+    if not row:
+        raise HTTPException(404, 'Sheet not found.')
+    require_same_day_edit(row)
+    if payload.patient_id != row.patient_id:
+        raise HTTPException(422, 'The child cannot be changed after saving the sheet.')
+    ids = validate_therapists(db, payload.therapist_ids or ([payload.therapist_id] if payload.therapist_id else []), row.region_id)
+    if payload.review_month < payload.planning_month:
+        raise HTTPException(422, 'Review date cannot be before the planning date.')
+    row.planning_month = payload.planning_month
+    row.review_month = payload.review_month
+    row.therapist_id = ids[0]
+    row.parent_name = payload.parent_name.strip()
+    row.parental_objectives = payload.parental_objectives
+    row.updated_by = user.id
+    row.therapists.clear()
+    row.items.clear()
+    db.flush()
+    row.therapists = [PatientGoalSheetTherapist(therapist_id=t) for t in ids]
+    valid_types = {t.id for t in db.query(GoalObjectiveTypeMaster).all()}
+    for index, item in enumerate(payload.items):
+        if not item.description.strip():
+            raise HTTPException(422, 'Each goal needs a description.')
+        normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, item.level_id, item.title_id, item.domain_ids, item.skill_ids)
+        if any(o.type_id not in valid_types for o in item.objectives) or len({o.type_id for o in item.objectives}) != len(item.objectives):
+            raise HTTPException(422, 'Select distinct valid objective types.')
+        child = PatientGoalSheetItem(level_id=normalized_level_id, title_id=item.title_id, description=item.description.strip(), sort_order=index)
+        child.domains = [PatientGoalSheetItemDomain(domain_id=d) for d in normalized_domain_ids]
+        child.skills = [PatientGoalSheetItemSkill(skill_id=s) for s in sorted(set(item.skill_ids))]
+        child.objectives = [PatientGoalSheetItemObjective(type_id=o.type_id, text=o.text) for o in item.objectives]
+        row.items.append(child)
+    db.commit()
+    return {'data': shape(row, 'goals', True)}
+
+
+@router.put('/observations/{sheet_id}')
+def update_observation(sheet_id: int, payload: ObservationSheetInput, request: Request, db: Session = Depends(get_db)):
+    user = authorize(request, db, 'create')
+    row = query_for(db, user, 'observations').filter(PatientObservationSheet.id == sheet_id).first()
+    if not row:
+        raise HTTPException(404, 'Sheet not found.')
+    require_same_day_edit(row)
+    if payload.patient_id != row.patient_id:
+        raise HTTPException(422, 'The child cannot be changed after saving the sheet.')
+    ids = validate_therapists(db, payload.therapist_ids, row.region_id)
+    row.observation_date = payload.observation_date
+    row.updated_by = user.id
+    row.therapists.clear()
+    row.entries.clear()
+    db.flush()
+    row.therapists = [PatientObservationSheetTherapist(therapist_id=t) for t in ids]
+    for index, entry in enumerate(payload.entries):
+        if not entry.goal.strip():
+            raise HTTPException(422, 'Each observation entry needs a goal.')
+        if entry.prompts not in PROMPTS:
+            raise HTTPException(422, 'Select a valid prompt.')
+        normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, entry.level_id, entry.title_id, entry.domain_ids, entry.skill_ids)
+        title = db.get(GoalTitleMaster, entry.title_id) if entry.title_id else None
+        values = entry.model_dump()
+        domain_ids = values.pop('domain_ids')
+        skill_ids = values.pop('skill_ids')
+        values['level_id'] = normalized_level_id
+        if title:
+            values['objective'] = title.title
+        values['goal'] = entry.goal.strip()
+        child = PatientObservationSheetEntry(**values, sort_order=index)
+        child.domains = [PatientObservationSheetEntryDomain(domain_id=d) for d in normalized_domain_ids]
+        child.skills = [PatientObservationSheetEntrySkill(skill_id=s) for s in sorted(set(skill_ids))]
+        row.entries.append(child)
     db.commit()
     return {'data': shape(row, 'observations', True)}
