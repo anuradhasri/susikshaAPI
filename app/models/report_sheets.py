@@ -1,5 +1,6 @@
 """Structured, child-based goal and observation sheets (no booking/session dependency)."""
 from sqlalchemy import Column, Integer, String, Text, Date, DateTime, ForeignKey, UniqueConstraint, Float
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
@@ -182,8 +183,63 @@ class PatientObservationSheetEntrySkill(Base):
     __table_args__ = (UniqueConstraint('entry_id', 'skill_id'),)
 
 
+class PatientGoalSummary(SheetAudit, Base):
+    __tablename__ = 'patient_goal_summary'
+    patient_id = Column(Integer, ForeignKey('patients.id'), nullable=False, index=True)
+    region_id = Column(Integer, ForeignKey('regions.id'), nullable=False, index=True)
+    evaluation_date = Column(Date, nullable=False, index=True)
+    re_evaluation_date = Column(Date)
+    therapist_id = Column(Integer, ForeignKey('therapists.id'), nullable=False, index=True)
+    informant = Column(String(255), nullable=False, default='')
+    level_id = Column(Integer, ForeignKey('goal_level_master.id'), nullable=False, index=True)
+    review_date = Column(Date)
+    patient = relationship('Patient')
+    region = relationship('Region')
+    therapist = relationship('Therapist')
+    level = relationship('GoalLevelMaster')
+    therapists = relationship('PatientGoalSummaryTherapist', cascade='all, delete-orphan', order_by='PatientGoalSummaryTherapist.id')
+    responses = relationship('PatientGoalSummaryResponse', cascade='all, delete-orphan', order_by='PatientGoalSummaryResponse.id')
+
+
+class PatientGoalSummaryTherapist(Base):
+    __tablename__ = 'patient_goal_summary_therapist'
+    id = Column(Integer, primary_key=True)
+    summary_id = Column(Integer, ForeignKey('patient_goal_summary.id'), nullable=False, index=True)
+    therapist_id = Column(Integer, ForeignKey('therapists.id'), nullable=False, index=True)
+    therapist = relationship('Therapist')
+    __table_args__ = (UniqueConstraint('summary_id', 'therapist_id'),)
+
+
+class PatientGoalSummaryResponse(Base):
+    __tablename__ = 'patient_goal_summary_response'
+    id = Column(Integer, primary_key=True)
+    summary_id = Column(Integer, ForeignKey('patient_goal_summary.id'), nullable=False, index=True)
+    skill_id = Column(Integer, ForeignKey('goal_skill_master.id'), nullable=False, index=True)
+    status = Column(String(2), nullable=False, default='NO')
+    comments = Column(Text, nullable=False, default='')
+    __table_args__ = (UniqueConstraint('summary_id', 'skill_id'),)
+
+
+class GoalReviewEmailLog(Base):
+    __tablename__ = 'goal_review_email_logs'
+    id = Column(Integer, primary_key=True)
+    run_date = Column(Date, nullable=False, index=True)
+    region_id = Column(Integer, ForeignKey('regions.id'), nullable=False, index=True)
+    therapist_id = Column(Integer, ForeignKey('therapists.id'), nullable=False, index=True)
+    to_email = Column(String(255), nullable=False)
+    cc_emails = Column(Text, nullable=False, default='[]')
+    sheet_ids = Column(Text, nullable=False, default='[]')
+    subject = Column(String(255), nullable=False)
+    content = Column(Text().with_variant(mysql.LONGTEXT(), 'mysql'), nullable=False)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    error_message = Column(Text)
+    sent_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 REPORT_TABLES = [GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster, GoalTitleSkillMapping,
                 GoalObjectiveTypeMaster, PatientGoalSheet, PatientGoalSheetTherapist, PatientGoalSheetItem,
                 PatientGoalSheetItemDomain, PatientGoalSheetItemSkill, PatientGoalSheetItemObjective,
                 PatientObservationSheet, PatientObservationSheetTherapist, PatientObservationSheetEntry,
-                PatientObservationSheetEntryDomain, PatientObservationSheetEntrySkill]
+                PatientObservationSheetEntryDomain, PatientObservationSheetEntrySkill,
+                PatientGoalSummary, PatientGoalSummaryTherapist, PatientGoalSummaryResponse, GoalReviewEmailLog]

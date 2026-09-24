@@ -4,6 +4,7 @@ from sqlalchemy import inspect, text
 from app.models.report_sheets import (
     REPORT_TABLES, GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster,
     GoalTitleSkillMapping, GoalObjectiveTypeMaster, PatientGoalSheet, PatientGoalSheetTherapist,
+    PatientGoalSummary, PatientGoalSummaryTherapist,
 )
 
 
@@ -26,6 +27,10 @@ def provision_report_sheets(db):
     for sheet in db.query(PatientGoalSheet.id, PatientGoalSheet.therapist_id).all():
         if (sheet.id, sheet.therapist_id) not in existing_pairs:
             db.add(PatientGoalSheetTherapist(sheet_id=sheet.id, therapist_id=sheet.therapist_id))
+    summary_pairs = {(r.summary_id, r.therapist_id) for r in db.query(PatientGoalSummaryTherapist).all()}
+    for summary in db.query(PatientGoalSummary.id, PatientGoalSummary.therapist_id).all():
+        if (summary.id, summary.therapist_id) not in summary_pairs:
+            db.add(PatientGoalSummaryTherapist(summary_id=summary.id, therapist_id=summary.therapist_id))
     catalog = json.loads((Path(__file__).resolve().parents[1] / 'report_sheet_catalog.json').read_text(encoding='utf-8'))
     levels = {r.name: r for r in db.query(GoalLevelMaster).all()}
     titles = {(r.level_id, r.title): r for r in db.query(GoalTitleMaster).all()}

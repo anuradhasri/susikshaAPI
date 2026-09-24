@@ -62,6 +62,15 @@ class Settings(BaseSettings):
         "true"
     ).lower() == "true"
 
+    GOAL_REVIEW_REMINDERS_ENABLED: bool = os.getenv(
+        "GOAL_REVIEW_REMINDERS_ENABLED",
+        "false"
+    ).lower() == "true"
+    GOAL_REVIEW_REMINDER_HOUR: int = int(os.getenv("GOAL_REVIEW_REMINDER_HOUR", "8"))
+    GOAL_REVIEW_REMINDER_MINUTE: int = int(os.getenv("GOAL_REVIEW_REMINDER_MINUTE", "0"))
+    GOAL_REVIEW_REMINDER_TIMEZONE: str = os.getenv("GOAL_REVIEW_REMINDER_TIMEZONE", "Asia/Kolkata")
+    GOAL_REVIEW_REMINDER_INTERVAL_MINUTES: int = int(os.getenv("GOAL_REVIEW_REMINDER_INTERVAL_MINUTES", "1"))
+
     # Uploads
     DOCUMENT_UPLOAD_PATH: str = os.getenv(
         "DOCUMENT_UPLOAD_PATH",

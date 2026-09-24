@@ -13,6 +13,7 @@ from app.models.report_sheets import (
     PatientGoalSheetItemDomain, PatientGoalSheetItemSkill, PatientGoalSheetItemObjective,
     PatientObservationSheet, PatientObservationSheetTherapist, PatientObservationSheetEntry,
     PatientObservationSheetEntryDomain, PatientObservationSheetEntrySkill,
+    PatientGoalSummary, PatientGoalSummaryTherapist, PatientGoalSummaryResponse,
 )
 from app.api.routes.ui import _require_user, _permission_shape, _user_region_ids, _user_roles
 
@@ -66,6 +67,23 @@ class ObservationSheetInput(BaseModel):
     observation_date: date
     therapist_ids: list[int] = Field(min_length=1, max_length=50)
     entries: list[ObservationEntryInput] = Field(min_length=1, max_length=100)
+
+
+class GoalSummaryResponseInput(BaseModel):
+    skill_id: int
+    status: Literal['NO', 'E', 'A'] = 'NO'
+    comments: str = Field(default='', max_length=2000)
+
+
+class GoalSummaryInput(BaseModel):
+    patient_id: int
+    evaluation_date: date
+    re_evaluation_date: Optional[date] = None
+    therapist_ids: list[int] = Field(min_length=1, max_length=50)
+    informant: str = Field(default='', max_length=255)
+    level_id: int
+    review_date: Optional[date] = None
+    responses: list[GoalSummaryResponseInput] = Field(min_length=1, max_length=500)
 
 
 def authorize(request, db, action='view'):
@@ -187,7 +205,8 @@ def masters(request: Request, region_id: Optional[int] = None, db: Session = Dep
         patients = patients.filter(Patient.region_id == region_id)
         therapists = therapists.filter(Therapist.region_id == region_id)
     return {'data': {
-        'patients': [{'id': p.id, 'name': f'{p.first_name} {p.last_name}'.strip(), 'region_id': p.region_id,
+        'patients': [{'id': p.id, 'name': f'{p.first_name} {p.last_name}'.strip(), 'date_of_birth': p.date_of_birth,
+                      'region_id': p.region_id,
                       'region_name': p.region.name, 'parent_name': p.father_name or p.mother_name or ''} for p in patients.order_by(Patient.first_name, Patient.id).all()],
         'therapists': [{'id': t.id, 'name': t.name, 'region_id': t.region_id} for t in therapists.order_by(Therapist.name).all()],
         'levels': [{'id': l.id, 'name': l.name} for l in db.query(GoalLevelMaster).order_by(GoalLevelMaster.sort_order).all()],
@@ -224,6 +243,144 @@ def history(patient_id: int, request: Request, db: Session = Depends(get_db)):
     rows = db.query(PatientObservationSheet).options(selectinload(PatientObservationSheet.therapists).selectinload(PatientObservationSheetTherapist.therapist)).filter(PatientObservationSheet.patient_id == patient_id).order_by(PatientObservationSheet.observation_date.desc(), PatientObservationSheet.id.desc()).all()
     return {'data': [{'id': r.id, 'observation_date': r.observation_date,
                       'therapist_names': [t.therapist.name for t in r.therapists]} for r in rows]}
+
+
+def goal_summary_query(db, user):
+    query = db.query(PatientGoalSummary).options(
+        selectinload(PatientGoalSummary.patient), selectinload(PatientGoalSummary.region),
+        selectinload(PatientGoalSummary.therapist), selectinload(PatientGoalSummary.therapists).selectinload(PatientGoalSummaryTherapist.therapist), selectinload(PatientGoalSummary.level),
+        selectinload(PatientGoalSummary.responses),
+    )
+    ids = region_ids(db, user)
+    return query.filter(PatientGoalSummary.region_id.in_(ids)) if ids else query
+
+
+def shape_goal_summary(row, detail=False):
+    therapist_rows = row.therapists or []
+    therapist_ids = [item.therapist_id for item in therapist_rows] or [row.therapist_id]
+    therapist_names = [item.therapist.name for item in therapist_rows] or [row.therapist.name]
+    result = {
+        'id': row.id, 'patient_id': row.patient_id,
+        'patient_name': f'{row.patient.first_name} {row.patient.last_name}'.strip(),
+        'date_of_birth': row.patient.date_of_birth, 'region_id': row.region_id,
+        'region_name': row.region.name, 'evaluation_date': row.evaluation_date,
+        're_evaluation_date': row.re_evaluation_date, 'therapist_id': row.therapist_id,
+        'therapist_id': therapist_ids[0], 'therapist_name': ', '.join(therapist_names),
+        'therapist_ids': therapist_ids, 'therapist_names': therapist_names, 'informant': row.informant,
+        'level_id': row.level_id, 'level_name': row.level.name,
+        'review_date': row.review_date, 'response_count': len(row.responses),
+        'created_at': row.created_at, 'updated_at': row.updated_at,
+    }
+    if detail:
+        result['responses'] = [{'skill_id': response.skill_id, 'status': response.status,
+                                'comments': response.comments} for response in row.responses]
+    return result
+
+
+def validate_goal_summary(db, payload):
+    level = db.get(GoalLevelMaster, payload.level_id)
+    if not level:
+        raise HTTPException(422, 'Select a valid Sushiksha level.')
+    skill_ids = [response.skill_id for response in payload.responses]
+    if len(skill_ids) != len(set(skill_ids)):
+        raise HTTPException(422, 'Each checklist question can only be answered once.')
+    valid_ids = {row.id for row in db.query(GoalSkillMaster.id).filter(
+        GoalSkillMaster.level_id == payload.level_id, GoalSkillMaster.id.in_(skill_ids)).all()}
+    if valid_ids != set(skill_ids):
+        raise HTTPException(422, 'Checklist questions must belong to the selected level.')
+
+
+@router.get('/summaries')
+def goal_summary_listing(request: Request, patient_id: Optional[int] = None,
+                         therapist_id: Optional[int] = None, region_id: Optional[int] = None,
+                         start_date: Optional[date] = None, end_date: Optional[date] = None,
+                         search: str = Query('', max_length=255),
+                         page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100),
+                         db: Session = Depends(get_db)):
+    user = authorize(request, db)
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(422, 'From date must be before or equal to To date.')
+    query = goal_summary_query(db, user)
+    if patient_id:
+        query = query.filter(PatientGoalSummary.patient_id == patient_id)
+    if therapist_id:
+        query = query.filter(or_(PatientGoalSummary.therapist_id == therapist_id,
+            PatientGoalSummary.therapists.any(PatientGoalSummaryTherapist.therapist_id == therapist_id)))
+    if region_id:
+        query = query.filter(PatientGoalSummary.region_id == region_id)
+    if start_date:
+        query = query.filter(PatientGoalSummary.evaluation_date >= start_date)
+    if end_date:
+        query = query.filter(PatientGoalSummary.evaluation_date <= end_date)
+    if search.strip():
+        name = func.concat(Patient.first_name, ' ', Patient.last_name)
+        query = query.join(Patient, Patient.id == PatientGoalSummary.patient_id).filter(
+            or_(name.ilike(f'%{search.strip()}%'), func.cast(Patient.id, String).ilike(f'%{search.strip()}%')))
+    total = query.count()
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    rows = query.order_by(PatientGoalSummary.evaluation_date.desc(), PatientGoalSummary.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {'data': [shape_goal_summary(row) for row in rows], 'total': total, 'page': page,
+            'page_size': page_size, 'pages': pages}
+
+
+@router.get('/summaries/{summary_id}')
+def goal_summary_detail(summary_id: int, request: Request, db: Session = Depends(get_db)):
+    user = authorize(request, db)
+    row = goal_summary_query(db, user).filter(PatientGoalSummary.id == summary_id).first()
+    if not row:
+        raise HTTPException(404, 'Goal summary not found.')
+    return {'data': shape_goal_summary(row, True)}
+
+
+@router.post('/summaries', status_code=201)
+def create_goal_summary(payload: GoalSummaryInput, request: Request, db: Session = Depends(get_db)):
+    user = authorize(request, db, 'create')
+    patient = patient_for(db, user, payload.patient_id)
+    validate_therapists(db, payload.therapist_ids, patient.region_id)
+    validate_goal_summary(db, payload)
+    row = PatientGoalSummary(patient_id=patient.id, region_id=patient.region_id,
+        evaluation_date=payload.evaluation_date, re_evaluation_date=payload.re_evaluation_date,
+        therapist_id=payload.therapist_ids[0], informant=payload.informant.strip(),
+        level_id=payload.level_id, review_date=payload.review_date,
+        created_by=user.id, updated_by=user.id)
+    row.responses = [PatientGoalSummaryResponse(skill_id=item.skill_id, status=item.status,
+        comments=item.comments.strip()) for item in payload.responses]
+    row.therapists = [PatientGoalSummaryTherapist(therapist_id=therapist_id) for therapist_id in payload.therapist_ids]
+    db.add(row)
+    db.commit()
+    return {'data': shape_goal_summary(row, True)}
+
+
+@router.put('/summaries/{summary_id}')
+def update_goal_summary(summary_id: int, payload: GoalSummaryInput, request: Request, db: Session = Depends(get_db)):
+    user = authorize(request, db, 'create')
+    row = goal_summary_query(db, user).filter(PatientGoalSummary.id == summary_id).first()
+    if not row:
+        raise HTTPException(404, 'Goal summary not found.')
+    if payload.patient_id != row.patient_id:
+        raise HTTPException(422, 'The child cannot be changed after saving the summary.')
+    validate_therapists(db, payload.therapist_ids, row.region_id)
+    validate_goal_summary(db, payload)
+    row.evaluation_date = payload.evaluation_date
+    row.re_evaluation_date = payload.re_evaluation_date
+    row.therapist_id = payload.therapist_ids[0]
+    row.therapists = [PatientGoalSummaryTherapist(therapist_id=therapist_id) for therapist_id in payload.therapist_ids]
+    row.informant = payload.informant.strip()
+    row.level_id = payload.level_id
+    row.review_date = payload.review_date
+    row.updated_by = user.id
+    # Replace only the answers for the level being updated. Answers recorded for
+    # other levels belong to the same summary and must survive level switching.
+    submitted_level_skill_ids = {skill_id for (skill_id,) in db.query(GoalSkillMaster.id).filter(
+        GoalSkillMaster.level_id == payload.level_id).all()}
+    row.responses[:] = [response for response in row.responses
+                        if response.skill_id not in submitted_level_skill_ids]
+    db.flush()
+    row.responses.extend(PatientGoalSummaryResponse(skill_id=item.skill_id, status=item.status,
+        comments=item.comments.strip()) for item in payload.responses)
+    db.commit()
+    return {'data': shape_goal_summary(row, True)}
 
 
 @router.get('/{kind}')

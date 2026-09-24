@@ -1,17 +1,28 @@
+import asyncio
 import logging
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from contextlib import asynccontextmanager
 from app.core.config import get_settings
 from app.core.database import init_db
 from app.middleware.middleware import RegionAccessMiddleware, LoggingMiddleware, QueryFilteringMiddleware
 from app.api.routes import routers
 from app.utils.logger import setup_logging
+from app.services.goal_review_reminder import send_scheduled_goal_review_reminders
 
 settings = get_settings()
 logger = setup_logging(__name__)
+
+
+async def goal_review_reminder_loop():
+    while True:
+        await asyncio.sleep(max(1, settings.GOAL_REVIEW_REMINDER_INTERVAL_MINUTES) * 60)
+        try:
+            await asyncio.to_thread(send_scheduled_goal_review_reminders)
+        except Exception:
+            logger.exception('Scheduled Goal Sheet review reminder failed.')
 
 
 @asynccontextmanager
@@ -24,9 +35,22 @@ async def lifespan(app: FastAPI):
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
-    
+
+    reminder_task = None
+    if settings.GOAL_REVIEW_REMINDERS_ENABLED and settings.email_host:
+        reminder_task = asyncio.create_task(goal_review_reminder_loop())
+        logger.info(
+            'Goal Sheet review reminder check scheduled every %s minute(s).',
+            settings.GOAL_REVIEW_REMINDER_INTERVAL_MINUTES,
+        )
+
     yield
-    
+
+    if reminder_task:
+        reminder_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reminder_task
+
     # Shutdown
     logger.info(f"Shutting down {settings.APP_NAME}")
 
