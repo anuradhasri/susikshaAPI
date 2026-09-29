@@ -36,7 +36,7 @@ class ReportSheetTests(unittest.TestCase):
         self.db.flush()
         self.db.add(GoalTitleSkillMapping(title_id=1, skill_id=1))
         self.db.commit()
-        self.patches = [patch.object(routes, '_require_user', return_value=self.user), patch.object(routes, '_permission_shape', return_value={'menu.reports': {'view': True}, 'report.action.create_sheet': {'create': True}}), patch.object(routes, '_user_region_ids', return_value=[1])]
+        self.patches = [patch.object(routes, '_require_user', return_value=self.user), patch.object(routes, '_permission_shape', return_value={'menu.sheets': {'view': True}, 'report.action.create_sheet': {'create': True}}), patch.object(routes, '_user_region_ids', return_value=[1])]
         for p in self.patches: p.start()
         app = FastAPI()
         app.include_router(routes.router)
@@ -148,7 +148,7 @@ class ReportSheetTests(unittest.TestCase):
         self.assertEqual(self.observation(patient_id=2).status_code, 404)
         self.assertEqual(self.observation(therapist_ids=[3]).status_code, 422)
         self.assertEqual(self.client.get(self.base + '/observations/history/2').status_code, 404)
-        with patch.object(routes, '_permission_shape', return_value={'menu.reports': {'view': True}}):
+        with patch.object(routes, '_permission_shape', return_value={'menu.sheets': {'view': True}}):
             self.assertEqual(self.observation().status_code, 403)
             self.assertEqual(self.client.get(self.base + '/observations').status_code, 200)
         with patch.object(routes, '_permission_shape', return_value={}):

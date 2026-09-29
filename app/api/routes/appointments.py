@@ -12,7 +12,7 @@ from app.schemas.schemas import (
     SlotStatusActionRequest, SlotStatusActionResponse
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
-from app.models.models import Program, ProgramSegment, Therapist, User
+from app.models.models import PatientSlotBooking, Program, ProgramSegment, Therapist, TherapistSlotMapping, User
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/appointments", tags=["appointments"])
@@ -654,6 +654,29 @@ async def update_slot_status(
             payload.action,
             payload.cancel_type,
         )
+        if payload.action == "complete":
+            try:
+                completed_booking = (
+                    db.query(PatientSlotBooking)
+                    .join(TherapistSlotMapping, TherapistSlotMapping.id == PatientSlotBooking.therapist_slot_mapping_id)
+                    .filter(PatientSlotBooking.id == patient_slot_booking_id)
+                    .first()
+                )
+                if completed_booking and completed_booking.therapist_slot_mapping:
+                    from app.api.routes.payouts import sync as sync_payouts
+                    mapping = completed_booking.therapist_slot_mapping
+                    sync_payouts(
+                        start_date=mapping.slot_date,
+                        end_date=mapping.slot_date,
+                        region_id=mapping.therapist.region_id if mapping.therapist else None,
+                        db=db,
+                        user=current_user,
+                    )
+            except Exception:
+                logger.exception(
+                    "Completed slot saved, but automatic sheet/payout synchronization failed",
+                    extra={"patient_slot_booking_id": patient_slot_booking_id, "user_id": current_user.id},
+                )
         return response
     except ValueError as e:
         logger.warning(

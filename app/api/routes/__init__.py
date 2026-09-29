@@ -10,6 +10,7 @@ from app.api.routes.masters import router as masters_router
 from app.api.routes.assessments import router as assessments_router
 from app.api.routes.ui import router as ui_router
 from app.api.routes.report_sheets import router as report_sheets_router
+from app.api.routes.payouts import router as payouts_router
 
 routers = [
     auth_router,
@@ -23,4 +24,5 @@ routers = [
     assessments_router,
     ui_router,
     report_sheets_router,
+    payouts_router,
 ]

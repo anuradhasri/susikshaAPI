@@ -99,8 +99,12 @@ def provision_report_sheets(db):
             db.add(GoalObjectiveTypeMaster(code=code, name=name))
     if db.get_bind().dialect.name == 'mysql' and inspect(db.get_bind()).has_table('rbac_resources'):
         db.execute(text("""
-            INSERT IGNORE INTO rbac_resources (code, resource_type, label, parent_code, display_order, is_active)
-            VALUES ('report.action.create_sheet', 'action', 'Add report sheet', 'menu.reports', 55, 1)
+            INSERT INTO rbac_resources (code, resource_type, label, parent_code, display_order, is_active)
+            VALUES ('menu.sheets', 'menu', 'Sheets', NULL, 55, 1),
+                   ('report.action.create_sheet', 'action', 'Add report sheet', 'menu.sheets', 56, 1)
+            ON DUPLICATE KEY UPDATE
+                label = VALUES(label), parent_code = VALUES(parent_code),
+                display_order = VALUES(display_order), is_active = 1
         """))
         db.execute(text("""
             INSERT IGNORE INTO rbac_role_permissions (role_id, resource_id, can_view, can_create, can_edit, can_delete)
@@ -112,5 +116,27 @@ def provision_report_sheets(db):
             WHERE report_resource.code = 'menu.reports' AND report_permission.can_view = 1
               AND role.name IN ('admin', 'front_office', 'frontoffice', 'front_officer')
               AND role.deleted_at IS NULL
+        """))
+        db.execute(text("""
+            INSERT INTO rbac_role_permissions (role_id, resource_id, can_view, can_create, can_edit, can_delete)
+            SELECT role.id, resource.id, 1,
+                   CASE WHEN resource.code = 'report.action.create_sheet' THEN 1 ELSE 0 END,
+                   0, 0
+            FROM roles role
+            JOIN rbac_resources resource
+              ON resource.code IN ('menu.sheets', 'report.action.create_sheet')
+            WHERE role.name = 'therapist' AND role.deleted_at IS NULL
+            ON DUPLICATE KEY UPDATE
+                can_view = 1,
+                can_create = VALUES(can_create)
+        """))
+        db.execute(text("""
+            UPDATE rbac_role_permissions permission
+            JOIN roles role ON role.id = permission.role_id
+            JOIN rbac_resources resource ON resource.id = permission.resource_id
+            SET permission.can_view = 0, permission.can_create = 0,
+                permission.can_edit = 0, permission.can_delete = 0
+            WHERE role.name = 'therapist' AND role.deleted_at IS NULL
+              AND resource.code = 'menu.reports'
         """))
     db.commit()

@@ -83,13 +83,16 @@ class GoalSummaryInput(BaseModel):
     informant: str = Field(default='', max_length=255)
     level_id: int
     review_date: Optional[date] = None
-    responses: list[GoalSummaryResponseInput] = Field(min_length=1, max_length=500)
+    responses: list[GoalSummaryResponseInput] = Field(default_factory=list, max_length=500)
 
 
 def authorize(request, db, action='view'):
     user = _require_user(request, db)
+    roles = {str(role).strip().lower().replace('-', '_').replace(' ', '_') for role in _user_roles(db, user)}
+    if roles & {'admin', 'front_office', 'frontoffice', 'front_officer'}:
+        return user
     permissions = _permission_shape(db, user)
-    if not permissions.get('menu.reports', {}).get('view', False) or (action == 'create' and not permissions.get('report.action.create_sheet', {}).get('create', False)):
+    if not permissions.get('menu.sheets', {}).get('view', False) or (action == 'create' and not permissions.get('report.action.create_sheet', {}).get('create', False)):
         raise HTTPException(403, 'You do not have permission to access these reports.')
     return user
 
@@ -278,6 +281,8 @@ def shape_goal_summary(row, detail=False):
 
 
 def validate_goal_summary(db, payload):
+    if not payload.informant.strip():
+        raise HTTPException(422, 'Informant is required.')
     level = db.get(GoalLevelMaster, payload.level_id)
     if not level:
         raise HTTPException(422, 'Select a valid Sushiksha level.')
@@ -365,7 +370,6 @@ def update_goal_summary(summary_id: int, payload: GoalSummaryInput, request: Req
     row.evaluation_date = payload.evaluation_date
     row.re_evaluation_date = payload.re_evaluation_date
     row.therapist_id = payload.therapist_ids[0]
-    row.therapists = [PatientGoalSummaryTherapist(therapist_id=therapist_id) for therapist_id in payload.therapist_ids]
     row.informant = payload.informant.strip()
     row.level_id = payload.level_id
     row.review_date = payload.review_date
@@ -376,7 +380,13 @@ def update_goal_summary(summary_id: int, payload: GoalSummaryInput, request: Req
         GoalSkillMaster.level_id == payload.level_id).all()}
     row.responses[:] = [response for response in row.responses
                         if response.skill_id not in submitted_level_skill_ids]
+    # Flush removed association rows before inserting the replacement set. This
+    # avoids the unique (summary_id, therapist_id) constraint seeing old and new
+    # links at the same time when an existing therapist remains selected.
+    row.therapists.clear()
     db.flush()
+    row.therapists.extend(PatientGoalSummaryTherapist(therapist_id=therapist_id)
+                          for therapist_id in payload.therapist_ids)
     row.responses.extend(PatientGoalSummaryResponse(skill_id=item.skill_id, status=item.status,
         comments=item.comments.strip()) for item in payload.responses)
     db.commit()

@@ -15,6 +15,9 @@ RBAC_RESOURCES = [
     ("menu.children", "menu", "Children", None, 30),
     ("menu.therapists", "menu", "Therapists", None, 40),
     ("menu.reports", "menu", "Reports", None, 50),
+    ("menu.therapist_payouts", "menu", "Therapist Payouts", "menu.reports", 51),
+    ("menu.sheets", "menu", "Sheets", None, 55),
+    ("report.action.create_sheet", "action", "Add report sheet", "menu.sheets", 56),
     ("region.switch", "control", "Region switcher", None, 60),
     ("appointment.waitlist", "panel", "Appointment waitlist", None, 70),
     ("appointment.action.create", "action", "Create appointment", None, 80),
@@ -40,6 +43,7 @@ RBAC_RESOURCES = [
 
 FRONT_OFFICE_PERMISSION_CODES = {code for code, *_ in RBAC_RESOURCES}
 CREATE_PERMISSION_CODES = {
+    "report.action.create_sheet",
     "appointment.action.create",
     "child.action.create",
     "child.action.upload_document",
@@ -61,6 +65,9 @@ DELETE_PERMISSION_CODES = {
 }
 THERAPIST_PERMISSION_CODES = {
     "menu.appointments",
+    "menu.therapist_payouts",
+    "menu.sheets",
+    "report.action.create_sheet",
     "child.tab.details",
     "child.tab.assessment",
     "child.tab.therapy",
