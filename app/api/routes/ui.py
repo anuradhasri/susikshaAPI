@@ -57,6 +57,7 @@ from app.models.models import (
     CrtProgramBooking,
     GroupProgramBooking,
 )
+from app.models.payouts import PatientProgramPricing
 from app.services.user_service import AuthService, UserService
 
 router = APIRouter(prefix="/api/v1/ui", tags=["ui"])
@@ -806,6 +807,8 @@ THERAPIST_PERMISSION_CODES = {
 CENTRAL_HEAD_PERMISSION_CODES = {
     "menu.appointments",
     "appointment.filter.therapists",
+    "menu.sheets",
+    "report.action.create_sheet",
     "child.tab.details",
     "child.tab.assessment",
     "assessment.action.export",
@@ -954,6 +957,14 @@ def _assessment_permission_shape(db: Session, user: User, permissions: Optional[
 def _user_shape(user: User, db: Session) -> dict:
     region_ids = _user_region_ids(db, user)
     permissions = _permission_shape(db, user)
+    current_therapist = _current_therapist(db, user)
+    therapist_specializations = []
+    if current_therapist:
+        therapist_specializations = [
+            mapping.therapy.name
+            for mapping in (current_therapist.therapy_mappings or [])
+            if mapping.is_active and mapping.therapy and mapping.therapy.is_active
+        ]
 
     return {
         "id": user.id,
@@ -964,6 +975,8 @@ def _user_shape(user: User, db: Session) -> dict:
         "phone": user.phone,
         "region_id": region_ids[0] if region_ids else None,
         "region_ids": region_ids,
+        "therapist_id": current_therapist.id if current_therapist else None,
+        "therapist_specializations": therapist_specializations,
         "roles": [
             {
                 "role_id": ur.role.id,
@@ -1426,10 +1439,33 @@ def _today_unpaid_completed_slot_query(db: Session, patient_id: int):
     )
 
 
+def _child_program_price(slot_booking: PatientSlotBooking) -> float | None:
+    db = object_session(slot_booking)
+    if not db or not slot_booking.patient_id or not slot_booking.program_id:
+        return None
+    mapping = slot_booking.therapist_slot_mapping
+    on_date = mapping.slot_date if mapping and mapping.slot_date else date.today()
+    pricing = db.query(PatientProgramPricing).filter(
+        PatientProgramPricing.patient_id == slot_booking.patient_id,
+        PatientProgramPricing.program_id == slot_booking.program_id,
+        PatientProgramPricing.is_active.is_(True), PatientProgramPricing.deleted_at.is_(None),
+        PatientProgramPricing.effective_from <= on_date,
+        or_(PatientProgramPricing.effective_to.is_(None), PatientProgramPricing.effective_to >= on_date),
+    ).order_by(PatientProgramPricing.effective_from.desc()).first()
+    if not pricing:
+        return None
+    if pricing.billing_type == "package" and pricing.total_sessions:
+        return float(pricing.agreed_amount or 0) / float(pricing.total_sessions)
+    return float(pricing.agreed_amount or 0)
+
+
 def _slot_amount(slot_booking: PatientSlotBooking) -> float:
     patient_package = slot_booking.patient_package
     if slot_booking.is_package_session and patient_package and patient_package.package and patient_package.package.total_sessions:
         return float(patient_package.total_amount or patient_package.package.price or 0) / float(patient_package.package.total_sessions or 1)
+    child_price = _child_program_price(slot_booking)
+    if child_price is not None:
+        return child_price
     if slot_booking.amount:
         return float(slot_booking.amount or 0)
     plan_item = slot_booking.patient_session_plan_item
@@ -2137,6 +2173,9 @@ def _slot_booking_amount(slot_booking: PatientSlotBooking) -> float:
     patient_package = slot_booking.patient_package
     if slot_booking.is_package_session and patient_package and patient_package.package and patient_package.package.total_sessions:
         return float(patient_package.total_amount or patient_package.package.price or 0) / float(patient_package.package.total_sessions or 1)
+    child_price = _child_program_price(slot_booking)
+    if child_price is not None:
+        return child_price
     if slot_booking.amount:
         return float(slot_booking.amount or 0)
     plan_item = slot_booking.patient_session_plan_item

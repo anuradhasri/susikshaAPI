@@ -76,6 +76,11 @@ THERAPIST_PERMISSION_CODES = {
 CENTRAL_HEAD_PERMISSION_CODES = {
     "menu.appointments",
     "appointment.filter.therapists",
+    "menu.sheets",
+    "report.action.create_sheet",
+    "child.tab.details",
+    "child.tab.assessment",
+    "assessment.action.export",
 }
 
 

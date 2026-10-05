@@ -15,6 +15,7 @@ from app.models.payouts import (
     ProgramPaymentConfig, ProgramPaymentConfigHistory, TherapySheetAssignment,
     ProgramSheetConfig, TherapySheetSubmission, TherapistMonthlyPayout, TherapistPayoutAdjustment,
     TherapistSessionAllocation, TherapistSessionPayout, TherapistPayrollConfig,
+    PatientProgramPricing,
 )
 from app.models.report_sheets import (
     PatientGoalSheet, PatientGoalSheetTherapist, PatientGoalSummary,
@@ -97,6 +98,54 @@ def applicable_payroll_config(db, therapist_id, on_date):
         TherapistPayrollConfig.deleted_at.is_(None), TherapistPayrollConfig.effective_from <= on_date,
         or_(TherapistPayrollConfig.effective_to.is_(None), TherapistPayrollConfig.effective_to >= on_date),
     ).order_by(TherapistPayrollConfig.effective_from.desc()).first()
+
+
+def applicable_patient_pricing(db, patient_id, program_id, on_date):
+    return db.query(PatientProgramPricing).filter(
+        PatientProgramPricing.patient_id == patient_id, PatientProgramPricing.program_id == program_id,
+        PatientProgramPricing.is_active.is_(True), PatientProgramPricing.deleted_at.is_(None),
+        PatientProgramPricing.effective_from <= on_date,
+        or_(PatientProgramPricing.effective_to.is_(None), PatientProgramPricing.effective_to >= on_date),
+    ).order_by(PatientProgramPricing.effective_from.desc()).first()
+
+
+@router.get("/patient-pricing/{patient_id}")
+def patient_pricing(patient_id: int, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+    patient = db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(404, "Child not found")
+    if getattr(user, "region_ids", None) and patient.region_id not in user.region_ids:
+        raise HTTPException(403, "Child is outside your region access")
+    rows = db.query(PatientProgramPricing).options(joinedload(PatientProgramPricing.program)).filter(
+        PatientProgramPricing.patient_id == patient_id, PatientProgramPricing.deleted_at.is_(None)
+    ).order_by(PatientProgramPricing.effective_from.desc(), PatientProgramPricing.id.desc()).all()
+    return {"data": [{"id": row.id, "patientId": row.patient_id, "programId": row.program_id, "programName": row.program.program_name if row.program else f"Program {row.program_id}", "billingType": row.billing_type, "agreedAmount": money(row.agreed_amount), "totalSessions": row.total_sessions, "perSessionAmount": money(row.agreed_amount / row.total_sessions) if row.billing_type == "package" and row.total_sessions else money(row.agreed_amount), "effectiveFrom": row.effective_from.isoformat(), "effectiveTo": row.effective_to.isoformat() if row.effective_to else None, "isActive": row.is_active} for row in rows]}
+
+
+@router.post("/patient-pricing/{patient_id}")
+def save_patient_pricing(patient_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+    patient = db.get(Patient, patient_id)
+    program = db.get(Program, int(payload.get("programId") or 0))
+    billing_type = str(payload.get("billingType") or "").lower()
+    try:
+        amount = money(payload.get("agreedAmount")); effective = datetime.strptime(str(payload.get("effectiveFrom") or ""), "%Y-%m-%d").date()
+        total_sessions = int(payload.get("totalSessions") or 0) if billing_type == "package" else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Enter valid pricing details")
+    if not patient or not program or program.region_id != patient.region_id:
+        raise HTTPException(400, "Select a valid program for this child’s centre")
+    if getattr(user, "region_ids", None) and patient.region_id not in user.region_ids:
+        raise HTTPException(403, "Child is outside your region access")
+    if billing_type not in {"per_session", "package"} or amount <= 0 or (billing_type == "package" and total_sessions <= 0):
+        raise HTTPException(400, "Amount and package sessions must be greater than zero")
+    if db.query(PatientProgramPricing).filter_by(patient_id=patient_id, program_id=program.id, effective_from=effective).filter(PatientProgramPricing.deleted_at.is_(None)).first():
+        raise HTTPException(409, "Pricing already exists for this program and effective date")
+    previous = db.query(PatientProgramPricing).filter(PatientProgramPricing.patient_id == patient_id, PatientProgramPricing.program_id == program.id, PatientProgramPricing.effective_from < effective, PatientProgramPricing.deleted_at.is_(None)).order_by(PatientProgramPricing.effective_from.desc()).first()
+    if previous and (previous.effective_to is None or previous.effective_to >= effective):
+        previous.effective_to = effective - timedelta(days=1)
+    row = PatientProgramPricing(patient_id=patient_id, program_id=program.id, billing_type=billing_type, agreed_amount=amount, total_sessions=total_sessions, effective_from=effective, created_by=user.id, updated_by=user.id)
+    db.add(row); db.commit(); db.refresh(row)
+    return {"data": {"id": row.id}}
 
 
 @router.get("/notifications")
@@ -187,6 +236,9 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
         ProgramPaymentConfig.program_id.in_(program_ids) if program_ids else False,
         ProgramPaymentConfig.deleted_at.is_(None),
     ).order_by(ProgramPaymentConfig.therapist_id, ProgramPaymentConfig.program_id, ProgramPaymentConfig.effective_from.desc()).all()
+    payroll_configs_q = db.query(TherapistPayrollConfig).options(joinedload(TherapistPayrollConfig.therapist)).filter(
+        TherapistPayrollConfig.deleted_at.is_(None)
+    )
     sheets_q = db.query(TherapySheetAssignment).filter(TherapySheetAssignment.deleted_at.is_(None))
     payouts_q = db.query(TherapistSessionPayout).filter(TherapistSessionPayout.session_date.between(month_start, month_end), TherapistSessionPayout.deleted_at.is_(None))
     monthly_q = db.query(TherapistMonthlyPayout).filter(TherapistMonthlyPayout.payout_month == month_start, TherapistMonthlyPayout.deleted_at.is_(None))
@@ -195,14 +247,17 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
         payouts_q = payouts_q.filter(TherapistSessionPayout.therapist_id == scoped_therapist.id)
         monthly_q = monthly_q.filter(TherapistMonthlyPayout.therapist_id == scoped_therapist.id)
         configs = []
+        payroll_configs_q = payroll_configs_q.filter(TherapistPayrollConfig.therapist_id == scoped_therapist.id)
     if region_id:
         therapist_ids = [r[0] for r in db.query(Therapist.id).filter(Therapist.region_id == region_id).all()]
         sheets_q = sheets_q.filter(TherapySheetAssignment.therapist_id.in_(therapist_ids) if therapist_ids else False)
         payouts_q = payouts_q.filter(TherapistSessionPayout.therapist_id.in_(therapist_ids) if therapist_ids else False)
         monthly_q = monthly_q.filter(TherapistMonthlyPayout.therapist_id.in_(therapist_ids) if therapist_ids else False)
+        payroll_configs_q = payroll_configs_q.filter(TherapistPayrollConfig.therapist_id.in_(therapist_ids) if therapist_ids else False)
     sheets = sheets_q.order_by(TherapySheetAssignment.assigned_at.desc()).limit(200).all()
     payouts = payouts_q.order_by(TherapistSessionPayout.session_date.desc()).all()
     monthly = monthly_q.order_by(TherapistMonthlyPayout.therapist_id).all()
+    payroll_configs = payroll_configs_q.order_by(TherapistPayrollConfig.therapist_id, TherapistPayrollConfig.effective_from.desc()).all()
     sheet_configs = db.query(ProgramSheetConfig).options(joinedload(ProgramSheetConfig.program)).filter(
         ProgramSheetConfig.program_id.in_(program_ids) if program_ids else False,
         ProgramSheetConfig.deleted_at.is_(None),
@@ -223,6 +278,7 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
         "programs": [{"id": p.id, "name": p.program_name, "regionId": p.region_id} for p in program_rows],
         "therapists": [{"id": t.id, "name": t.name, "regionId": t.region_id} for t in db.query(Therapist).filter(Therapist.is_active.is_(True), Therapist.region_id == region_id if region_id else True).order_by(Therapist.name).all()],
         "configs": [config_shape(c) for c in configs],
+        "payrollConfigs": [{"id": c.id, "therapistId": c.therapist_id, "baseSalary": money(c.base_salary), "flatCommission": money(c.flat_commission), "professionalTax": money(c.professional_tax), "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in payroll_configs],
         "sheetConfigs": [{"id": c.id, "programId": c.program_id, "programName": c.program.program_name if c.program else None, "sheetType": c.sheet_type, "isRequired": c.is_required, "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in sheet_configs],
         "sheets": [{"id": s.id, "sessionId": s.patient_slot_booking_id, "patientId": s.patient_id, "therapistId": s.therapist_id, "sessionDate": session_dates.get(s.id), "patientName": patient_names.get(s.patient_id, f"Child {s.patient_id}"), "therapistName": names.get(s.therapist_id, f"Therapist {s.therapist_id}"), "programName": program_names.get(s.program_id, "—"), "sheetType": s.sheet_type, "status": s.status, "assignedAt": s.assigned_at.isoformat(), "dueAt": s.due_at.isoformat() if s.due_at else None, "notifiedAt": s.notified_at.isoformat() if s.notified_at else None} for s in sheets],
         "sessionPayouts": [{"id": p.id, "sessionId": p.patient_slot_booking_id, "date": p.session_date.isoformat(), "therapistName": names.get(p.therapist_id, f"Therapist {p.therapist_id}"), "programName": program_names.get(p.program_id, "—"), "eligibleAmount": money(p.eligible_amount), "gstAmount": money(p.gst_amount), "amountAfterGst": money(p.amount_after_gst), "therapistAmount": money(p.therapist_amount), "organizationAmount": money(p.organization_amount), "status": p.eligibility_status, "monthlyPayoutId": p.monthly_payout_id} for p in payouts],
@@ -322,14 +378,18 @@ def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depen
         raise HTTPException(403, "Therapist and program are outside your region access")
     percentage = payload.get("percentage")
     fixed = payload.get("fixedAmount")
+    gst_rate = money(payload.get("gstRate", 18))
+    if not 0 <= gst_rate <= 100:
+        raise HTTPException(400, "GST percentage must be between 0 and 100")
+    if percentage not in (None, "") and not 0 <= float(percentage) <= 100:
+        raise HTTPException(400, "Therapist percentage must be between 0 and 100")
     if method == "percentage" and percentage is None:
         raise HTTPException(400, "Percentage is required")
     if method in {"fixed", "completion"} and fixed is None and percentage is None:
         raise HTTPException(400, "Fixed amount or percentage is required")
     existing = db.query(ProgramPaymentConfig).filter(ProgramPaymentConfig.therapist_id == therapist_id, ProgramPaymentConfig.program_id == program_id, ProgramPaymentConfig.effective_from == effective, ProgramPaymentConfig.deleted_at.is_(None)).first()
     if existing:
-        db.add(ProgramPaymentConfigHistory(config_id=existing.id, action="updated", snapshot_json=json.dumps(snapshot(existing)), changed_by=user.id))
-        row = existing
+        raise HTTPException(409, "This therapist payment rule is already saved and is view-only. Create a new rule with a different effective date.")
     else:
         previous = db.query(ProgramPaymentConfig).filter(ProgramPaymentConfig.therapist_id == therapist_id, ProgramPaymentConfig.program_id == program_id, ProgramPaymentConfig.effective_from < effective, ProgramPaymentConfig.deleted_at.is_(None)).order_by(ProgramPaymentConfig.effective_from.desc()).first()
         if previous and (previous.effective_to is None or previous.effective_to >= effective):
@@ -340,8 +400,16 @@ def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depen
     row.payment_method = method
     row.percentage = float(percentage) if percentage not in (None, "") else None
     row.fixed_amount = float(fixed) if fixed not in (None, "") else None
-    row.gst_rate = float(payload.get("gstRate", 18))
-    row.therapist_pool_percentage = float(payload.get("therapistPoolPercentage", 50)) if method == "package" else None
+    # Defaults to 18%, while allowing program-specific GST configuration.
+    row.gst_rate = gst_rate
+    program_name = str(program.program_name or "").lower()
+    is_structured_program = "crt" in program_name or "structured" in program_name
+    is_parent_program = "parent" in program_name
+    is_vocational_program = "vocational" in program_name
+    pool_value = float(payload.get("therapistPoolPercentage", 100)) if is_structured_program else float(payload.get("therapistPoolPercentage", 50)) if method == "package" else None
+    if method == "package" and pool_value is not None and not 0 <= pool_value <= 100:
+        raise HTTPException(400, "Therapist pool percentage must be between 0 and 100")
+    row.therapist_pool_percentage = 40.0 if is_parent_program else 50.0 if is_vocational_program else pool_value
     row.allocation_rule = payload.get("allocationRule") or "equal_child_equivalent"
     row.release_on_completion = bool(payload.get("releaseOnCompletion") or method == "completion")
     row.is_active = True
@@ -466,6 +534,9 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             skipped += 1; continue
         eligible = money(row.package_covered_amount or row.amount)
         package = row.patient_package.package if row.patient_package else None
+        child_pricing = applicable_patient_pricing(db, row.patient_id, row.program_id, mapping.slot_date)
+        if child_pricing:
+            eligible = money(child_pricing.agreed_amount / child_pricing.total_sessions) if child_pricing.billing_type == "package" and child_pricing.total_sessions else money(child_pricing.agreed_amount)
         therapist_count = 1
         child_equivalent = 1.0
         if row.group_program_booking_id:
@@ -474,7 +545,25 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             child_equivalent = len({x.patient_id for x in group_rows if x.patient_id}) / therapist_count
             eligible = money((row.amount or (package.price / package.total_sessions if package and package.total_sessions else 0)) * child_equivalent)
         gst_rate = float(config.gst_rate or 0)
-        if config.payment_method == "package" and package and package.total_sessions:
+        program_name = str(row.program.program_name if row.program else "").lower()
+        is_structured_program = "crt" in program_name or "structured" in program_name
+        is_parent_program = "parent" in program_name
+        if is_structured_program:
+            after_gst = money(eligible * (1 - gst_rate / 100))
+            duration_minutes = int(row.duration_minutes or 0)
+            structured_rates = {
+                45: float(config.fixed_amount if config.fixed_amount is not None else 350),
+                30: float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 100),
+            }
+            therapist_amount = money(structured_rates.get(duration_minutes, 0))
+        elif is_parent_program and package and package.total_sessions:
+            after_gst = money(package.price * (1 - gst_rate / 100))
+            therapist_amount = money(after_gst * 0.40 / package.total_sessions / therapist_count)
+            eligible = money(package.price / package.total_sessions / therapist_count)
+        elif is_parent_program:
+            after_gst = money(eligible * (1 - gst_rate / 100))
+            therapist_amount = money(after_gst * 0.40 / therapist_count)
+        elif config.payment_method == "package" and package and package.total_sessions:
             after_gst = money(package.price * (1 - gst_rate / 100))
             therapist_amount = money(after_gst * float(config.therapist_pool_percentage or 50) / 100 / package.total_sessions / therapist_count)
             eligible = money(package.price / package.total_sessions / therapist_count)
@@ -492,7 +581,7 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
         allocation = db.query(TherapistSessionAllocation).filter_by(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id).first()
         if not allocation:
             db.add(TherapistSessionAllocation(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id, child_equivalent=child_equivalent, allocation_percentage=100 / therapist_count))
-        breakdown = {"method": config.payment_method, "configId": config.id, "gstRate": gst_rate, "childEquivalent": child_equivalent, "therapistCount": therapist_count, "gstAlreadyDeducted": True}
+        breakdown = {"method": "structured_duration_fixed" if is_structured_program else "parent_40_percent_pool" if is_parent_program else config.payment_method, "configId": config.id, "gstRate": gst_rate, "childEquivalent": child_equivalent, "therapistCount": therapist_count, "durationMinutes": int(row.duration_minutes or 0), "gstAlreadyDeducted": True}
         db.add(TherapistSessionPayout(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id, program_id=row.program_id, config_id=config.id, session_date=mapping.slot_date, eligible_amount=eligible, gst_amount=gst, amount_after_gst=after_gst, therapist_percentage=config.percentage, therapist_amount=therapist_amount, organization_amount=money(after_gst - therapist_amount), calculation_json=json.dumps(breakdown), eligibility_status=status))
         calculated += 1
     db.commit()
@@ -507,6 +596,13 @@ def generate_month(payload: dict, db: Session = Depends(get_db), user: User = De
     rows = db.query(TherapistSessionPayout).filter(TherapistSessionPayout.session_date.between(start, end), TherapistSessionPayout.eligibility_status == "eligible", TherapistSessionPayout.monthly_payout_id.is_(None), TherapistSessionPayout.deleted_at.is_(None)).all()
     grouped = {}
     for row in rows: grouped.setdefault(row.therapist_id, []).append(row)
+    salaried_therapist_ids = {row[0] for row in db.query(TherapistPayrollConfig.therapist_id).filter(
+        TherapistPayrollConfig.is_active.is_(True), TherapistPayrollConfig.deleted_at.is_(None),
+        TherapistPayrollConfig.effective_from <= end,
+        or_(TherapistPayrollConfig.effective_to.is_(None), TherapistPayrollConfig.effective_to >= end),
+    ).distinct().all()}
+    for therapist_id in salaried_therapist_ids:
+        grouped.setdefault(therapist_id, [])
     generated = 0
     for therapist_id, earnings in grouped.items():
         monthly = db.query(TherapistMonthlyPayout).filter_by(therapist_id=therapist_id, payout_month=start).first()
@@ -529,9 +625,39 @@ def update_status(payout_id: int, payload: dict, db: Session = Depends(get_db), 
     row = db.get(TherapistMonthlyPayout, payout_id)
     action = str(payload.get("status") or "").lower()
     if not row or action not in {"approved", "paid"}: raise HTTPException(400, "Invalid payout or status")
-    if action == "paid" and row.status != "approved": raise HTTPException(409, "Approve the payout before marking it paid")
     row.status = action
     if action == "approved": row.approved_by = user.id; row.approved_at = datetime.utcnow()
-    else: row.paid_at = datetime.utcnow(); row.payment_reference = payload.get("paymentReference")
+    else:
+        if not row.approved_at:
+            row.approved_by = user.id; row.approved_at = datetime.utcnow()
+        row.paid_at = datetime.utcnow(); row.payment_reference = payload.get("paymentReference")
     db.commit()
     return {"data": {"id": row.id, "status": row.status}}
+
+
+@router.post("/monthly/{payout_id}/adjustments")
+def add_adjustment(payout_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+    row = db.get(TherapistMonthlyPayout, payout_id)
+    if not row or row.deleted_at is not None:
+        raise HTTPException(404, "Monthly payout not found")
+    if row.status == "paid":
+        raise HTTPException(409, "Paid payouts cannot be adjusted")
+    try:
+        amount = money(payload.get("amount"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Enter a valid adjustment amount")
+    reason = str(payload.get("reason") or "").strip()
+    if amount == 0:
+        raise HTTPException(400, "Adjustment amount cannot be zero")
+    if not reason:
+        raise HTTPException(400, "Adjustment reason is required")
+    new_adjustment_total = money(row.adjustment_amount + amount)
+    new_payable = money(row.gross_amount + new_adjustment_total)
+    if new_payable < 0:
+        raise HTTPException(400, "Adjustment cannot reduce the payable amount below zero")
+    adjustment = TherapistPayoutAdjustment(monthly_payout_id=row.id, amount=amount, reason=reason, approved_by=user.id, approved_at=datetime.utcnow())
+    db.add(adjustment)
+    row.adjustment_amount = new_adjustment_total
+    row.payable_amount = new_payable
+    db.commit(); db.refresh(adjustment)
+    return {"data": {"id": adjustment.id, "monthlyPayoutId": row.id, "amount": amount, "adjustmentAmount": row.adjustment_amount, "payableAmount": row.payable_amount}}

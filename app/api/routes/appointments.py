@@ -12,6 +12,7 @@ from app.schemas.schemas import (
     SlotStatusActionRequest, SlotStatusActionResponse
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
+from app.repositories.appointment_repository import AppointmentRepository
 from app.models.models import PatientSlotBooking, Program, ProgramSegment, Therapist, TherapistSlotMapping, User
 from app.utils.logger import setup_logging
 
@@ -441,6 +442,64 @@ async def book_slot(
         }]
         bulk_booking = len(patient_ids) > 1 or len(allocations) > 1
 
+        program = db.query(Program).filter(Program.id == booking_create.program_id).first() if booking_create.program_id else None
+        program_type = AppointmentService._program_type(program.program_name if program else None)
+        is_crt_booking = program_type == "crt"
+
+        # CRT is one logical booking made up of three consecutive therapist segments.
+        # Validate and lock every therapist window before creating any child/slot rows so
+        # a conflict can never leave a partially booked CRT session behind.
+        if is_crt_booking:
+            if len(allocations) != 3:
+                raise ValueError("CRT booking requires all 3 therapist allocations")
+
+            therapist_ids = sorted({int(allocation.get("therapist_id") or 0) for allocation in allocations})
+            if not all(therapist_ids):
+                raise ValueError("Select a therapist for all 3 CRT segments")
+            db.query(Therapist).filter(Therapist.id.in_(therapist_ids)).order_by(Therapist.id).with_for_update().all()
+
+            requested_windows: list[tuple[int, int, int]] = []
+            for allocation in allocations:
+                therapist_id = int(allocation.get("therapist_id") or 0)
+                slot_id = int(allocation.get("slot_id") or 0)
+                slot = AppointmentRepository.get_slot(db, slot_id)
+                if not slot:
+                    raise ValueError("All 3 CRT time segments must have a valid slot")
+                duration = int(allocation.get("duration_minutes") or booking_create.duration_minutes or 0)
+                if duration <= 0:
+                    raise ValueError("All 3 CRT segments must have a valid duration")
+                if AppointmentService._therapist_unavailable_for_slot(
+                    db, therapist_id, booking_create.slot_date, slot.start_time
+                ):
+                    raise ValueError(f"Therapist #{therapist_id} is not available for the selected CRT time")
+                if AppointmentService._booking_overlaps_break(slot, duration):
+                    raise ValueError("CRT cannot be booked during the 1:30 PM to 2:00 PM break")
+
+                start_minutes = AppointmentService._time_value_to_minutes(slot.start_time)
+                end_minutes = start_minutes + duration
+                for existing_therapist_id, existing_start, existing_end in requested_windows:
+                    if therapist_id == existing_therapist_id and existing_start < end_minutes and existing_end > start_minutes:
+                        raise ValueError("The same therapist cannot cover overlapping CRT segments")
+                requested_windows.append((therapist_id, start_minutes, end_minutes))
+
+                AppointmentService._validate_therapist_window_available(
+                    db,
+                    therapist_id=therapist_id,
+                    slot_date=booking_create.slot_date,
+                    start_time=slot.start_time,
+                    duration_minutes=duration,
+                )
+                for patient_id in patient_ids:
+                    AppointmentService._validate_patient_window_available(
+                        db,
+                        patient_id=patient_id,
+                        slot_date=booking_create.slot_date,
+                        start_time=slot.start_time,
+                        duration_minutes=duration,
+                        program_id=booking_create.program_id,
+                        program_type=program_type,
+                    )
+
         bookings = []
         crt_parent_by_patient: dict[int, int] = {}
         for allocation in allocations:
@@ -466,7 +525,7 @@ async def book_slot(
                     ),
                     "use_package": bool(booking_create.use_package and allocation.get("is_primary", True)),
                     "crt_program_booking_id": crt_parent_by_patient.get(patient_id),
-                    "allow_shared_slot": bulk_booking,
+                    "allow_shared_slot": bool(bulk_booking and not is_crt_booking),
                 })
                 booking = AppointmentService.book_slot(db, patient_booking_create, commit=not bulk_booking)
                 patient_slot_booking = booking["patient_slot_booking"]

@@ -16,10 +16,11 @@ reruns. The initial catalog has 5 levels, 40 level-specific titles, 377 distinct
 skills, 2,800 title/skill mappings, and 3 objective types.
 
 The migration registers `report.action.create_sheet` and grants its create right
-to existing admin/front-office roles that already have Reports access. Other
-roles retain their existing access. Both Reports view and the new create right
-are required to add a sheet. Child and therapist choices and record access are
-restricted to the account's centres. Therapists must belong to the child's centre.
+to existing admin/front-office roles that already have Reports access, therapists,
+and central heads. Central heads receive view and create access to Sheets across
+their assigned centres. Both Sheets view and the create right are required to add
+a sheet. Child and therapist choices and record access are restricted to the
+account's centres. Therapists must belong to the child's centre.
 
 ## Storage
 

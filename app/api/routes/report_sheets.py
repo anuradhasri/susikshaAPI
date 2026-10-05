@@ -80,7 +80,7 @@ class GoalSummaryInput(BaseModel):
     evaluation_date: date
     re_evaluation_date: Optional[date] = None
     therapist_ids: list[int] = Field(min_length=1, max_length=50)
-    informant: str = Field(default='', max_length=255)
+    informant: Optional[str] = Field(default=None, max_length=255)
     level_id: int
     review_date: Optional[date] = None
     responses: list[GoalSummaryResponseInput] = Field(default_factory=list, max_length=500)
@@ -89,7 +89,7 @@ class GoalSummaryInput(BaseModel):
 def authorize(request, db, action='view'):
     user = _require_user(request, db)
     roles = {str(role).strip().lower().replace('-', '_').replace(' ', '_') for role in _user_roles(db, user)}
-    if roles & {'admin', 'front_office', 'frontoffice', 'front_officer'}:
+    if roles & {'admin', 'front_office', 'frontoffice', 'front_officer', 'central_head', 'centralhead'}:
         return user
     permissions = _permission_shape(db, user)
     if not permissions.get('menu.sheets', {}).get('view', False) or (action == 'create' and not permissions.get('report.action.create_sheet', {}).get('create', False)):
@@ -211,7 +211,7 @@ def masters(request: Request, region_id: Optional[int] = None, db: Session = Dep
         'patients': [{'id': p.id, 'name': f'{p.first_name} {p.last_name}'.strip(), 'date_of_birth': p.date_of_birth,
                       'region_id': p.region_id,
                       'region_name': p.region.name, 'parent_name': p.father_name or p.mother_name or ''} for p in patients.order_by(Patient.first_name, Patient.id).all()],
-        'therapists': [{'id': t.id, 'name': t.name, 'region_id': t.region_id} for t in therapists.order_by(Therapist.name).all()],
+        'therapists': [{'id': t.id, 'name': t.name, 'region_id': t.region_id, 'specialization': t.specialization or ''} for t in therapists.order_by(Therapist.name).all()],
         'levels': [{'id': l.id, 'name': l.name} for l in db.query(GoalLevelMaster).order_by(GoalLevelMaster.sort_order).all()],
         'titles': [{'id': t.id, 'level_id': t.level_id, 'title': t.title, 'description': t.description} for t in db.query(GoalTitleMaster).order_by(GoalTitleMaster.id).all()],
         'domains': [{'id': d.id, 'level_id': d.level_id, 'code': d.code, 'description': d.description} for d in db.query(GoalDomainMaster).order_by(GoalDomainMaster.level_id, GoalDomainMaster.sort_order, GoalDomainMaster.id).all()],
@@ -230,12 +230,16 @@ def child_goal_titles(patient_id: int, request: Request, db: Session = Depends(g
         PatientGoalSheet, PatientGoalSheet.id == PatientGoalSheetItem.sheet_id
     ).join(GoalTitleMaster, GoalTitleMaster.id == PatientGoalSheetItem.title_id).filter(
         PatientGoalSheet.patient_id == patient_id
-    ).order_by(PatientGoalSheet.planning_month.desc(), PatientGoalSheet.id.desc(), PatientGoalSheetItem.sort_order).all()
+    ).options(selectinload(PatientGoalSheetItem.domains), selectinload(PatientGoalSheetItem.skills), selectinload(PatientGoalSheetItem.objectives)).order_by(PatientGoalSheet.planning_month.desc(), PatientGoalSheet.id.desc(), PatientGoalSheetItem.sort_order).all()
     titles = {}
     for item, title in rows:
         if title.id not in titles:
             titles[title.id] = {'id': title.id, 'level_id': item.level_id or title.level_id,
-                                'title': title.title, 'description': item.description}
+                                'title': title.title, 'description': item.description,
+                                'domain_ids': [link.domain_id for link in item.domains],
+                                'skill_ids': [link.skill_id for link in item.skills],
+                                'objectives': [{'type_id': objective.type_id, 'text': objective.text}
+                                               for objective in item.objectives]}
     return {'data': sorted(titles.values(), key=lambda t: (t['title'].casefold(), t['id']))}
 
 
@@ -281,8 +285,6 @@ def shape_goal_summary(row, detail=False):
 
 
 def validate_goal_summary(db, payload):
-    if not payload.informant.strip():
-        raise HTTPException(422, 'Informant is required.')
     level = db.get(GoalLevelMaster, payload.level_id)
     if not level:
         raise HTTPException(422, 'Select a valid Sushiksha level.')
@@ -346,7 +348,7 @@ def create_goal_summary(payload: GoalSummaryInput, request: Request, db: Session
     validate_goal_summary(db, payload)
     row = PatientGoalSummary(patient_id=patient.id, region_id=patient.region_id,
         evaluation_date=payload.evaluation_date, re_evaluation_date=payload.re_evaluation_date,
-        therapist_id=payload.therapist_ids[0], informant=payload.informant.strip(),
+        therapist_id=payload.therapist_ids[0], informant=(payload.informant or '').strip(),
         level_id=payload.level_id, review_date=payload.review_date,
         created_by=user.id, updated_by=user.id)
     row.responses = [PatientGoalSummaryResponse(skill_id=item.skill_id, status=item.status,
@@ -370,7 +372,8 @@ def update_goal_summary(summary_id: int, payload: GoalSummaryInput, request: Req
     row.evaluation_date = payload.evaluation_date
     row.re_evaluation_date = payload.re_evaluation_date
     row.therapist_id = payload.therapist_ids[0]
-    row.informant = payload.informant.strip()
+    if payload.informant is not None:
+        row.informant = payload.informant.strip()
     row.level_id = payload.level_id
     row.review_date = payload.review_date
     row.updated_by = user.id
@@ -492,13 +495,10 @@ def create_observation(payload: ObservationSheetInput, request: Request, db: Ses
         if entry.prompts not in PROMPTS:
             raise HTTPException(422, 'Select a valid prompt.')
         normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, entry.level_id, entry.title_id, entry.domain_ids, entry.skill_ids)
-        title = db.get(GoalTitleMaster, entry.title_id) if entry.title_id else None
         values = entry.model_dump()
         domain_ids = values.pop('domain_ids')
         skill_ids = values.pop('skill_ids')
         values['level_id'] = normalized_level_id
-        if title:
-            values['objective'] = title.title
         values['goal'] = entry.goal.strip()
         child = PatientObservationSheetEntry(**values, sort_order=index)
         child.domains = [PatientObservationSheetEntryDomain(domain_id=d) for d in normalized_domain_ids]
@@ -574,13 +574,10 @@ def update_observation(sheet_id: int, payload: ObservationSheetInput, request: R
         if entry.prompts not in PROMPTS:
             raise HTTPException(422, 'Select a valid prompt.')
         normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, entry.level_id, entry.title_id, entry.domain_ids, entry.skill_ids)
-        title = db.get(GoalTitleMaster, entry.title_id) if entry.title_id else None
         values = entry.model_dump()
         domain_ids = values.pop('domain_ids')
         skill_ids = values.pop('skill_ids')
         values['level_id'] = normalized_level_id
-        if title:
-            values['objective'] = title.title
         values['goal'] = entry.goal.strip()
         child = PatientObservationSheetEntry(**values, sort_order=index)
         child.domains = [PatientObservationSheetEntryDomain(domain_id=d) for d in normalized_domain_ids]
