@@ -160,7 +160,8 @@ def model_for(kind):
 
 def query_for(db, user, kind):
     model = model_for(kind)
-    query = db.query(model)
+    # Exclude legacy orphan rows before counting or serializing them.
+    query = db.query(model).join(Patient, Patient.id == model.patient_id)
     ids = region_ids(db, user)
     if ids:
         query = query.filter(model.region_id.in_(ids))
@@ -253,7 +254,12 @@ def history(patient_id: int, request: Request, db: Session = Depends(get_db)):
 
 
 def goal_summary_query(db, user):
-    query = db.query(PatientGoalSummary).options(
+    # Historical databases can contain summary rows whose patient was removed
+    # without foreign-key enforcement. Exclude those orphans at the query
+    # boundary so they cannot break serialization or distort pagination.
+    query = db.query(PatientGoalSummary).join(
+        Patient, Patient.id == PatientGoalSummary.patient_id
+    ).options(
         selectinload(PatientGoalSummary.patient), selectinload(PatientGoalSummary.region),
         selectinload(PatientGoalSummary.therapist), selectinload(PatientGoalSummary.therapists).selectinload(PatientGoalSummaryTherapist.therapist), selectinload(PatientGoalSummary.level),
         selectinload(PatientGoalSummary.responses),
@@ -321,7 +327,7 @@ def goal_summary_listing(request: Request, patient_id: Optional[int] = None,
         query = query.filter(PatientGoalSummary.evaluation_date <= end_date)
     if search.strip():
         name = func.concat(Patient.first_name, ' ', Patient.last_name)
-        query = query.join(Patient, Patient.id == PatientGoalSummary.patient_id).filter(
+        query = query.filter(
             or_(name.ilike(f'%{search.strip()}%'), func.cast(Patient.id, String).ilike(f'%{search.strip()}%')))
     total = query.count()
     pages = max(1, (total + page_size - 1) // page_size)
@@ -430,7 +436,7 @@ def listing(kind: Literal['goals', 'observations'], request: Request,
         query = query.filter(or_(model.therapist_id == therapist_id, model.therapists.any(PatientGoalSheetTherapist.therapist_id == therapist_id))) if kind == 'goals' else query.filter(model.therapists.any(PatientObservationSheetTherapist.therapist_id == therapist_id))
     if search.strip():
         name = func.concat(Patient.first_name, ' ', Patient.last_name)
-        query = query.join(Patient, Patient.id == model.patient_id).filter(or_(name.ilike(f'%{search.strip()}%'), func.cast(Patient.id, String).ilike(f'%{search.strip()}%')))
+        query = query.filter(or_(name.ilike(f'%{search.strip()}%'), func.cast(Patient.id, String).ilike(f'%{search.strip()}%')))
     total = query.count()
     pages = max(1, (total + page_size - 1) // page_size)
     page = min(page, pages)

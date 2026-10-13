@@ -4,12 +4,12 @@ from datetime import date
 from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from app.core.database import get_db
 from app.models.models import User, Region, Patient, Therapist
-from app.models.report_sheets import REPORT_TABLES, GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster, GoalTitleSkillMapping, GoalObjectiveTypeMaster, PatientObservationSheetEntry
+from app.models.report_sheets import REPORT_TABLES, GoalLevelMaster, GoalTitleMaster, GoalDomainMaster, GoalSkillMaster, GoalTitleSkillMapping, GoalObjectiveTypeMaster, PatientObservationSheetEntry, PatientGoalSummary, PatientGoalSheet, PatientObservationSheet
 from app.services.report_sheet_catalog import provision_report_sheets
 from app.api.routes import report_sheets as routes
 
@@ -36,7 +36,7 @@ class ReportSheetTests(unittest.TestCase):
         self.db.flush()
         self.db.add(GoalTitleSkillMapping(title_id=1, skill_id=1))
         self.db.commit()
-        self.patches = [patch.object(routes, '_require_user', return_value=self.user), patch.object(routes, '_permission_shape', return_value={'menu.sheets': {'view': True}, 'report.action.create_sheet': {'create': True}}), patch.object(routes, '_user_region_ids', return_value=[1])]
+        self.patches = [patch.object(routes, '_require_user', return_value=self.user), patch.object(routes, '_permission_shape', return_value={'menu.sheets': {'view': True}, 'report.action.create_sheet': {'create': True}}), patch.object(routes, '_user_region_ids', return_value=[1]), patch.object(routes, '_user_roles', return_value=[])]
         for p in self.patches: p.start()
         app = FastAPI()
         app.include_router(routes.router)
@@ -184,6 +184,51 @@ class ReportSheetTests(unittest.TestCase):
         provision_report_sheets(self.db)
         self.assertEqual(counts, [self.db.query(m).count() for m in REPORT_TABLES])
 
+
+
+    def test_sheet_listings_ignore_orphaned_patient_rows(self):
+        goal = PatientGoalSheet(
+            patient_id=1, region_id=1, planning_month=date(2026, 9, 1),
+            review_month=date(2026, 10, 1), therapist_id=1,
+            parent_name='', parental_objectives='',
+            created_by=self.user.id, updated_by=self.user.id,
+        )
+        observation = PatientObservationSheet(
+            patient_id=1, region_id=1, observation_date=date(2026, 9, 18),
+            created_by=self.user.id, updated_by=self.user.id,
+        )
+        self.db.add_all([goal, observation])
+        self.db.commit()
+        goal_id, observation_id = goal.id, observation.id
+
+        self.db.execute(text('PRAGMA foreign_keys=OFF'))
+        self.db.execute(text('DELETE FROM patients WHERE id = 1'))
+        self.db.commit()
+        self.db.expire_all()
+
+        for kind, row_id in [('goals', goal_id), ('observations', observation_id)]:
+            listing = self.client.get(self.base + f'/{kind}').json()
+            self.assertEqual((listing['total'], listing['data']), (0, []))
+            self.assertEqual(self.client.get(self.base + f'/{kind}/{row_id}').status_code, 404)
+
+    def test_goal_summary_listing_ignores_orphaned_patient_rows(self):
+        summary = PatientGoalSummary(
+            patient_id=1, region_id=1, evaluation_date=date(2026, 9, 18),
+            therapist_id=1, informant='', level_id=1,
+            created_by=self.user.id, updated_by=self.user.id,
+        )
+        self.db.add(summary)
+        self.db.commit()
+
+        # Reproduce a legacy database where foreign keys were not enforced.
+        self.db.execute(text('PRAGMA foreign_keys=OFF'))
+        self.db.execute(text('DELETE FROM patients WHERE id = 1'))
+        self.db.commit()
+        self.db.expire_all()
+
+        listing = self.client.get(self.base + '/summaries').json()
+        self.assertEqual((listing['total'], listing['data']), (0, []))
+        self.assertEqual(self.client.get(self.base + f'/summaries/{summary.id}').status_code, 404)
 
 if __name__ == '__main__':
     unittest.main()

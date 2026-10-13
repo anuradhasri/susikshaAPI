@@ -1,6 +1,6 @@
 from datetime import datetime, date, time
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -247,6 +247,8 @@ class SlotBookingCreate(BaseModel):
     phone: Optional[str] = None
     use_package: bool = True
     patient_package_id: Optional[int] = None
+    patient_package_selections: Optional[Dict[int, int]] = None
+    parent_program_group_id: Optional[int] = None
     is_primary: bool = True
     crt_program_booking_id: Optional[int] = None
     allow_shared_slot: bool = False

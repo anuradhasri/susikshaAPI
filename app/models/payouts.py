@@ -1,5 +1,5 @@
 """Therapy documentation and therapist payout ledger models."""
-from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -142,6 +142,25 @@ class TherapistSessionPayout(AuditColumns, Base):
     monthly_payout_id = Column(Integer, ForeignKey("therapist_monthly_payout.id"), index=True)
     __table_args__ = (UniqueConstraint("patient_slot_booking_id", "therapist_id", name="uq_session_therapist_payout"),)
 
+
+class TherapistPaymentEarning(AuditColumns, Base):
+    __tablename__ = "therapist_payment_earning"
+    id = Column(Integer, primary_key=True)
+    payment_id = Column(BigInteger, ForeignKey("payments.id"), nullable=False, index=True)
+    patient_slot_booking_id = Column(Integer, ForeignKey("patient_slot_booking.id"), nullable=False, index=True)
+    therapist_id = Column(Integer, ForeignKey("therapists.id"), nullable=False, index=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=False, index=True)
+    config_id = Column(Integer, ForeignKey("program_payment_config.id"), nullable=False)
+    earning_date = Column(Date, nullable=False, index=True)
+    received_amount = Column(Float, nullable=False, default=0, server_default="0")
+    gst_amount = Column(Float, nullable=False, default=0, server_default="0")
+    amount_after_gst = Column(Float, nullable=False, default=0, server_default="0")
+    therapist_amount = Column(Float, nullable=False, default=0, server_default="0")
+    organization_amount = Column(Float, nullable=False, default=0, server_default="0")
+    calculation_json = Column(Text, nullable=False)
+    status = Column(String(24), nullable=False, default="eligible", server_default="eligible")
+    monthly_payout_id = Column(Integer, ForeignKey("therapist_monthly_payout.id"), index=True)
+    __table_args__ = (UniqueConstraint("payment_id", "therapist_id", name="uq_payment_therapist_earning"),)
 
 class TherapistProgramPayout(AuditColumns, Base):
     __tablename__ = "therapist_program_payout"

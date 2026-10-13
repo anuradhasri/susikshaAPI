@@ -408,6 +408,7 @@ class AppointmentService:
         slot_date,
         start_time,
         end_time,
+        parent_program_group_id: int | None = None,
     ) -> GroupProgramBooking:
         group_booking = (
             db.query(GroupProgramBooking)
@@ -416,6 +417,7 @@ class AppointmentService:
                 GroupProgramBooking.slot_id == slot_id,
                 GroupProgramBooking.slot_date == slot_date,
                 GroupProgramBooking.therapy_id == therapy_id,
+                GroupProgramBooking.parent_program_group_id == parent_program_group_id,
                 GroupProgramBooking.status_id.notin_([
                     AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
                     AppointmentService.PATIENT_SLOT_BOOKING_PAID_CANCELLED_ID,
@@ -429,6 +431,7 @@ class AppointmentService:
 
         group_booking = GroupProgramBooking(
             program_id=program_id,
+            parent_program_group_id=parent_program_group_id,
             region_id=region_id,
             therapy_id=therapy_id,
             slot_id=slot_id,
@@ -1834,6 +1837,14 @@ class AppointmentService:
         )
         assigned_sessions = plan_item.assigned_sessions or 0 if plan_item else 0
         amount_per_session = float(plan_item.amount_per_session or 0) if plan_item else 0
+        if getattr(booking_create, "parent_program_group_id", None):
+            parent_group_pricing = db.execute(
+                text("SELECT pro_rata_amount, number_of_sessions FROM parent_program_groups WHERE id=:group_id"),
+                {"group_id": int(booking_create.parent_program_group_id)},
+            ).mappings().first()
+            if not parent_group_pricing or int(parent_group_pricing["number_of_sessions"] or 0) <= 0:
+                raise ValueError("Parent Program group must have a valid session count")
+            amount_per_session = float(parent_group_pricing["pro_rata_amount"] or 0) / int(parent_group_pricing["number_of_sessions"])
         active_package = None
         if booking_create.use_package and booking_create.patient_package_id:
             active_package = (
@@ -1862,7 +1873,9 @@ class AppointmentService:
         package_total = float(active_package.total_amount or 0) if active_package else 0
         package_paid = float(active_package.paid_amount or 0) if active_package else 0
         package_fully_paid = bool(active_package and package_total > 0 and package_paid >= package_total)
-        if active_package and active_package.package and active_package.package.total_sessions:
+        if getattr(booking_create, "parent_program_group_id", None):
+            pass
+        elif active_package and active_package.package and active_package.package.total_sessions:
             amount_per_session = float(active_package.total_amount or active_package.package.price or 0) / float(active_package.package.total_sessions or 1)
         elif amount_per_session <= 0 and program:
             amount_per_session = float(program.per_session_amount or 0)
@@ -1879,6 +1892,7 @@ class AppointmentService:
                 slot_date=booking_create.slot_date,
                 start_time=slot.start_time,
                 end_time=slot.end_time,
+                parent_program_group_id=getattr(booking_create, "parent_program_group_id", None),
             )
         if program_type == "crt":
             if getattr(booking_create, "crt_program_booking_id", None):

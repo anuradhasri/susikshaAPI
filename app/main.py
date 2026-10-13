@@ -67,7 +67,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
     
-    # Add CORS middleware
+    # Add custom middleware
+    app.add_middleware(QueryFilteringMiddleware)
+    app.add_middleware(LoggingMiddleware)
+    app.add_middleware(RegionAccessMiddleware)
+
+    # Keep CORS outermost so early responses from custom middleware (such as
+    # invalid or expired tokens) still include CORS headers for the frontend.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
@@ -75,11 +81,6 @@ def create_app() -> FastAPI:
         allow_methods=settings.CORS_ALLOW_METHODS,
         allow_headers=settings.CORS_ALLOW_HEADERS,
     )
-    
-    # Add custom middleware
-    app.add_middleware(QueryFilteringMiddleware)
-    app.add_middleware(LoggingMiddleware)
-    app.add_middleware(RegionAccessMiddleware)
     
     # Include routers
     for router in routers:

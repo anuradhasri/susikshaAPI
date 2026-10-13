@@ -323,7 +323,7 @@ class Patient(Base):
     alternate_contact = Column(String(255), nullable=True)
     clinical_observation = Column(Text, nullable=True)
     status = Column(Boolean, default=True)
-    is_available = Column(Boolean, default=True)
+    is_available = Column(Boolean, nullable=False, default=False, server_default="0")
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1359,6 +1359,7 @@ class GroupProgramBooking(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     program_id = Column(Integer, ForeignKey("programs.id"), nullable=False, index=True)
+    parent_program_group_id = Column(Integer, nullable=True, index=True)
     region_id = Column(Integer, ForeignKey("regions.id"), nullable=True, index=True)
     therapy_id = Column(Integer, ForeignKey("therapy_master.id"), nullable=True, index=True)
     slot_id = Column(Integer, ForeignKey("slot_master.id"), nullable=False, index=True)

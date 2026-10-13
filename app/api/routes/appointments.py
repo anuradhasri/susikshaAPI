@@ -1,9 +1,11 @@
 from typing import List
 
+from pydantic import BaseModel, Field
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-from datetime import date
+from sqlalchemy import inspect, text
+from datetime import date, datetime
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access, get_user_roles
 from app.schemas.schemas import (
@@ -13,12 +15,137 @@ from app.schemas.schemas import (
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
 from app.repositories.appointment_repository import AppointmentRepository
-from app.models.models import PatientSlotBooking, Program, ProgramSegment, Therapist, TherapistSlotMapping, User
+from app.models.models import Patient, PatientSlotBooking, Program, ProgramSegment, Therapist, TherapistSlotMapping, User
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/appointments", tags=["appointments"])
 logger = setup_logging(__name__)
+class ParentProgramGroupPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    program_id: int
+    region_id: int
+    patient_ids: list[int] = Field(min_length=1)
+    start_date: date
+    end_date: date
+    pro_rata_amount: float = Field(ge=0)
+    number_of_sessions: int = Field(gt=0)
+    is_active: bool = True
 
+
+def _ensure_parent_program_group_schema(db: Session) -> None:
+    dialect = db.bind.dialect.name
+    id_column = "INTEGER PRIMARY KEY AUTOINCREMENT" if dialect == "sqlite" else "INT PRIMARY KEY AUTO_INCREMENT"
+    db.execute(text(f"""CREATE TABLE IF NOT EXISTS parent_program_groups (
+        id {id_column}, name VARCHAR(120) NOT NULL, program_id INT NOT NULL, region_id INT NOT NULL,
+        start_date DATE NULL, end_date DATE NULL, pro_rata_amount DECIMAL(12,2) NOT NULL DEFAULT 0, number_of_sessions INT NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT 1,
+        status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE', completed_at DATETIME NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)"""))
+    columns = {column["name"] for column in inspect(db.bind).get_columns("parent_program_groups")}
+    for column_name in ("start_date", "end_date", "pro_rata_amount", "number_of_sessions"):
+        if column_name not in columns:
+            db.execute(text(f"ALTER TABLE parent_program_groups ADD COLUMN {column_name} " + ("DECIMAL(12,2) NOT NULL DEFAULT 0" if column_name == "pro_rata_amount" else "INT NOT NULL DEFAULT 1" if column_name == "number_of_sessions" else "DATE NULL")))
+    if "status" not in columns:
+        db.execute(text("ALTER TABLE parent_program_groups ADD COLUMN status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE'"))
+    if "completed_at" not in columns:
+        db.execute(text("ALTER TABLE parent_program_groups ADD COLUMN completed_at DATETIME NULL"))
+    db.execute(text("""CREATE TABLE IF NOT EXISTS parent_program_group_members (
+        group_id INT NOT NULL, patient_id INT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (group_id, patient_id))"""))
+    if inspect(db.bind).has_table("group_program_bookings"):
+        booking_columns = {column["name"] for column in inspect(db.bind).get_columns("group_program_bookings")}
+        if "parent_program_group_id" not in booking_columns:
+            db.execute(text("ALTER TABLE group_program_bookings ADD COLUMN parent_program_group_id INT NULL"))
+
+
+def _parent_program_group_shape(db: Session, group_id: int) -> dict:
+    group = db.execute(text("SELECT id, name, program_id, region_id, start_date, end_date, pro_rata_amount, number_of_sessions, is_active, status, completed_at FROM parent_program_groups WHERE id=:id"), {"id": group_id}).mappings().first()
+    if not group:
+        raise ValueError("Parent Program group not found")
+    name_expression = "TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, ''))" if db.bind.dialect.name == "sqlite" else "TRIM(CONCAT(COALESCE(p.first_name, ''), ' ', COALESCE(p.last_name, '')))"
+    patients = db.execute(text(f"""SELECT p.id, {name_expression} AS full_name
+        FROM parent_program_group_members member JOIN patients p ON p.id=member.patient_id
+        WHERE member.group_id=:group_id ORDER BY p.first_name, p.last_name, p.id"""), {"group_id": group_id}).mappings().all()
+    progress = db.execute(text("""SELECT COUNT(DISTINCT gpb.id) AS booked_sessions,
+        COUNT(DISTINCT CASE WHEN EXISTS (
+            SELECT 1 FROM patient_slot_booking completed_child
+            WHERE completed_child.group_program_booking_id=gpb.id
+        ) AND NOT EXISTS (
+            SELECT 1 FROM patient_slot_booking pending_child
+            LEFT JOIN patient_slot_booking_status_master child_status ON child_status.id=pending_child.status_id
+            WHERE pending_child.group_program_booking_id=gpb.id
+              AND NOT (pending_child.status_id=3 OR UPPER(COALESCE(child_status.code, ''))='COMPLETED')
+        ) THEN gpb.id END) AS completed_sessions
+        FROM group_program_bookings gpb
+        WHERE gpb.parent_program_group_id=:group_id"""), {"group_id": group_id}).mappings().first()
+    planned = int(group["number_of_sessions"] or 0)
+    completed = min(planned, int(progress["completed_sessions"] or 0))
+    return {**dict(group), "is_active": bool(group["is_active"]), "booked_sessions": int(progress["booked_sessions"] or 0),
+        "completed_sessions": completed, "pending_sessions": max(0, planned - completed),
+        "patient_ids": [row["id"] for row in patients], "patients": [dict(row) for row in patients]}
+
+
+@router.get("/parent-program-groups")
+async def list_parent_program_groups(region_id: int, program_id: int | None = None, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    await check_region_access(current_user=current_user, db=db, target_region_id=[region_id])
+    _ensure_parent_program_group_schema(db)
+    query, params = "SELECT id FROM parent_program_groups WHERE region_id=:region_id AND is_active=1", {"region_id": region_id}
+    if program_id:
+        query, params["program_id"] = query + " AND program_id=:program_id", program_id
+    ids = [row[0] for row in db.execute(text(query + " ORDER BY name, id"), params).all()]
+    return {"data": [_parent_program_group_shape(db, group_id) for group_id in ids]}
+
+
+@router.post("/parent-program-groups", status_code=status.HTTP_201_CREATED)
+async def create_parent_program_group(payload: ParentProgramGroupPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    await check_region_access(current_user=current_user, db=db, target_region_id=[payload.region_id])
+    await _require_calendar_write(current_user, db)
+    _ensure_parent_program_group_schema(db)
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="The group end date must be on or after its start date")
+    patient_ids = list(dict.fromkeys(payload.patient_ids))
+    valid_count = db.query(Patient).filter(Patient.id.in_(patient_ids), Patient.region_id == payload.region_id).count()
+    program = db.query(Program).filter(Program.id == payload.program_id).first()
+    if valid_count != len(patient_ids): raise HTTPException(status_code=400, detail="Every child in the group must belong to the selected region")
+    if not program or AppointmentService._program_type(program.program_name) not in {"parent_training", "peg"}: raise HTTPException(status_code=400, detail="Select a Parent Program")
+    result = db.execute(text("INSERT INTO parent_program_groups (name, program_id, region_id, start_date, end_date, pro_rata_amount, number_of_sessions, is_active) VALUES (:name,:program_id,:region_id,:start_date,:end_date,:pro_rata_amount,:number_of_sessions,:is_active)"), {"name": payload.name.strip(), "program_id": payload.program_id, "region_id": payload.region_id, "start_date": payload.start_date, "end_date": payload.end_date, "pro_rata_amount": payload.pro_rata_amount, "number_of_sessions": payload.number_of_sessions, "is_active": payload.is_active})
+    group_id = int(result.lastrowid)
+    for patient_id in patient_ids: db.execute(text("INSERT INTO parent_program_group_members (group_id,patient_id) VALUES (:group_id,:patient_id)"), {"group_id": group_id, "patient_id": patient_id})
+    db.commit()
+    return {"data": _parent_program_group_shape(db, group_id)}
+
+
+@router.put("/parent-program-groups/{group_id}")
+async def update_parent_program_group(group_id: int, payload: ParentProgramGroupPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    await check_region_access(current_user=current_user, db=db, target_region_id=[payload.region_id])
+    await _require_calendar_write(current_user, db)
+    _ensure_parent_program_group_schema(db)
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="The group end date must be on or after its start date")
+    patient_ids = list(dict.fromkeys(payload.patient_ids))
+    valid_count = db.query(Patient).filter(Patient.id.in_(patient_ids), Patient.region_id == payload.region_id).count()
+    if valid_count != len(patient_ids): raise HTTPException(status_code=400, detail="Every child in the group must belong to the selected region")
+    updated = db.execute(text("UPDATE parent_program_groups SET name=:name,program_id=:program_id,region_id=:region_id,start_date=:start_date,end_date=:end_date,pro_rata_amount=:pro_rata_amount,number_of_sessions=:number_of_sessions,is_active=:is_active,updated_at=CURRENT_TIMESTAMP WHERE id=:id"), {"id": group_id, "name": payload.name.strip(), "program_id": payload.program_id, "region_id": payload.region_id, "start_date": payload.start_date, "end_date": payload.end_date, "pro_rata_amount": payload.pro_rata_amount, "number_of_sessions": payload.number_of_sessions, "is_active": payload.is_active})
+    if not updated.rowcount: raise HTTPException(status_code=404, detail="Parent Program group not found")
+    db.execute(text("DELETE FROM parent_program_group_members WHERE group_id=:group_id"), {"group_id": group_id})
+    for patient_id in patient_ids: db.execute(text("INSERT INTO parent_program_group_members (group_id,patient_id) VALUES (:group_id,:patient_id)"), {"group_id": group_id, "patient_id": patient_id})
+    db.commit()
+    return {"data": _parent_program_group_shape(db, group_id)}
+
+
+
+
+@router.patch("/parent-program-groups/{group_id}/complete")
+async def complete_parent_program_group(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_parent_program_group_schema(db)
+    group = db.execute(text("SELECT id, region_id, status FROM parent_program_groups WHERE id=:id"), {"id": group_id}).mappings().first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Parent Program group not found")
+    await check_region_access(current_user=current_user, db=db, target_region_id=[int(group["region_id"])])
+    await _require_calendar_write(current_user, db)
+    if str(group["status"] or "").upper() != "COMPLETED":
+        db.execute(text("UPDATE parent_program_groups SET status='COMPLETED', completed_at=:completed_at, updated_at=CURRENT_TIMESTAMP WHERE id=:id"), {"id": group_id, "completed_at": datetime.utcnow()})
+        db.commit()
+    return {"data": _parent_program_group_shape(db, group_id)}
 
 def _normalized_roles(roles: list[str]) -> set[str]:
     return {str(role or "").strip().lower().replace(" ", "_") for role in roles}
@@ -444,6 +571,22 @@ async def book_slot(
 
         program = db.query(Program).filter(Program.id == booking_create.program_id).first() if booking_create.program_id else None
         program_type = AppointmentService._program_type(program.program_name if program else None)
+        if booking_create.parent_program_group_id is not None:
+            if program_type not in {"parent_training", "peg"}:
+                raise ValueError("Parent Program groups can only be used with Parent Programming")
+            _ensure_parent_program_group_schema(db)
+            group = _parent_program_group_shape(db, booking_create.parent_program_group_id)
+            if not group["is_active"] or group["program_id"] != booking_create.program_id or group["region_id"] != booking_create.region_id:
+                raise ValueError("The selected group does not match this Parent Program booking")
+            group_patient_ids = list(group["patient_ids"])
+            if not group_patient_ids:
+                raise ValueError("The selected Parent Program group has no children")
+            if set(patient_ids) != set(group_patient_ids):
+                raise ValueError("A Parent Program booking must include exactly the children in the selected group")
+            selected_package_ids = set((booking_create.patient_package_selections or {}).keys())
+            if selected_package_ids and selected_package_ids != set(group_patient_ids):
+                raise ValueError("Package selections must match every child in the selected group")
+            patient_ids = group_patient_ids
         is_crt_booking = program_type == "crt"
 
         # CRT is one logical booking made up of three consecutive therapist segments.
@@ -519,8 +662,8 @@ async def book_slot(
                         else None
                     ),
                     "patient_package_id": (
-                        booking_create.patient_package_id
-                        if allocation.get("is_primary", True) and len(patient_ids) == 1
+                        (booking_create.patient_package_selections or {}).get(patient_id, booking_create.patient_package_id)
+                        if allocation.get("is_primary", True)
                         else None
                     ),
                     "use_package": bool(booking_create.use_package and allocation.get("is_primary", True)),

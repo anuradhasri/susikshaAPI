@@ -2002,6 +2002,8 @@ def _package_shape(patient_package: PatientPackage) -> dict:
         "program_id": patient_package.package.program_id if patient_package.package else None,
         "program_name": patient_package.package.program.program_name if patient_package.package and patient_package.package.program else None,
         "total_sessions": stats["total"],
+        "start_date": _iso(patient_package.start_date),
+        "end_date": _iso(patient_package.end_date),
         "sessions_used": stats["completed"],
         "sessions_completed": stats["completed"],
         "sessions_remaining": stats["remaining"],
@@ -2170,6 +2172,23 @@ def _payment_shape(payment: Payment) -> dict:
 
 
 def _slot_booking_amount(slot_booking: PatientSlotBooking) -> float:
+    if getattr(slot_booking, "group_program_booking_id", None):
+        db = object_session(slot_booking)
+        mapping = slot_booking.therapist_slot_mapping
+        slot_date = mapping.slot_date if mapping else None
+        if db and slot_booking.program_id and slot_booking.patient_id and slot_date:
+            parent_group_id = getattr(getattr(slot_booking, "group_program_booking", None), "parent_program_group_id", None)
+            if parent_group_id:
+                pricing = db.execute(text("SELECT pro_rata_amount,number_of_sessions FROM parent_program_groups WHERE id=:id"), {"id": parent_group_id}).mappings().first()
+            else:
+                pricing = db.execute(text("""SELECT pg.pro_rata_amount,pg.number_of_sessions
+                    FROM parent_program_groups pg
+                    JOIN parent_program_group_members members ON members.group_id=pg.id
+                    WHERE pg.program_id=:program_id AND members.patient_id=:patient_id
+                      AND pg.start_date<=:slot_date AND pg.end_date>=:slot_date
+                    ORDER BY pg.id DESC LIMIT 1"""), {"program_id": slot_booking.program_id, "patient_id": slot_booking.patient_id, "slot_date": slot_date}).mappings().first()
+            if pricing and int(pricing["number_of_sessions"] or 0) > 0:
+                return round(float(pricing["pro_rata_amount"] or 0) / int(pricing["number_of_sessions"]), 2)
     patient_package = slot_booking.patient_package
     if slot_booking.is_package_session and patient_package and patient_package.package and patient_package.package.total_sessions:
         return float(patient_package.total_amount or patient_package.package.price or 0) / float(patient_package.package.total_sessions or 1)
@@ -2745,6 +2764,11 @@ def _payment_transaction_shape(
         due = payment_due
         if display_amount_override is not None:
             display_amount = float(display_amount_override)
+        elif getattr(slot_booking, "group_program_booking_id", None):
+            # Parent Program history must always use the group's current
+            # per-child, per-session price. Older completion ledger rows can
+            # contain the program master's cached amount, which must not win.
+            display_amount = _slot_booking_amount(slot_booking)
         elif is_package_credit_row:
             display_amount = stored_amount if stored_amount > 0 else _slot_booking_amount(slot_booking)
         elif "Session completed" in str(payment.remark or "") and payment_amount <= 0:
@@ -3226,6 +3250,7 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.join(Patient, Patient.id == TherapySession.patient_id).filter(Patient.region_id.in_(region_ids))
         return query
     if table == "packages":
+        _ensure_package_master_schema(db)
         allowed_package_names = (
             "General 16 Session - Package",
             "General 12 Session - Package",
@@ -3235,7 +3260,17 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return db.query(Package).options(joinedload(Package.program)).filter(
             Package.deleted_at.is_(None),
             Package.is_active.is_(True),
-            Package.name.in_(allowed_package_names),
+            or_(
+                Package.name.in_(allowed_package_names),
+                Package.program.has(or_(
+                    Program.program_name.ilike("%parent training%"),
+                    Program.program_name.ilike("%parent program%"),
+                    Program.program_name.ilike("%prewriting%"),
+                    Program.program_name.ilike("%prewritting%"),
+                    Program.program_name.ilike("%toilet training%"),
+                    Program.program_name.ilike("%peg%"),
+                )),
+            ),
         )
     if table == "patient_packages":
         query = db.query(PatientPackage).options(joinedload(PatientPackage.package)).filter(PatientPackage.deleted_at.is_(None))
@@ -3325,6 +3360,9 @@ def _apply_filters(query, table: str, filters: list[dict]):
         elif field == "is_active" and table == "therapists":
             if op == "eq":
                 query = query.filter(Therapist.is_active == (str(value).lower() == "true"))
+        elif field == "is_active" and table == "enquiries":
+            if op == "eq":
+                query = query.filter(Enquiry.is_active == (str(value).lower() == "true"))
         elif field == "region_id" and table == "therapists":
             if op == "eq":
                 query = query.filter(Therapist.region_id == value)
@@ -3707,14 +3745,60 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     current_therapist = _current_therapist(db, user) if _is_therapist_scoped_role(roles) else None
     patients = _base_query("patients", db, user).all()
     therapists = _base_query("therapists", db, user).all()
-    invoices = _base_query("invoices", db, user).all()
+    invoices = _base_query("invoices", db, user).all() if _table_exists(db, "invoices") else []
     payments = _base_query("payments", db, user).all()
     patient_packages = _base_query("patient_packages", db, user).all()
-    availability_rows = _base_query("therapist_availability", db, user).filter(
-        TherapistAvailability.availability_date >= period_start,
-        TherapistAvailability.availability_date <= period_end,
-    ).all()
-    revenue = sum(float(payment.payment_amount or 0) for payment in payments)
+    availability_rows = (
+        _base_query("therapist_availability", db, user).filter(
+            TherapistAvailability.availability_date >= period_start,
+            TherapistAvailability.availability_date <= period_end,
+        ).all()
+        if _table_exists(db, "therapist_availability")
+        else []
+    )
+    def collected_on(payment: Payment) -> Optional[date]:
+        paid_at = payment.payment_date or payment.created_at
+        return paid_at.date() if paid_at else None
+
+    def is_collected(payment: Payment) -> bool:
+        return (
+            _status_value(payment.payment_status).strip().lower() in {"completed", "paid"}
+            and float(payment.payment_amount or 0) > 0
+        )
+
+    current_period_payments = [
+        payment
+        for payment in payments
+        if is_collected(payment)
+        and collected_on(payment) is not None
+        and period_start <= collected_on(payment) <= period_end
+    ]
+    previous_period_payments = [
+        payment
+        for payment in payments
+        if is_collected(payment)
+        and collected_on(payment) is not None
+        and previous_period_start <= collected_on(payment) <= previous_period_end
+    ]
+    revenue = sum(float(payment.payment_amount or 0) for payment in current_period_payments)
+    previous_revenue = sum(float(payment.payment_amount or 0) for payment in previous_period_payments)
+    revenue_growth = (
+        round(((revenue - previous_revenue) / previous_revenue) * 100, 1)
+        if previous_revenue
+        else (100 if revenue else 0)
+    )
+    revenue_by_day = defaultdict(float)
+    for payment in current_period_payments:
+        revenue_by_day[collected_on(payment)] += float(payment.payment_amount or 0)
+    revenue_chart = []
+    for day in _date_range(period_start, period_end):
+        label = "Today" if period_key == "today" else day.strftime("%a" if period_key == "week" else "%b %d")
+        revenue_chart.append({
+            "label": label,
+            "month": label,
+            "revenue": round(revenue_by_day[day], 2),
+            "sessions": 0,
+        })
     receivables = sum(max(0, (invoice.total_amount or 0) - (invoice.paid_amount or 0)) for invoice in invoices)
     diagnosis_counts = Counter((patient.diagnosis or "Other").strip() or "Other" for patient in patients)
     palette = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#6b7280", "#8b5cf6"]
@@ -3739,13 +3823,13 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
             "waitlistCount": 0,
         },
         "kpiCards": [
-            {"title": "Revenue", "value": f"Rs {round(revenue):,}", "icon": "revenue", "change": "live payments", "changeType": "neutral"},
+            {"title": "Revenue", "value": f"Rs {round(revenue):,}", "icon": "revenue", "change": f"{revenue_growth}% {_period_comparison_label(period_key)}", "changeType": "up" if revenue_growth >= 0 else "down"},
             {"title": "Receivables", "value": f"Rs {round(receivables):,}", "icon": "receivables", "change": f"{len(invoices)} invoices", "changeType": "neutral"},
             {"title": "Avg. Utilization", "value": "0%", "icon": "avg", "change": "slots table only", "changeType": "neutral"},
             {"title": "Active Packages", "value": str(sum(1 for pp in patient_packages if pp.status == "active")), "icon": "packages", "change": f"{len(patient_packages)} total", "changeType": "neutral"},
             {"title": "Leakage", "value": "0", "icon": "leakage", "change": "sessions table not present", "changeType": "neutral"},
         ],
-        "revenueData": [],
+        "revenueData": revenue_chart,
         "sessionTrendData": [],
         "diagnosisData": diagnosis_data,
         "therapistUtilization": [],
@@ -3779,7 +3863,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     unbilled_sessions = [s for s in unbilled_source_sessions if s.billing_status not in {"billed", "paid"}]
     current_period_payments = [
         p for p in payments
-        if _status_value(p.payment_status) in {"completed", "paid"}
+        if _status_value(p.payment_status).strip().lower() in {"completed", "paid"}
         and (p.payment_date or p.created_at)
         and (
             (p.payment_date or p.created_at).date() >= first_of_month
@@ -3791,7 +3875,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
     previous_period_revenue = sum(
         float(p.payment_amount or 0)
         for p in payments
-        if _status_value(p.payment_status) in {"completed", "paid"}
+        if _status_value(p.payment_status).strip().lower() in {"completed", "paid"}
         and (p.payment_date or p.created_at)
         and previous_period_start <= (p.payment_date or p.created_at).date() <= previous_period_end
     )
@@ -3806,7 +3890,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
         for payment in payments:
             paid_at = payment.payment_date or payment.created_at
             paid_date = paid_at.date() if paid_at else None
-            if paid_date and period_start <= paid_date <= period_end and _status_value(payment.payment_status) in {"completed", "paid"}:
+            if paid_date and period_start <= paid_date <= period_end and _status_value(payment.payment_status).strip().lower() in {"completed", "paid"}:
                 revenue_by_day[paid_date] += float(payment.payment_amount or 0)
         for session in completed_period_sessions:
             sessions_by_day[session.session_date] += 1
@@ -3824,7 +3908,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
         sessions_by_month = defaultdict(int)
         for payment in payments:
             paid_at = payment.payment_date or payment.created_at
-            if paid_at and paid_at.date() >= first_of_year and _status_value(payment.payment_status) in {"completed", "paid"}:
+            if paid_at and paid_at.date() >= first_of_year and _status_value(payment.payment_status).strip().lower() in {"completed", "paid"}:
                 revenue_by_month[_month_key(paid_at)] += float(payment.payment_amount or 0)
         for session in completed_sessions:
             if session.session_date >= first_of_year:
@@ -3893,7 +3977,7 @@ def _analytics_payload(db: Session, user: Optional[User], period: Optional[str] 
 
     billing_rows = []
     for invoice in invoices:
-        payment = next((p for p in payments if p.patient_id == invoice.patient_id and _status_value(p.payment_status) in {"completed", "paid"}), None)
+        payment = next((p for p in payments if p.patient_id == invoice.patient_id and _status_value(p.payment_status).strip().lower() in {"completed", "paid"}), None)
         billing_rows.append({
             "id": invoice.id,
             "patientName": f"{invoice.patient.first_name} {invoice.patient.last_name}".strip() if invoice.patient else "Unknown",
@@ -4478,7 +4562,12 @@ async def get_patient_transactions(
                 int(sibling.id or 0),
             ),
         )
-        total_paid = sum(float(sibling.paid_amount or 0) for sibling in group_siblings)
+        group_child_slot_ids = [int(sibling.id) for sibling in group_siblings if sibling.id]
+        ledger_paid = float(db.query(func.coalesce(func.sum(Payment.payment_amount), 0)).filter(
+            Payment.patient_id == patient_id,
+            Payment.patient_slot_booking_id.in_(group_child_slot_ids),
+        ).scalar() or 0)
+        total_paid = max(ledger_paid, sum(float(sibling.paid_amount or 0) for sibling in group_siblings))
         total_package_covered = sum(float(getattr(sibling, "package_covered_amount", 0) or 0) for sibling in group_siblings)
         amount = max(float(sibling.amount or _slot_booking_amount(sibling) or 0) for sibling in group_siblings)
         fully_paid = any(bool(getattr(sibling, "fully_paid", False)) for sibling in group_siblings) or (amount > 0 and total_paid + total_package_covered >= amount)
@@ -5072,6 +5161,9 @@ async def get_patient_transactions(
             continue
 
         row = _transaction_slot_shape(payable_slot, slot_payments.get(payable_slot.id))
+        if getattr(payable_slot, "group_program_booking_id", None) and payable_slot.patient_id:
+            group_child_key = (int(payable_slot.group_program_booking_id), int(payable_slot.patient_id))
+            row["related_booking_ids"] = [int(sibling.id) for sibling in slots_by_group_child.get(group_child_key, [payable_slot]) if sibling.id]
         crt_parent = payable_slot.crt_program_booking
         if crt_parent:
             _sync_crt_parent_payment_from_ledger(db, crt_parent)
@@ -5087,7 +5179,7 @@ async def get_patient_transactions(
         else:
             row["paid_amount"] = float(payable_slot.paid_amount or 0)
             row["package_covered_amount"] = float(getattr(payable_slot, "package_covered_amount", 0) or 0)
-            slot_amount = float(payable_slot.amount or _slot_booking_amount(payable_slot) or 0)
+            slot_amount = float(_slot_booking_amount(payable_slot) or payable_slot.amount or 0)
             row["amount"] = slot_amount
             row["due_amount"] = max(0, float(payable_slot.due_amount or 0))
             if row.get("is_package_session"):
@@ -5098,11 +5190,19 @@ async def get_patient_transactions(
                     - float(row.get("paid_amount") or 0),
                 )
             elif getattr(payable_slot, "group_program_booking_id", None):
+                group_child_key = (int(payable_slot.group_program_booking_id), int(payable_slot.patient_id))
+                final_group_siblings = slots_by_group_child.get(group_child_key, [payable_slot])
+                final_slot_ids = [int(sibling.id) for sibling in final_group_siblings if sibling.id]
+                child_ledger_paid = float(db.query(func.coalesce(func.sum(Payment.payment_amount), 0)).filter(
+                    Payment.patient_id == payable_slot.patient_id,
+                    Payment.patient_slot_booking_id.in_(final_slot_ids),
+                ).scalar() or 0)
+                row["paid_amount"] = child_ledger_paid
                 row["due_amount"] = max(
                     0,
                     slot_amount
                     - float(row.get("package_covered_amount") or 0)
-                    - float(row.get("paid_amount") or 0),
+                    - child_ledger_paid,
                 )
             row["fully_paid"] = bool(getattr(payable_slot, "fully_paid", False))
             row["payment_status"] = payable_slot.payment_status
@@ -5356,6 +5456,9 @@ async def create_patient_transaction(
     patient_package_id = payload.get("patient_package_id")
     assessment_payment_id = payload.get("assessment_payment_id")
     paid_amount = float(payload.get("paid_amount") or 0)
+    if round(paid_amount, 2) != paid_amount:
+        raise HTTPException(status_code=400, detail="Paid amount can have at most 2 decimal places")
+    paid_amount = round(paid_amount, 2)
     fully_paid = bool(payload.get("fully_paid"))
     if paid_amount < 0:
         raise HTTPException(status_code=400, detail="Paid amount cannot be negative")
@@ -5405,7 +5508,7 @@ async def create_patient_transaction(
         if paid_amount > max_allowed + 0.01:
             raise HTTPException(
                 status_code=400,
-                detail=f"Paid amount cannot be more than {label} due",
+                detail=f"Paid amount cannot be more than {label} due of Rs {max_allowed:,.2f}",
             )
 
     slot_booking = None
@@ -5562,9 +5665,14 @@ async def create_patient_transaction(
                         int(sibling.id or 0),
                     ),
                 )
-                total_paid = sum(float(sibling.paid_amount or 0) for sibling in group_siblings)
+                group_child_slot_ids = [int(sibling.id) for sibling in group_siblings if sibling.id]
+                ledger_paid = float(db.query(func.coalesce(func.sum(Payment.payment_amount), 0)).filter(
+                    Payment.patient_id == patient_id,
+                    Payment.patient_slot_booking_id.in_(group_child_slot_ids),
+                ).scalar() or 0)
+                total_paid = max(ledger_paid, sum(float(sibling.paid_amount or 0) for sibling in group_siblings))
                 total_package_covered = sum(float(getattr(sibling, "package_covered_amount", 0) or 0) for sibling in group_siblings)
-                amount = max(float(sibling.amount or _slot_booking_amount(sibling) or 0) for sibling in group_siblings)
+                amount = max(float(_slot_booking_amount(sibling) or sibling.amount or 0) for sibling in group_siblings)
                 payable_slot.amount = amount
                 payable_slot.paid_amount = total_paid
                 payable_slot.package_covered_amount = total_package_covered
@@ -5925,6 +6033,20 @@ async def create_patient_transaction(
         mirror_linked_program_slot_payment_state(slot_booking)
 
     db.commit()
+    if slot_booking and getattr(slot_booking, "group_program_booking_id", None):
+        mapping = slot_booking.therapist_slot_mapping
+        if mapping and mapping.slot_date:
+            # Reconcile Parent Program projections/eligibility immediately.
+            # Before the group end date this remains pending_completion; after
+            # it ends, later collections increase only the earned payout.
+            from app.api.routes.payouts import sync as sync_payouts
+            sync_payouts(
+                start_date=mapping.slot_date,
+                end_date=mapping.slot_date,
+                region_id=patient.region_id,
+                db=db,
+                user=user,
+            )
     if slot_booking:
         db.refresh(slot_booking)
         if slot_booking.crt_program_booking:
@@ -6223,6 +6345,8 @@ async def list_rows(
     parsed_filters = json.loads(filters or "[]")
     if table in {"alerts", "session_assignments", "waitlist_entries"}:
         return {"data": [], "count": 0 if count else None}
+    if table == "enquiries":
+        _ensure_enquiry_schema(db)
     if table == "therapist_availability" and not _table_exists(db, "therapist_availability"):
         leave_filters = []
         for item in parsed_filters:
@@ -6390,7 +6514,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             referred_by=item.get("referred_by"),
             registration_at=_parse_dt(item.get("registration_at")) if item.get("registration_at") else _now(),
             clinical_observation=item.get("clinical_observation"),
-            is_available=item.get("is_available", True),
+            is_available=bool(item.get("is_available", False)),
             region_id=region_id,
         )
     elif table == "enquiries":
@@ -6439,6 +6563,27 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             progress_notes=item.get("notes") or item.get("progress_notes"),
             billing_status=item.get("billing_status") or "pending",
         )
+    elif table == "packages":
+        _ensure_package_master_schema(db)
+        name = (item.get("name") or "").strip()
+        total_sessions = int(item.get("total_sessions") or 0)
+        if not name or total_sessions <= 0:
+            raise HTTPException(status_code=400, detail="Package name and a positive session count are required")
+        program_id = item.get("program_id")
+        if program_id:
+            program = db.query(Program).filter(Program.id == int(program_id), Program.deleted_at.is_(None)).first()
+            if not program or (program.region_id and program.region_id != region_id):
+                raise HTTPException(status_code=400, detail="Selected program is not available for this region")
+        row = Package(
+            name=name,
+            description=item.get("description"),
+            region_id=region_id,
+            program_id=int(program_id) if program_id else None,
+            total_sessions=total_sessions,
+            price=max(0, float(item.get("price") or 0)),
+            duration_days=int(item["duration_days"]) if item.get("duration_days") else None,
+            is_active=bool(item.get("is_active", True)),
+        )
     elif table == "patient_packages":
         _ensure_package_billing_schema(db)
         _ensure_package_master_schema(db)
@@ -6449,6 +6594,13 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         total_sessions = int(item.get("total_sessions") or package.total_sessions or 0)
         total_amount = float(item.get("total_amount") if item.get("total_amount") is not None else package.price or 0)
         paid_amount = float(item.get("paid_amount") or 0)
+        if paid_amount < 0:
+            raise HTTPException(status_code=400, detail="Paid amount cannot be negative")
+        if paid_amount > total_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Paid amount cannot be more than package amount of Rs {total_amount:,.2f}",
+            )
         adjust_today_unpaid = bool(item.get("adjust_today_unpaid_sessions"))
         adjustment_preview = _patient_package_preview(db, item["patient_id"], package.id)
         sessions_to_adjust = adjustment_preview["sessions_adjusted"] if adjust_today_unpaid else 0
