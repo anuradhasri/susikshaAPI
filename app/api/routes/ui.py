@@ -2803,8 +2803,10 @@ def _payment_transaction_shape(
             display_amount = stored_amount if stored_amount > 0 else _slot_booking_amount(slot_booking)
         if due_override is not None:
             due = max(0, float(due_override))
-        elif is_package_session:
-            due = max(0, float(display_amount or 0) - payment_amount)
+        # For package-backed sessions, payment.due_amount is the package ledger
+        # balance captured after this event. Do not replace it with the selected
+        # session's balance; marking that session fully paid must not erase the
+        # remaining package due.
         return {
             **base_row,
             "id": f"payment-{payment.id}",
@@ -5112,10 +5114,33 @@ async def get_patient_transactions(
             max((float(payment.payment_amount or 0) + float(getattr(payment, "due_amount", 0) or 0) for payment in payments), default=0),
         )
         cumulative_paid = 0
-        for payment in sorted(payments, key=lambda row: (
+        display_payments = sorted(payments, key=lambda row: (
             (row.payment_date.date() if hasattr(row.payment_date, "date") else row.payment_date) if row.payment_date else None,
             row.id or 0,
-        )):
+        ))
+        program_name = str(slot_booking.program.program_name if slot_booking.program else "").lower()
+        is_special_program = any(name in program_name for name in ("vocational", "crt", "structured", "parent"))
+        if not is_special_program:
+            # Completion and collection are separate ledger events. Preserve
+            # one completion row even after payments are collected so the UI
+            # shows the full session history. Only collapse accidental repeated
+            # completion markers for the same slot.
+            completion_rows = [
+                row for row in display_payments
+                if float(row.payment_amount or 0) <= 0
+                and "session completed" in str(row.remark or "").lower()
+            ]
+            if len(completion_rows) > 1:
+                newest_completion_id = max(int(row.id or 0) for row in completion_rows)
+                display_payments = [
+                    row for row in display_payments
+                    if not (
+                        float(row.payment_amount or 0) <= 0
+                        and "session completed" in str(row.remark or "").lower()
+                        and int(row.id or 0) != newest_completion_id
+                    )
+                ]
+        for payment in display_payments:
             previous_due = max(0, starting_due - cumulative_paid)
             cumulative_paid += float(payment.payment_amount or 0)
             # Keep the due captured on each ledger entry so transaction history
@@ -6068,8 +6093,11 @@ async def create_patient_transaction(
             updated_by=user.id,
         )
         db.add(payment)
+        # Payments are an append-only ledger. Flush the new row immediately so
+        # every instalment gets its own database identity before any balance
+        # reconciliation runs; only the linked session balance is updated.
+        db.flush()
         if slot_booking and slot_booking.crt_program_booking:
-            db.flush()
             _sync_crt_parent_payment_from_ledger(db, slot_booking.crt_program_booking)
         if assessment_billing:
             if fully_paid:
@@ -6117,8 +6145,6 @@ async def create_patient_transaction(
             _sync_patient_package_paid_amount(patient_package)
             _recalculate_package_slot_payments(db, patient_package)
             _rebuild_patient_package_payment_due_snapshots(patient_package)
-            if slot_booking and fully_paid:
-                payment.due_amount = 0
 
     if slot_booking:
         mirror_linked_program_slot_payment_state(slot_booking)
