@@ -210,6 +210,7 @@ class TherapistPayrollConfig(AuditColumns, Base):
     base_salary = Column(Float, nullable=False, default=0, server_default="0")
     flat_commission = Column(Float, nullable=False, default=0, server_default="0")
     professional_tax = Column(Float, nullable=False, default=0, server_default="0")
+    fixed_salary_only = Column(Boolean, nullable=False, default=False, server_default="0")
     effective_from = Column(Date, nullable=False, index=True)
     effective_to = Column(Date)
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
@@ -217,3 +218,12 @@ class TherapistPayrollConfig(AuditColumns, Base):
     updated_by = Column(Integer, ForeignKey("users.id"))
     therapist = relationship("Therapist")
     __table_args__ = (UniqueConstraint("therapist_id", "effective_from", name="uq_therapist_payroll_effective_date"),)
+
+
+class PayrollTaxSetting(AuditColumns, Base):
+    __tablename__ = "payroll_tax_settings"
+    id = Column(Integer, primary_key=True)
+    income_threshold = Column(Float, nullable=False, default=25000, server_default="25000")
+    regular_month_amount = Column(Float, nullable=False, default=200, server_default="200")
+    march_amount = Column(Float, nullable=False, default=300, server_default="300")
+    updated_by = Column(Integer, ForeignKey("users.id"))

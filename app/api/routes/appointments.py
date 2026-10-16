@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, or_, text
 from datetime import date, datetime
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user, check_region_access, get_user_roles
@@ -16,6 +16,7 @@ from app.schemas.schemas import (
 from app.services.appointment_service import AppointmentService, SlotMasterService
 from app.repositories.appointment_repository import AppointmentRepository
 from app.models.models import Patient, PatientSlotBooking, Program, ProgramSegment, Therapist, TherapistSlotMapping, User
+from app.models.payouts import ProgramPaymentConfig, TherapistPayrollConfig
 from app.utils.logger import setup_logging
 
 router = APIRouter(prefix="/api/v1/appointments", tags=["appointments"])
@@ -27,8 +28,8 @@ class ParentProgramGroupPayload(BaseModel):
     patient_ids: list[int] = Field(min_length=1)
     start_date: date
     end_date: date
-    pro_rata_amount: float = Field(ge=0)
-    number_of_sessions: int = Field(gt=0)
+    pro_rata_amount: float = Field(ge=0, le=1_000_000)
+    number_of_sessions: int = Field(gt=0, le=1_000)
     is_active: bool = True
 
 
@@ -67,6 +68,12 @@ def _parent_program_group_shape(db: Session, group_id: int) -> dict:
         WHERE member.group_id=:group_id ORDER BY p.first_name, p.last_name, p.id"""), {"group_id": group_id}).mappings().all()
     progress = db.execute(text("""SELECT COUNT(DISTINCT gpb.id) AS booked_sessions,
         COUNT(DISTINCT CASE WHEN EXISTS (
+            SELECT 1 FROM patient_slot_booking used_child
+            LEFT JOIN patient_slot_booking_status_master used_status ON used_status.id=used_child.status_id
+            WHERE used_child.group_program_booking_id=gpb.id
+              AND (used_child.status_id=3 OR UPPER(COALESCE(used_status.code, ''))='COMPLETED')
+        ) THEN gpb.id END) AS used_sessions,
+        COUNT(DISTINCT CASE WHEN EXISTS (
             SELECT 1 FROM patient_slot_booking completed_child
             WHERE completed_child.group_program_booking_id=gpb.id
         ) AND NOT EXISTS (
@@ -79,7 +86,16 @@ def _parent_program_group_shape(db: Session, group_id: int) -> dict:
         WHERE gpb.parent_program_group_id=:group_id"""), {"group_id": group_id}).mappings().first()
     planned = int(group["number_of_sessions"] or 0)
     completed = min(planned, int(progress["completed_sessions"] or 0))
-    return {**dict(group), "is_active": bool(group["is_active"]), "booked_sessions": int(progress["booked_sessions"] or 0),
+    shaped_group = dict(group)
+    if planned > 0 and completed >= planned and str(group["status"] or "").upper() != "COMPLETED":
+        completed_at = datetime.utcnow()
+        db.execute(text("""UPDATE parent_program_groups
+            SET status='COMPLETED', completed_at=:completed_at, updated_at=CURRENT_TIMESTAMP
+            WHERE id=:id"""), {"id": group_id, "completed_at": completed_at})
+        shaped_group["status"] = "COMPLETED"
+        shaped_group["completed_at"] = completed_at
+    return {**shaped_group, "is_active": bool(group["is_active"]), "booked_sessions": int(progress["booked_sessions"] or 0),
+        "used_sessions": int(progress["used_sessions"] or 0),
         "completed_sessions": completed, "pending_sessions": max(0, planned - completed),
         "patient_ids": [row["id"] for row in patients], "patients": [dict(row) for row in patients]}
 
@@ -92,7 +108,9 @@ async def list_parent_program_groups(region_id: int, program_id: int | None = No
     if program_id:
         query, params["program_id"] = query + " AND program_id=:program_id", program_id
     ids = [row[0] for row in db.execute(text(query + " ORDER BY name, id"), params).all()]
-    return {"data": [_parent_program_group_shape(db, group_id) for group_id in ids]}
+    groups = [_parent_program_group_shape(db, group_id) for group_id in ids]
+    db.commit()
+    return {"data": groups}
 
 
 @router.post("/parent-program-groups", status_code=status.HTTP_201_CREATED)
@@ -100,6 +118,8 @@ async def create_parent_program_group(payload: ParentProgramGroupPayload, curren
     await check_region_access(current_user=current_user, db=db, target_region_id=[payload.region_id])
     await _require_calendar_write(current_user, db)
     _ensure_parent_program_group_schema(db)
+    if payload.start_date < date.today():
+        raise HTTPException(status_code=400, detail="The group start date cannot be in the past")
     if payload.end_date < payload.start_date:
         raise HTTPException(status_code=400, detail="The group end date must be on or after its start date")
     patient_ids = list(dict.fromkeys(payload.patient_ids))
@@ -119,8 +139,19 @@ async def update_parent_program_group(group_id: int, payload: ParentProgramGroup
     await check_region_access(current_user=current_user, db=db, target_region_id=[payload.region_id])
     await _require_calendar_write(current_user, db)
     _ensure_parent_program_group_schema(db)
+    if payload.start_date < date.today():
+        raise HTTPException(status_code=400, detail="The group start date cannot be in the past")
     if payload.end_date < payload.start_date:
         raise HTTPException(status_code=400, detail="The group end date must be on or after its start date")
+    try:
+        existing_group = _parent_program_group_shape(db, group_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Parent Program group not found")
+    if existing_group["used_sessions"] > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="This Parent Program cannot be edited because a session has already been used",
+        )
     patient_ids = list(dict.fromkeys(payload.patient_ids))
     valid_count = db.query(Patient).filter(Patient.id.in_(patient_ids), Patient.region_id == payload.region_id).count()
     if valid_count != len(patient_ids): raise HTTPException(status_code=400, detail="Every child in the group must belong to the selected region")
@@ -571,6 +602,35 @@ async def book_slot(
 
         program = db.query(Program).filter(Program.id == booking_create.program_id).first() if booking_create.program_id else None
         program_type = AppointmentService._program_type(program.program_name if program else None)
+        booking_date = booking_create.slot_date
+        therapist_ids = sorted({
+            int(allocation.get("therapist_id") or 0)
+            for allocation in allocations
+            if int(allocation.get("therapist_id") or 0) > 0
+        })
+        missing_payment_setup: list[str] = []
+        for therapist_id in therapist_ids:
+            payroll_config = db.query(TherapistPayrollConfig).filter(
+                TherapistPayrollConfig.therapist_id == therapist_id,
+                TherapistPayrollConfig.is_active.is_(True),
+                TherapistPayrollConfig.deleted_at.is_(None),
+                TherapistPayrollConfig.effective_from <= booking_date,
+                or_(TherapistPayrollConfig.effective_to.is_(None), TherapistPayrollConfig.effective_to >= booking_date),
+            ).order_by(TherapistPayrollConfig.effective_from.desc()).first()
+            program_payment_ready = booking_create.program_id and db.query(ProgramPaymentConfig.id).filter(
+                ProgramPaymentConfig.therapist_id == therapist_id,
+                ProgramPaymentConfig.program_id == booking_create.program_id,
+                ProgramPaymentConfig.is_active.is_(True),
+                ProgramPaymentConfig.deleted_at.is_(None),
+                ProgramPaymentConfig.effective_from <= booking_date,
+                or_(ProgramPaymentConfig.effective_to.is_(None), ProgramPaymentConfig.effective_to >= booking_date),
+            ).first()
+            setup_ready = bool(payroll_config) and (bool(payroll_config.fixed_salary_only) or bool(program_payment_ready))
+            if not setup_ready:
+                therapist = db.get(Therapist, therapist_id)
+                missing_payment_setup.append(therapist.name if therapist and therapist.name else f"Therapist #{therapist_id}")
+        if missing_payment_setup:
+            raise ValueError(f"Please complete the therapist payment setup first for: {', '.join(missing_payment_setup)}")
         if booking_create.parent_program_group_id is not None:
             if program_type not in {"parent_training", "peg"}:
                 raise ValueError("Parent Program groups can only be used with Parent Programming")

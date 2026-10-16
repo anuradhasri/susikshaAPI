@@ -9,6 +9,7 @@ from sqlalchemy.orm import joinedload
 from app.models.models import Payment, PatientSlotBooking, Therapist, TherapistSlotMapping
 from app.models.payouts import (
     ProgramPaymentConfig, TherapistMonthlyPayout, TherapistPaymentEarning,
+    TherapistPayrollConfig,
 )
 
 
@@ -16,12 +17,21 @@ def money(value):
     return round(float(value or 0) + 1e-9, 2)
 
 
+def inclusive_gst(amount, rate):
+    """Extract GST already included in an amount."""
+    gross = money(amount)
+    gst_rate = float(rate or 0)
+    if gross <= 0 or gst_rate <= 0:
+        return 0.0, gross
+    gst = money(gross * gst_rate / (100 + gst_rate))
+    return gst, money(gross - gst)
+
+
 def calculate_installment(payment_amount, therapist_count, gst_rate, method, configured_share=0, fixed_amount=None, total_due=None):
     """Calculate one therapist's share of one payment installment."""
     count = max(1, int(therapist_count or 1))
     received = money(float(payment_amount or 0) / count)
-    gst = money(received * float(gst_rate or 0) / 100)
-    after_gst = money(received - gst)
+    gst, after_gst = inclusive_gst(received, gst_rate)
     if method == "parent":
         therapist_amount = money(after_gst * 0.40 * float(configured_share or 0) / 100)
     elif method == "package":
@@ -44,6 +54,18 @@ def _config(db, therapist_id, program_id, earning_date):
             or_(ProgramPaymentConfig.effective_to.is_(None), ProgramPaymentConfig.effective_to >= earning_date),
         )
         .order_by(ProgramPaymentConfig.effective_from.desc()).first())
+
+
+def _payroll_config(db, therapist_id, earning_date):
+    return (db.query(TherapistPayrollConfig)
+        .filter(
+            TherapistPayrollConfig.therapist_id == therapist_id,
+            TherapistPayrollConfig.is_active.is_(True),
+            TherapistPayrollConfig.deleted_at.is_(None),
+            TherapistPayrollConfig.effective_from <= earning_date,
+            or_(TherapistPayrollConfig.effective_to.is_(None), TherapistPayrollConfig.effective_to >= earning_date),
+        )
+        .order_by(TherapistPayrollConfig.effective_from.desc()).first())
 
 
 def sync_payment_earnings(db, start_date: date, end_date: date, region_id=None):
@@ -87,7 +109,11 @@ def sync_payment_earnings(db, start_date: date, end_date: date, region_id=None):
                 .filter_by(therapist_id=therapist_id, payout_month=earning_date.replace(day=1)).first())
             if monthly and monthly.status != 'draft':
                 skipped += 1; continue
-            if 'parent' in program_name:
+            if 'vocational' in program_name:
+                configured_share = None
+                calculation_method = 'fixed'
+                method = 'vocational_fixed_529_split'
+            elif 'parent' in program_name:
                 configured_share = float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 100)
                 calculation_method = 'parent'
                 method = 'parent_payment_installment'
@@ -104,8 +130,8 @@ def sync_payment_earnings(db, start_date: date, end_date: date, region_id=None):
                 calculation_method = 'percentage'
                 method = 'percentage_payment_installment'
             amounts = calculate_installment(
-                payment.payment_amount, len(therapist_ids), config.gst_rate,
-                calculation_method, configured_share or 0, config.fixed_amount,
+                payment.payment_amount, len(therapist_ids), 0 if 'vocational' in program_name or 'structured' in program_name or 'crt' in program_name else config.gst_rate,
+                calculation_method, configured_share or 0, 529 if 'vocational' in program_name else config.fixed_amount,
                 payment.amount or booking.amount,
             )
             received_share = amounts['received']
@@ -113,6 +139,12 @@ def sync_payment_earnings(db, start_date: date, end_date: date, region_id=None):
             after_gst = amounts['after_gst']
             therapist_amount = amounts['therapist']
             organization_amount = amounts['organization']
+            payroll_config = _payroll_config(db, therapist_id, earning_date)
+            fixed_salary_only = bool(payroll_config and payroll_config.fixed_salary_only)
+            if fixed_salary_only:
+                therapist_amount = 0.0
+                organization_amount = after_gst
+                method = 'fixed_salary_only'
             values = dict(
                 patient_slot_booking_id=booking.id, program_id=booking.program_id, config_id=config.id,
                 earning_date=earning_date, received_amount=received_share, gst_amount=gst,
@@ -123,6 +155,7 @@ def sync_payment_earnings(db, start_date: date, end_date: date, region_id=None):
                     'paymentAmount': float(payment.payment_amount or 0),
                     'therapistCount': len(therapist_ids), 'configuredShare': configured_share,
                     'groupProgramBookingId': booking.group_program_booking_id,
+                    'fixedSalaryOnly': fixed_salary_only,
                 }),
             )
             row = db.query(TherapistPaymentEarning).filter_by(payment_id=payment.id, therapist_id=therapist_id).first()

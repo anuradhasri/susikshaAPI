@@ -15,7 +15,7 @@ from app.models.payouts import (
     ProgramPaymentConfig, ProgramPaymentConfigHistory, TherapySheetAssignment,
     ProgramSheetConfig, TherapySheetSubmission, TherapistMonthlyPayout, TherapistPayoutAdjustment,
     TherapistSessionAllocation, TherapistSessionPayout, TherapistPayrollConfig,
-    PatientProgramPricing, TherapistPaymentEarning,
+    PatientProgramPricing, TherapistPaymentEarning, PayrollTaxSetting,
 )
 from app.services.payment_earning_service import sync_payment_earnings
 from app.models.report_sheets import (
@@ -51,6 +51,28 @@ def get_payout_manager(user: User = Depends(get_current_user), db: Session = Dep
 
 def money(value):
     return round(float(value or 0), 2)
+
+
+def inclusive_gst(amount, rate):
+    """Extract GST already included in an amount (for example, 18 out of 118)."""
+    gross = money(amount)
+    gst_rate = float(rate or 0)
+    if gross <= 0 or gst_rate <= 0:
+        return 0.0, gross
+    gst = money(gross * gst_rate / (100 + gst_rate))
+    return gst, money(gross - gst)
+
+
+def tax_settings(db):
+    row = db.query(PayrollTaxSetting).filter(PayrollTaxSetting.deleted_at.is_(None)).order_by(PayrollTaxSetting.id).first()
+    return row or PayrollTaxSetting(income_threshold=25000, regular_month_amount=200, march_amount=300)
+
+
+def professional_tax_for(db, gross_income, payroll_month):
+    settings = tax_settings(db)
+    if money(gross_income) <= money(settings.income_threshold):
+        return 0.0
+    return money(settings.march_amount if payroll_month.month == 3 else settings.regular_month_amount)
 
 
 def config_shape(row):
@@ -107,6 +129,40 @@ def applicable_payroll_config(db, therapist_id, on_date):
         TherapistPayrollConfig.deleted_at.is_(None), TherapistPayrollConfig.effective_from <= on_date,
         or_(TherapistPayrollConfig.effective_to.is_(None), TherapistPayrollConfig.effective_to >= on_date),
     ).order_by(TherapistPayrollConfig.effective_from.desc()).first()
+
+
+@router.get("/therapists/{therapist_id}/active-setup")
+def active_therapist_payment_setup(therapist_id: int, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+    therapist = db.get(Therapist, therapist_id)
+    if not therapist:
+        raise HTTPException(404, "Therapist not found")
+    if getattr(user, "region_ids", None) and therapist.region_id not in user.region_ids:
+        raise HTTPException(403, "Therapist is outside your region access")
+    today = date.today()
+    payroll = applicable_payroll_config(db, therapist_id, today)
+    rules = db.query(ProgramPaymentConfig).options(joinedload(ProgramPaymentConfig.program)).filter(
+        ProgramPaymentConfig.therapist_id == therapist_id,
+        ProgramPaymentConfig.is_active.is_(True),
+        ProgramPaymentConfig.deleted_at.is_(None),
+        ProgramPaymentConfig.effective_from <= today,
+        or_(ProgramPaymentConfig.effective_to.is_(None), ProgramPaymentConfig.effective_to >= today),
+    ).order_by(ProgramPaymentConfig.program_id, ProgramPaymentConfig.effective_from.desc()).all()
+    latest_by_program = {}
+    for rule in rules:
+        latest_by_program.setdefault(rule.program_id, rule)
+    return {"data": {
+        "therapistId": therapist.id,
+        "therapistName": therapist.name,
+        "payroll": None if not payroll else {
+            "baseSalary": money(payroll.base_salary),
+            "flatCommission": money(payroll.flat_commission),
+            "professionalTax": money(payroll.professional_tax),
+            "fixedSalaryOnly": bool(payroll.fixed_salary_only),
+            "effectiveFrom": payroll.effective_from.isoformat(),
+            "effectiveTo": payroll.effective_to.isoformat() if payroll.effective_to else None,
+        },
+        "rules": [config_shape(rule) for rule in latest_by_program.values()],
+    }}
 
 
 def applicable_patient_pricing(db, patient_id, program_id, on_date):
@@ -321,12 +377,14 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
         for item in payout_groups.values()
     ]
     session_payout_rows.sort(key=lambda item: (item["status"] != "eligible", -date.fromisoformat(item["date"]).toordinal(), item["therapistName"]))
+    pt_settings = tax_settings(db)
     return {"data": {
         "month": month_start.strftime("%Y-%m"),
         "programs": [{"id": p.id, "name": p.program_name, "regionId": p.region_id} for p in program_rows],
         "therapists": [{"id": t.id, "name": t.name, "regionId": t.region_id} for t in db.query(Therapist).filter(Therapist.is_active.is_(True), Therapist.region_id == region_id if region_id else True).order_by(Therapist.name).all()],
         "configs": [config_shape(c) for c in configs],
-        "payrollConfigs": [{"id": c.id, "therapistId": c.therapist_id, "baseSalary": money(c.base_salary), "flatCommission": money(c.flat_commission), "professionalTax": money(c.professional_tax), "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in payroll_configs],
+        "payrollConfigs": [{"id": c.id, "therapistId": c.therapist_id, "baseSalary": money(c.base_salary), "flatCommission": money(c.flat_commission), "professionalTax": money(c.professional_tax), "fixedSalaryOnly": bool(c.fixed_salary_only), "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in payroll_configs],
+        "taxSettings": {"incomeThreshold": money(pt_settings.income_threshold), "regularMonthAmount": money(pt_settings.regular_month_amount), "marchAmount": money(pt_settings.march_amount)},
         "sheetConfigs": [{"id": c.id, "programId": c.program_id, "programName": c.program.program_name if c.program else None, "sheetType": c.sheet_type, "isRequired": c.is_required, "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in sheet_configs],
         "sheets": [{"id": s.id, "sessionId": s.patient_slot_booking_id, "patientId": s.patient_id, "therapistId": s.therapist_id, "sessionDate": session_dates.get(s.id), "patientName": patient_names.get(s.patient_id, f"Child {s.patient_id}"), "therapistName": names.get(s.therapist_id, f"Therapist {s.therapist_id}"), "programName": program_names.get(s.program_id, "—"), "sheetType": s.sheet_type, "status": s.status, "assignedAt": s.assigned_at.isoformat(), "dueAt": s.due_at.isoformat() if s.due_at else None, "notifiedAt": s.notified_at.isoformat() if s.notified_at else None} for s in sheets],
         "sessionPayouts": session_payout_rows,
@@ -418,6 +476,9 @@ def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depen
         raise HTTPException(400, "A valid effective date is required")
     program = db.get(Program, program_id)
     therapist = db.get(Therapist, therapist_id)
+    program_name = str(program.program_name or "").lower() if program else ""
+    is_vocational_program = "vocational" in program_name
+    is_structured_program = "crt" in program_name or "structured" in program_name
     if method not in METHODS or not program or not therapist:
         raise HTTPException(400, "Select a valid therapist, program, and payment method")
     if program.region_id != therapist.region_id:
@@ -426,7 +487,9 @@ def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depen
         raise HTTPException(403, "Therapist and program are outside your region access")
     percentage = payload.get("percentage")
     fixed = payload.get("fixedAmount")
-    gst_rate = money(payload.get("gstRate", 18))
+    if is_vocational_program:
+        method, fixed, percentage = "fixed", 529, None
+    gst_rate = 0 if is_vocational_program or is_structured_program else money(payload.get("gstRate", 18))
     if not 0 <= gst_rate <= 100:
         raise HTTPException(400, "GST percentage must be between 0 and 100")
     if percentage not in (None, "") and not 0 <= float(percentage) <= 100:
@@ -451,14 +514,12 @@ def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depen
     row.fixed_amount = float(fixed) if fixed not in (None, "") else None
     # Defaults to 18%, while allowing program-specific GST configuration.
     row.gst_rate = gst_rate
-    program_name = str(program.program_name or "").lower()
-    is_structured_program = "crt" in program_name or "structured" in program_name
     is_parent_program = "parent" in program_name
-    is_vocational_program = "vocational" in program_name
-    pool_value = float(payload.get("therapistPoolPercentage", 100)) if is_parent_program or is_structured_program else float(payload.get("therapistPoolPercentage", 50)) if method == "package" else None
+    pool_default = 100 if is_structured_program else 0 if is_parent_program else 50
+    pool_value = float(payload.get("therapistPoolPercentage", pool_default)) if method == "package" or is_structured_program else None
     if method == "package" and pool_value is not None and not 0 <= pool_value <= 100:
         raise HTTPException(400, "Therapist pool percentage must be between 0 and 100")
-    row.therapist_pool_percentage = pool_value if is_parent_program else 50.0 if is_vocational_program else pool_value
+    row.therapist_pool_percentage = pool_value
     row.allocation_rule = payload.get("allocationRule") or "equal_child_equivalent"
     row.release_on_completion = bool(payload.get("releaseOnCompletion") or method == "completion")
     row.is_active = True
@@ -489,9 +550,24 @@ def save_payroll_config(payload: dict, db: Session = Depends(get_db), user: User
     if not row:
         row = TherapistPayrollConfig(therapist_id=therapist_id, effective_from=effective, created_by=user.id)
         db.add(row)
-    row.base_salary = money(payload.get("baseSalary")); row.flat_commission = money(payload.get("flatCommission")); row.professional_tax = money(payload.get("professionalTax")); row.updated_by = user.id
+    row.fixed_salary_only = bool(payload.get("fixedSalaryOnly", False)); row.base_salary = money(payload.get("baseSalary")) if row.fixed_salary_only else 0; row.flat_commission = 0; row.professional_tax = 0; row.updated_by = user.id
     db.commit(); db.refresh(row)
     return {"data": {"id": row.id}}
+
+
+@router.post("/tax-settings")
+def save_tax_settings(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+    values = [money(payload.get(key)) for key in ("incomeThreshold", "regularMonthAmount", "marchAmount")]
+    if any(value < 0 for value in values):
+        raise HTTPException(400, "Professional tax values cannot be negative")
+    row = db.query(PayrollTaxSetting).filter(PayrollTaxSetting.deleted_at.is_(None)).order_by(PayrollTaxSetting.id).first()
+    if not row:
+        row = PayrollTaxSetting()
+        db.add(row)
+    row.income_threshold, row.regular_month_amount, row.march_amount = values
+    row.updated_by = user.id
+    db.commit(); db.refresh(row)
+    return {"data": {"incomeThreshold": money(row.income_threshold), "regularMonthAmount": money(row.regular_month_amount), "marchAmount": money(row.march_amount)}}
 
 
 @router.get("/billing-reports")
@@ -503,7 +579,10 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
     query = db.query(TherapistSessionPayout).filter(TherapistSessionPayout.session_date.between(start, end), TherapistSessionPayout.deleted_at.is_(None))
     if scoped: query = query.filter(TherapistSessionPayout.therapist_id == scoped.id)
     elif therapist_id: query = query.filter(TherapistSessionPayout.therapist_id == therapist_id)
-    rows = query.order_by(TherapistSessionPayout.session_date).all()
+    rows = query.order_by(
+        TherapistSessionPayout.session_date.desc(),
+        TherapistSessionPayout.id.desc(),
+    ).all()
     therapist_ids = {row.therapist_id for row in rows}
     therapists = {row.id: row for row in db.query(Therapist).filter(Therapist.id.in_(therapist_ids)).all()} if therapist_ids else {}
     if region_id:
@@ -566,17 +645,37 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
             current_key = int(row.therapist_id)
             due = money(split_group_money(group_due, allocation_keys, current_key))
             received = money(split_group_money(group_received, allocation_keys, current_key))
+            marked_fully_paid = any(
+                bool(getattr(sibling, "fully_paid", False))
+                or any(
+                    bool(getattr(payment, "fully_paid", False))
+                    for payment in payments_by_booking.get(int(sibling.id), [])
+                )
+                for sibling in child_siblings
+            )
         else:
             booking_payments = payments_by_booking.get(int(row.patient_slot_booking_id), [])
             ledger_due = max((float(payment.amount or 0) for payment in booking_payments), default=0.0)
             ledger_received = sum(float(payment.payment_amount or 0) for payment in booking_payments)
-            due = money((parent.total_amount if parent else getattr(booking, "amount", 0)) or ledger_due)
+            stored_due = float((parent.total_amount if parent else getattr(booking, "amount", 0)) or 0)
+            # Payment history can preserve a newer corrected session price than
+            # the booking cache. Use the highest recorded charge so reports do
+            # not fall back to an older amount (for example 1100 instead of 1200).
+            due = money(max(stored_due, ledger_due))
             cached_received = max(0, float((parent.paid_amount if parent else getattr(booking, "paid_amount", 0)) or 0) + float((parent.package_covered_amount if parent else getattr(booking, "package_covered_amount", 0)) or 0))
             received = money(min(due, max(cached_received, ledger_received)))
-        balance = money(max(0, due - received))
+            marked_fully_paid = bool(
+                getattr(parent, "fully_paid", False)
+                or getattr(booking, "fully_paid", False)
+                or any(bool(getattr(payment, "fully_paid", False)) for payment in booking_payments)
+            )
+        # A manually completed payment can waive the unpaid remainder. Keep
+        # actual receipts unchanged, but never report the waived portion as due.
+        balance = 0.0 if marked_fully_paid else money(max(0, due - received))
         config = payout_configs.get(row.config_id)
-        gst = money(received * float(config.gst_rate or 0) / 100) if config else 0
-        net_amount = money(received - gst)
+        is_vocational_report_row = "vocational" in str(programs.get(row.program_id, "") or "").lower()
+        is_structured_report_row = any(value in str(programs.get(row.program_id, "") or "").lower() for value in ("crt", "structured"))
+        gst, net_amount = inclusive_gst(received, 0 if is_vocational_report_row or is_structured_report_row else (config.gst_rate if config else 0))
         collection_ratio = min(1.0, received / due) if due > 0 else 0.0
         try:
             calculation = json.loads(row.calculation_json or "{}")
@@ -591,7 +690,7 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
             configured_pool_share = float(
                 config.therapist_pool_percentage
                 if config and config.therapist_pool_percentage is not None
-                else 100
+                else 0
             )
             therapist_payout = money(net_amount * 0.40 * configured_pool_share / 100)
         elif stored_ratio is None:
@@ -727,8 +826,10 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
     for tid in sorted(payroll_therapist_ids):
         non_ledger_session_earnings = sum(item["therapistPayout"] for item in detailed if item["therapistId"] == tid and (item["bookingId"], tid) not in payment_booking_therapists and "parent" not in str(item["program"] or "").lower())
         earnings = money(non_ledger_session_earnings + payment_earnings_by_therapist.get(tid, 0)); config = applicable_payroll_config(db, tid, end)
-        base = money(config.base_salary if config else 0); flat = money(config.flat_commission if config else 0); pt = money(config.professional_tax if config else 0)
-        payroll.append({"therapistId": tid, "therapist": therapists[tid].name, "sessionEarnings": earnings, "baseSalary": base, "flatCommission": flat, "professionalTax": pt, "gross": money(base + flat + earnings), "netPay": money(base + flat + earnings - pt), "effectiveFrom": config.effective_from.isoformat() if config else None})
+        if config and config.fixed_salary_only:
+            earnings = 0.0
+        base = money(config.base_salary if config and config.fixed_salary_only else 0); flat = 0.0; gross = money(base + earnings); pt = professional_tax_for(db, gross, start)
+        payroll.append({"therapistId": tid, "therapist": therapists[tid].name, "sessionEarnings": earnings, "baseSalary": base, "flatCommission": flat, "professionalTax": pt, "fixedSalaryOnly": bool(config.fixed_salary_only) if config else False, "gross": gross, "netPay": money(gross - pt), "effectiveFrom": config.effective_from.isoformat() if config else None})
     totals = {field: money(sum(item[field] for item in detailed)) for field in ("amountDue", "amountReceived", "balance", "gst", "netAmount", "therapistPayout")}
     totals["therapistPayout"] = money(sum(item["therapistPayout"] for item in detailed if (item["bookingId"], item["therapistId"]) not in payment_booking_therapists and "parent" not in str(item["program"] or "").lower()) + sum(payment_earnings_by_therapist.values()))
     return {"data": {"month": month, "detailed": detailed, "children": summarize("child"), "therapists": therapist_summary, "payroll": payroll, "totals": totals}}
@@ -782,7 +883,33 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
                 assignment.status = "submitted"
                 if not db.query(TherapySheetSubmission).filter_by(assignment_id=assignment.id).first():
                     db.add(TherapySheetSubmission(assignment_id=assignment.id, submitted_by=mapping.therapist_id, source_table=source_table, source_id=submitted.id))
+        payroll_config = applicable_payroll_config(db, mapping.therapist_id, mapping.slot_date)
+        fixed_salary_only = bool(payroll_config and payroll_config.fixed_salary_only)
         config = applicable_config(db, mapping.therapist_id, row.program_id, mapping.slot_date)
+        if not config and fixed_salary_only:
+            # Fixed-salary therapists do not need editable per-program earning
+            # rules, but completed sessions must still enter the billing ledger.
+            # Create an internal zero-value rule so the payout FK remains valid
+            # and the billing/child/therapist summaries retain the session.
+            program_name = str(row.program.program_name if row.program else "").lower()
+            is_non_gst_program = any(value in program_name for value in ("vocational", "crt", "structured"))
+            config = ProgramPaymentConfig(
+                therapist_id=mapping.therapist_id,
+                program_id=row.program_id,
+                payment_method="fixed",
+                percentage=None,
+                fixed_amount=0,
+                gst_rate=0 if is_non_gst_program else 18,
+                therapist_pool_percentage=0,
+                allocation_rule="equal_child_equivalent",
+                release_on_completion=False,
+                effective_from=payroll_config.effective_from,
+                is_active=True,
+                created_by=user.id,
+                updated_by=user.id,
+            )
+            db.add(config)
+            db.flush()
         if not config:
             skipped += 1; continue
         existing_payout = db.query(TherapistSessionPayout).filter_by(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id).first()
@@ -873,10 +1000,11 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
         paid_ratio = min(1.0, session_received / session_amount) if session_amount > 0 else 0.0
         if payment_parent:
             eligible = money(session_amount)
-        gst_rate = float(config.gst_rate or 0)
         program_name = str(row.program.program_name if row.program else "").lower()
         is_structured_program = "crt" in program_name or "structured" in program_name
         is_parent_program = "parent" in program_name
+        is_vocational_program = "vocational" in program_name
+        gst_rate = 0.0 if is_vocational_program or is_structured_program else float(config.gst_rate or 0)
         is_group_payout_row = True
         if row.group_program_booking_id:
             therapist_group_rows = [item for item in group_rows if item.therapist_slot_mapping and item.therapist_slot_mapping.therapist_id == mapping.therapist_id]
@@ -893,12 +1021,11 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             eligible = money(session_amount * paid_ratio / therapist_count) if is_group_payout_row and session_amount > 0 else 0.0
         else:
             eligible = money(eligible * paid_ratio)
-        gst = money(eligible * gst_rate / 100)
-        after_gst = money(eligible - gst)
+        gst, after_gst = inclusive_gst(eligible, gst_rate)
         duration_minutes = int(row.duration_minutes or 0)
         if is_structured_program:
             structured_rates = {
-                45: float(config.fixed_amount if config.fixed_amount is not None else 350),
+                45: float(config.fixed_amount if config.fixed_amount is not None else 300),
                 30: float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 100),
             }
             therapist_amount = money(structured_rates.get(duration_minutes, 0) * paid_ratio)
@@ -907,8 +1034,12 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             # Group collections have already been divided equally between the
             # session therapists; each therapist's configured percentage is
             # then applied to that therapist's share of the 40% pool.
-            parent_pool_percentage = float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 100)
+            parent_pool_percentage = float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 0)
             therapist_amount = money(after_gst * 0.40 * parent_pool_percentage / 100)
+        elif is_vocational_program:
+            # Vocational earnings are fixed at Rs 529 for the whole session.
+            # Split that amount equally between every attending therapist.
+            therapist_amount = money(529 * paid_ratio / therapist_count)
         elif config.payment_method == "package":
             therapist_amount = money(after_gst * float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 50) / 100)
         else:
@@ -916,6 +1047,8 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
                 therapist_amount = money(config.fixed_amount * paid_ratio)
             else:
                 therapist_amount = money(after_gst * float(config.percentage or 0) / 100)
+        if fixed_salary_only:
+            therapist_amount = 0.0
         status = "pending_payment" if session_received <= 0 or not is_group_payout_row else "eligible"
         if is_parent_program and parent_program_group and str(parent_program_group.get("status") or "").upper() != "COMPLETED" and date.today() < parent_program_group["end_date"]:
             status = "pending_completion"
@@ -926,8 +1059,9 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
         if not allocation:
             db.add(TherapistSessionAllocation(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id, child_equivalent=child_equivalent, allocation_percentage=100 / therapist_count))
         pool_allocation_percentage = (100 / therapist_count) if is_parent_program else None
-        breakdown = {"method": "structured_duration_fixed" if is_structured_program else "parent_40_percent_pool" if is_parent_program else config.payment_method, "configId": config.id, "gstRate": gst_rate, "amountReceived": session_received, "collectionRatio": paid_ratio, "childEquivalent": child_equivalent, "therapistCount": therapist_count, "durationMinutes": duration_minutes, "organizationPercentage": 60 if is_parent_program else None, "therapistPoolPercentage": 40 if is_parent_program else config.therapist_pool_percentage, "therapistPoolAllocationPercentage": pool_allocation_percentage, "therapistConfiguredPoolSharePercentage": float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 100) if is_parent_program else None, "groupSessionAmount": group_session_amount if row.group_program_booking_id else None, "gstAlreadyDeducted": True}
-        payout_values = {"program_id": row.program_id, "config_id": config.id, "session_date": mapping.slot_date, "eligible_amount": eligible, "gst_amount": gst, "amount_after_gst": after_gst, "therapist_percentage": float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 100) if is_parent_program else config.percentage, "therapist_amount": therapist_amount, "organization_amount": money(after_gst - therapist_amount), "calculation_json": json.dumps(breakdown), "eligibility_status": status}
+        configured_pool_share = float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 0) if is_parent_program else None
+        breakdown = {"method": "fixed_salary_only" if fixed_salary_only else "structured_duration_fixed" if is_structured_program else "parent_40_percent_pool" if is_parent_program else "vocational_fixed_529_split" if is_vocational_program else config.payment_method, "configId": config.id, "gstRate": gst_rate, "amountReceived": session_received, "collectionRatio": paid_ratio, "childEquivalent": child_equivalent, "therapistCount": therapist_count, "durationMinutes": duration_minutes, "fixedSessionAmount": 529 if is_vocational_program else None, "fixedSalaryOnly": fixed_salary_only, "organizationPercentage": 60 if is_parent_program else None, "therapistPoolPercentage": 40 if is_parent_program else config.therapist_pool_percentage, "therapistPoolAllocationPercentage": pool_allocation_percentage, "therapistConfiguredPoolSharePercentage": configured_pool_share, "groupSessionAmount": group_session_amount if row.group_program_booking_id else None, "gstAlreadyDeducted": not is_vocational_program}
+        payout_values = {"program_id": row.program_id, "config_id": config.id, "session_date": mapping.slot_date, "eligible_amount": eligible, "gst_amount": gst, "amount_after_gst": after_gst, "therapist_percentage": configured_pool_share if is_parent_program else config.percentage, "therapist_amount": therapist_amount, "organization_amount": money(after_gst - therapist_amount), "calculation_json": json.dumps(breakdown), "eligibility_status": status}
         if existing_payout:
             for field, value in payout_values.items():
                 setattr(existing_payout, field, value)
@@ -936,7 +1070,10 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
                 month_rows = db.query(TherapistSessionPayout).filter_by(monthly_payout_id=existing_monthly.id).all()
                 payroll_config = applicable_payroll_config(db, existing_monthly.therapist_id, month_end)
                 session_earnings = money(sum(item.therapist_amount for item in month_rows))
-                existing_monthly.gross_amount = money(session_earnings + (payroll_config.base_salary if payroll_config else 0) + (payroll_config.flat_commission if payroll_config else 0) - (payroll_config.professional_tax if payroll_config else 0))
+                if payroll_config and payroll_config.fixed_salary_only:
+                    session_earnings = 0.0
+                gross_before_tax = money(session_earnings + (payroll_config.base_salary if payroll_config and payroll_config.fixed_salary_only else 0))
+                existing_monthly.gross_amount = money(gross_before_tax - professional_tax_for(db, gross_before_tax, existing_monthly.payout_month))
                 existing_monthly.payable_amount = money(existing_monthly.gross_amount + existing_monthly.adjustment_amount)
             reconciled += 1
         else:
@@ -1005,7 +1142,10 @@ def generate_month(payload: dict, db: Session = Depends(get_db), user: User = De
         ).all()
         session_earnings = money(sum(row.therapist_amount for row in session_rows) + sum(row.therapist_amount for row in payment_rows))
         payroll_config = applicable_payroll_config(db, therapist_id, end)
-        gross = money(session_earnings + (payroll_config.base_salary if payroll_config else 0) + (payroll_config.flat_commission if payroll_config else 0) - (payroll_config.professional_tax if payroll_config else 0))
+        if payroll_config and payroll_config.fixed_salary_only:
+            session_earnings = 0.0
+        gross_before_tax = money(session_earnings + (payroll_config.base_salary if payroll_config and payroll_config.fixed_salary_only else 0))
+        gross = money(gross_before_tax - professional_tax_for(db, gross_before_tax, start))
         adjustment = money(sum(row.amount for row in db.query(TherapistPayoutAdjustment).filter_by(monthly_payout_id=monthly.id).all()))
         monthly.gross_amount = gross
         monthly.adjustment_amount = adjustment
