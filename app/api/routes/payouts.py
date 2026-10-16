@@ -201,8 +201,8 @@ def save_patient_pricing(patient_id: int, payload: dict, db: Session = Depends(g
         raise HTTPException(400, "Select a valid program for this child’s centre")
     if getattr(user, "region_ids", None) and patient.region_id not in user.region_ids:
         raise HTTPException(403, "Child is outside your region access")
-    if billing_type not in {"per_session", "package"} or amount <= 0 or (billing_type == "package" and total_sessions <= 0):
-        raise HTTPException(400, "Amount and package sessions must be greater than zero")
+    if billing_type != "per_session" or amount <= 0:
+        raise HTTPException(400, "Only per-session pricing is supported, and the amount must be greater than zero")
     if db.query(PatientProgramPricing).filter_by(patient_id=patient_id, program_id=program.id, effective_from=effective).filter(PatientProgramPricing.deleted_at.is_(None)).first():
         raise HTTPException(409, "Pricing already exists for this program and effective date")
     previous = db.query(PatientProgramPricing).filter(PatientProgramPricing.patient_id == patient_id, PatientProgramPricing.program_id == program.id, PatientProgramPricing.effective_from < effective, PatientProgramPricing.deleted_at.is_(None)).order_by(PatientProgramPricing.effective_from.desc()).first()
