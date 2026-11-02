@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
 from calendar import monthrange
 from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -16,6 +16,7 @@ from app.models.report_sheets import (
     PatientGoalSummary, PatientGoalSummaryTherapist, PatientGoalSummaryResponse,
 )
 from app.api.routes.ui import _require_user, _permission_shape, _user_region_ids, _user_roles
+from app.services.child_progress import consolidate_progress
 
 router = APIRouter(prefix='/api/v1/ui/reports/sheets', tags=['report-sheets'])
 PROMPTS = ['', 'Modelling', 'Gestural Prompt', 'Full Physical Prompt', 'Partial Physical Prompt', 'Visual Prompt']
@@ -47,6 +48,7 @@ class GoalSheetInput(BaseModel):
 
 
 class ObservationEntryInput(BaseModel):
+    id: Optional[int] = Field(default=None, gt=0)
     level_id: Optional[int] = None
     title_id: Optional[int] = None
     domain_ids: list[int] = Field(default_factory=list, max_length=100)
@@ -170,6 +172,12 @@ def query_for(db, user, kind):
     return query.options(selectinload(model.patient), selectinload(model.region), selectinload(model.therapists).selectinload(PatientObservationSheetTherapist.therapist), selectinload(model.entries).selectinload(PatientObservationSheetEntry.domains), selectinload(model.entries).selectinload(PatientObservationSheetEntry.skills))
 
 
+def entry_user_name(user):
+    if not user:
+        return None
+    return ' '.join(part for part in [user.first_name, user.last_name] if part).strip() or user.username
+
+
 def shape(row, kind, detail=False):
     result = {'id': row.id, 'patient_id': row.patient_id,
               'patient_name': f'{row.patient.first_name} {row.patient.last_name}'.strip(),
@@ -191,8 +199,8 @@ def shape(row, kind, detail=False):
                       therapist_ids=[t.therapist_id for t in row.therapists],
                       therapist_names=[t.therapist.name for t in row.therapists], item_count=len(row.entries))
         if detail:
-            fields = ['id', 'level_id', 'title_id', 'objective', 'goal', 'activities', 'accuracy', 'accuracy_status', 'prompts', 'responses', 'concerns', 'strategy']
-            result['entries'] = [{**{key: getattr(e, key) for key in fields}, 'domain_ids': [d.domain_id for d in e.domains], 'skill_ids': [s.skill_id for s in e.skills]} for e in row.entries]
+            fields = ['id', 'created_by', 'created_at', 'updated_by', 'updated_at', 'level_id', 'title_id', 'objective', 'goal', 'activities', 'accuracy', 'accuracy_status', 'prompts', 'responses', 'concerns', 'strategy']
+            result['entries'] = [{**{key: getattr(e, key) for key in fields}, 'created_by_name': entry_user_name(e.creator), 'updated_by_name': entry_user_name(e.editor), 'domain_ids': [d.domain_id for d in e.domains], 'skill_ids': [s.skill_id for s in e.skills]} for e in row.entries]
     return result
 
 
@@ -224,24 +232,50 @@ def masters(request: Request, region_id: Optional[int] = None, db: Session = Dep
 
 
 @router.get('/observations/goal-titles/{patient_id}')
-def child_goal_titles(patient_id: int, request: Request, db: Session = Depends(get_db)):
+def child_goal_titles(patient_id: int, request: Request, goal_sheet_id: Optional[int] = None,
+                      as_of: Optional[date] = None, db: Session = Depends(get_db)):
     user = authorize(request, db)
     patient_for(db, user, patient_id)
-    rows = db.query(PatientGoalSheetItem, GoalTitleMaster).join(
-        PatientGoalSheet, PatientGoalSheet.id == PatientGoalSheetItem.sheet_id
-    ).join(GoalTitleMaster, GoalTitleMaster.id == PatientGoalSheetItem.title_id).filter(
-        PatientGoalSheet.patient_id == patient_id
-    ).options(selectinload(PatientGoalSheetItem.domains), selectinload(PatientGoalSheetItem.skills), selectinload(PatientGoalSheetItem.objectives)).order_by(PatientGoalSheet.planning_month.desc(), PatientGoalSheet.id.desc(), PatientGoalSheetItem.sort_order).all()
+    day = as_of or datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+    sheets = query_for(db, user, 'goals').filter(PatientGoalSheet.patient_id == patient_id).order_by(
+        PatientGoalSheet.planning_month.desc(), PatientGoalSheet.id.desc()).all()
+    active = [sheet for sheet in sheets if sheet.planning_month <= day <= sheet.review_month]
+    started = [sheet for sheet in sheets if sheet.planning_month <= day]
+    default = next(iter(active or started or sheets), None)
+    selected = next((sheet for sheet in sheets if sheet.id == goal_sheet_id), None) if goal_sheet_id else default
+    if goal_sheet_id and not selected:
+        raise HTTPException(404, 'Goal sheet not found for this child.')
+    items = selected.items if selected else []
+    title_ids = {item.title_id for item in items if item.title_id}
+    catalog = {title.id: title for title in db.query(GoalTitleMaster).filter(GoalTitleMaster.id.in_(title_ids)).all()} if title_ids else {}
     titles = {}
-    for item, title in rows:
-        if title.id not in titles:
-            titles[title.id] = {'id': title.id, 'level_id': item.level_id or title.level_id,
-                                'title': title.title, 'description': item.description,
-                                'domain_ids': [link.domain_id for link in item.domains],
-                                'skill_ids': [link.skill_id for link in item.skills],
-                                'objectives': [{'type_id': objective.type_id, 'text': objective.text}
-                                               for objective in item.objectives]}
-    return {'data': sorted(titles.values(), key=lambda t: (t['title'].casefold(), t['id']))}
+    for item in items:
+        title = catalog.get(item.title_id)
+        if not title:
+            continue
+        entry = titles.setdefault(title.id, {
+            'id': title.id, 'level_id': item.level_id or title.level_id,
+            'title': title.title, 'description': '', 'domain_ids': [], 'skill_ids': [], 'objectives': [],
+        })
+        if item.description and item.description not in entry['description'].split('\n'):
+            entry['description'] = '\n'.join(filter(None, [entry['description'], item.description]))
+        entry['domain_ids'] = sorted(set(entry['domain_ids']) | {link.domain_id for link in item.domains})
+        entry['skill_ids'] = sorted(set(entry['skill_ids']) | {link.skill_id for link in item.skills})
+        for objective in item.objectives:
+            value = {'type_id': objective.type_id, 'text': objective.text}
+            if value not in entry['objectives']:
+                entry['objectives'].append(value)
+    return {
+        'data': sorted(titles.values(), key=lambda title: (title['title'].casefold(), title['id'])),
+        'level_ids': sorted({item.level_id for item in items if item.level_id is not None}),
+        'domain_ids': sorted({link.domain_id for item in items for link in item.domains}),
+        'skill_ids': sorted({link.skill_id for item in items for link in item.skills}),
+        'selected_sheet_id': selected.id if selected else None,
+        'default_sheet_id': default.id if default else None,
+        'sheets': [{'id': sheet.id, 'planning_date': sheet.planning_month, 'review_date': sheet.review_month,
+                    'is_active': sheet.planning_month <= day <= sheet.review_month}
+                   for sheet in sheets],
+    }
 
 
 @router.get('/observations/history/{patient_id}')
@@ -335,6 +369,29 @@ def goal_summary_listing(request: Request, patient_id: Optional[int] = None,
     rows = query.order_by(PatientGoalSummary.evaluation_date.desc(), PatientGoalSummary.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return {'data': [shape_goal_summary(row) for row in rows], 'total': total, 'page': page,
             'page_size': page_size, 'pages': pages}
+
+
+@router.get('/child-progress/{patient_id}')
+def child_progress(patient_id: int, request: Request, summary_id: Optional[int] = None,
+                   db: Session = Depends(get_db)):
+    user = authorize(request, db)
+    patient = patient_for(db, user, patient_id)
+    history = goal_summary_query(db, user).filter(PatientGoalSummary.patient_id == patient_id).order_by(
+        PatientGoalSummary.evaluation_date.desc(), PatientGoalSummary.id.desc()).all()
+    rows = [row for row in history if row.id == summary_id] if summary_id is not None else history
+    if summary_id is not None and not rows:
+        raise HTTPException(404, 'Evaluation not found for this child.')
+    return {'data': {
+        'patient_id': patient.id,
+        'patient_name': f'{patient.first_name} {patient.last_name}'.strip(),
+        'evaluation_count': len(rows),
+        'selected_summary_id': summary_id,
+        'evaluations': [{'id': row.id, 'evaluation_date': row.evaluation_date,
+                         'therapist_names': [item.therapist.name for item in row.therapists] or [row.therapist.name]}
+                        for row in history],
+        'latest_evaluation_date': max((row.evaluation_date for row in rows), default=None),
+        'responses': consolidate_progress(rows),
+    }}
 
 
 @router.get('/summaries/{summary_id}')
@@ -501,18 +558,27 @@ def create_observation(payload: ObservationSheetInput, request: Request, db: Ses
         if entry.prompts not in PROMPTS:
             raise HTTPException(422, 'Select a valid prompt.')
         normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, entry.level_id, entry.title_id, entry.domain_ids, entry.skill_ids)
-        values = entry.model_dump()
+        values = entry.model_dump(exclude={'id'})
         domain_ids = values.pop('domain_ids')
         skill_ids = values.pop('skill_ids')
         values['level_id'] = normalized_level_id
         values['goal'] = entry.goal.strip()
-        child = PatientObservationSheetEntry(**values, sort_order=index)
+        child = PatientObservationSheetEntry(**values, sort_order=index, created_by=user.id)
         child.domains = [PatientObservationSheetEntryDomain(domain_id=d) for d in normalized_domain_ids]
         child.skills = [PatientObservationSheetEntrySkill(skill_id=s) for s in sorted(set(skill_ids))]
         row.entries.append(child)
     db.add(row)
     db.commit()
     return {'data': shape(row, 'observations', True)}
+
+
+def observation_day(value):
+    if value is None:
+        return None
+    # Database DATETIME values use UTC; observation edit windows use India time.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone(timedelta(hours=5, minutes=30))).date()
 
 
 def require_same_day_edit(row):
@@ -564,30 +630,50 @@ def update_observation(sheet_id: int, payload: ObservationSheetInput, request: R
     row = query_for(db, user, 'observations').filter(PatientObservationSheet.id == sheet_id).first()
     if not row:
         raise HTTPException(404, 'Sheet not found.')
-    require_same_day_edit(row)
     if payload.patient_id != row.patient_id:
         raise HTTPException(422, 'The child cannot be changed after saving the sheet.')
-    ids = validate_therapists(db, payload.therapist_ids, row.region_id)
-    row.observation_date = payload.observation_date
-    row.updated_by = user.id
-    row.therapists.clear()
-    row.entries.clear()
-    db.flush()
-    row.therapists = [PatientObservationSheetTherapist(therapist_id=t) for t in ids]
+    # Sheet metadata is fixed; any authorized user can append entries.
+    if payload.observation_date != row.observation_date or set(payload.therapist_ids) != {t.therapist_id for t in row.therapists}:
+        raise HTTPException(422, 'Saved observation date and therapists cannot be changed.')
+    existing = {entry.id: entry for entry in row.entries}
+    submitted_ids = [entry.id for entry in payload.entries if entry.id is not None]
+    if len(submitted_ids) != len(set(submitted_ids)) or not set(submitted_ids) <= set(existing):
+        raise HTTPException(422, 'Invalid or duplicate observation entry.')
+    def editable(entry):
+        return entry.created_by == user.id and observation_day(entry.created_at) == observation_day(datetime.now(timezone.utc))
+    for entry_id, entry in existing.items():
+        if entry_id not in submitted_ids:
+            if not editable(entry):
+                raise HTTPException(403, 'Only the creator can remove an entry on the day it was added.')
+            row.entries.remove(entry)
     for index, entry in enumerate(payload.entries):
-        if not entry.goal.strip():
-            raise HTTPException(422, 'Each observation entry needs a goal.')
-        if entry.prompts not in PROMPTS:
-            raise HTTPException(422, 'Select a valid prompt.')
-        normalized_level_id, normalized_domain_ids = validate_catalog_selection(db, entry.level_id, entry.title_id, entry.domain_ids, entry.skill_ids)
-        values = entry.model_dump()
-        domain_ids = values.pop('domain_ids')
-        skill_ids = values.pop('skill_ids')
-        values['level_id'] = normalized_level_id
+        child = existing.get(entry.id)
+        values = entry.model_dump(exclude={'id', 'domain_ids', 'skill_ids'})
         values['goal'] = entry.goal.strip()
-        child = PatientObservationSheetEntry(**values, sort_order=index)
-        child.domains = [PatientObservationSheetEntryDomain(domain_id=d) for d in normalized_domain_ids]
-        child.skills = [PatientObservationSheetEntrySkill(skill_id=s) for s in sorted(set(skill_ids))]
-        row.entries.append(child)
+        if child:
+            unchanged = all(getattr(child, key) == value for key, value in values.items())
+            unchanged = unchanged and set(entry.domain_ids) == {d.domain_id for d in child.domains} and set(entry.skill_ids) == {s.skill_id for s in child.skills}
+            if unchanged:
+                continue
+            if not editable(child):
+                raise HTTPException(403, 'Only the creator can edit an entry on the day it was added.')
+        if not values['goal'] or entry.prompts not in PROMPTS:
+            raise HTTPException(422, 'Enter a goal and select a valid prompt.')
+        level_id, domain_ids = validate_catalog_selection(db, entry.level_id, entry.title_id, entry.domain_ids, entry.skill_ids)
+        values['level_id'] = level_id
+        if child is None:
+            child = PatientObservationSheetEntry(**values, created_by=user.id, sort_order=max((e.sort_order for e in row.entries), default=-1) + 1)
+            row.entries.append(child)
+        else:
+            child.updated_by = user.id
+            child.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            for key, value in values.items():
+                setattr(child, key, value)
+            child.domains.clear()
+            child.skills.clear()
+            db.flush()
+        child.domains = [PatientObservationSheetEntryDomain(domain_id=d) for d in domain_ids]
+        child.skills = [PatientObservationSheetEntrySkill(skill_id=s) for s in sorted(set(entry.skill_ids))]
+    row.updated_by = user.id
     db.commit()
     return {'data': shape(row, 'observations', True)}

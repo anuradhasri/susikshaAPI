@@ -581,14 +581,10 @@ class AppointmentService:
         if db and slot_booking.patient_id and slot_booking.program_id:
             mapping = slot_booking.therapist_slot_mapping
             on_date = mapping.slot_date if mapping and mapping.slot_date else date.today()
-            pricing = db.query(PatientProgramPricing).filter(
-                PatientProgramPricing.patient_id == slot_booking.patient_id,
-                PatientProgramPricing.program_id == slot_booking.program_id,
-                PatientProgramPricing.is_active.is_(True),
-                PatientProgramPricing.deleted_at.is_(None),
-                PatientProgramPricing.effective_from <= on_date,
-                or_(PatientProgramPricing.effective_to.is_(None), PatientProgramPricing.effective_to >= on_date),
-            ).order_by(PatientProgramPricing.effective_from.desc()).first()
+            from app.services.child_pricing import session_pricing, booking_completion_time
+            slot = mapping.slot if mapping else None
+            pricing = session_pricing(db, slot_booking.patient_id, slot_booking.program_id, on_date,
+                                     slot.start_time if slot else None, completed_at=booking_completion_time(db, slot_booking))
             if pricing:
                 if pricing.billing_type == "package" and pricing.total_sessions:
                     return float(pricing.agreed_amount or 0) / float(pricing.total_sessions)
@@ -3189,10 +3185,13 @@ class AppointmentService:
             raise ValueError("Slot booking already completed")
 
         if normalized_action == "complete":
+            completed_at = datetime.utcnow()
+            patient_slot_booking.completed_at = completed_at
             patient_slot_booking.status = "COMPLETED"
             if therapist_slot_mapping:
                 therapist_slot_mapping.status = "COMPLETED"
             for sibling in sibling_slot_bookings:
+                sibling.completed_at = sibling.completed_at or completed_at
                 sibling.status = "COMPLETED"
                 if sibling.therapist_slot_mapping:
                     sibling.therapist_slot_mapping.status = "COMPLETED"

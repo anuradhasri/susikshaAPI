@@ -11,9 +11,20 @@ from app.middleware.middleware import RegionAccessMiddleware, LoggingMiddleware,
 from app.api.routes import routers
 from app.utils.logger import setup_logging
 from app.services.goal_review_reminder import send_scheduled_goal_review_reminders
+from app.services.payment_alerts import run_payment_alerts
 
 settings = get_settings()
 logger = setup_logging(__name__)
+payment_refresh_tasks = set()
+
+
+async def payment_alert_loop():
+    while True:
+        try:
+            await asyncio.to_thread(run_payment_alerts)
+        except Exception:
+            logger.exception('Payment alert check failed.')
+        await asyncio.sleep(300)
 
 
 async def goal_review_reminder_loop():
@@ -44,7 +55,13 @@ async def lifespan(app: FastAPI):
             settings.GOAL_REVIEW_REMINDER_INTERVAL_MINUTES,
         )
 
+    payment_alert_task = asyncio.create_task(payment_alert_loop())
     yield
+    payment_alert_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await payment_alert_task
+    for task in list(payment_refresh_tasks):
+        task.cancel()
 
     if reminder_task:
         reminder_task.cancel()
@@ -89,6 +106,22 @@ def create_app() -> FastAPI:
     uploads_dir = Path(__file__).resolve().parents[1] / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
+
+    @app.middleware('http')
+    async def refresh_payment_alerts_after_payment(request, call_next):
+        response = await call_next(request)
+        payment_change = '/payment' in request.url.path or request.url.path.endswith('/transactions')
+        if request.method in {'POST', 'PUT', 'PATCH'} and response.status_code < 400 and payment_change and '/payment-alerts' not in request.url.path:
+            # Run after the committed payment response without delaying the payment UI.
+            async def refresh():
+                try:
+                    await asyncio.to_thread(run_payment_alerts)
+                except Exception:
+                    logger.exception('Payment-triggered alert refresh failed.')
+            task = asyncio.create_task(refresh())
+            payment_refresh_tasks.add(task)
+            task.add_done_callback(payment_refresh_tasks.discard)
+        return response
     
     # Root endpoint
     @app.get("/health")

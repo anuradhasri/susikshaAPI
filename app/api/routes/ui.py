@@ -1464,13 +1464,10 @@ def _child_program_price(slot_booking: PatientSlotBooking) -> float | None:
         return None
     mapping = slot_booking.therapist_slot_mapping
     on_date = mapping.slot_date if mapping and mapping.slot_date else date.today()
-    pricing = db.query(PatientProgramPricing).filter(
-        PatientProgramPricing.patient_id == slot_booking.patient_id,
-        PatientProgramPricing.program_id == slot_booking.program_id,
-        PatientProgramPricing.is_active.is_(True), PatientProgramPricing.deleted_at.is_(None),
-        PatientProgramPricing.effective_from <= on_date,
-        or_(PatientProgramPricing.effective_to.is_(None), PatientProgramPricing.effective_to >= on_date),
-    ).order_by(PatientProgramPricing.effective_from.desc()).first()
+    from app.services.child_pricing import session_pricing, booking_completion_time
+    slot = mapping.slot if mapping else None
+    pricing = session_pricing(db, slot_booking.patient_id, slot_booking.program_id, on_date,
+                             slot.start_time if slot else None, completed_at=booking_completion_time(db, slot_booking))
     if not pricing:
         return None
     if pricing.billing_type == "package" and pricing.total_sessions:
@@ -2588,6 +2585,8 @@ def _record_package_credit_delta_payments(
 
 
 def _transaction_slot_shape(slot_booking: PatientSlotBooking, payment: Optional[Payment] = None) -> dict:
+    from app.services.child_pricing import booking_completion_time
+    completion_time = booking_completion_time(object_session(slot_booking), slot_booking)
     if not slot_booking.is_package_session:
         _recalculate_slot_payment(slot_booking)
     crt_parent = slot_booking.crt_program_booking
@@ -2645,6 +2644,9 @@ def _transaction_slot_shape(slot_booking: PatientSlotBooking, payment: Optional[
         "end_time": _iso(end),
         "amount": display_amount,
         "billing_amount": billing_amount,
+        "completed_at": _iso(completion_time),
+        "child_pricing_resolved": True,
+        "applied_child_price": _child_program_price(slot_booking) if not is_crt_package_session else None,
         "paid_amount": float(crt_parent.paid_amount if crt_parent else (slot_booking.paid_amount or 0)),
         "package_covered_amount": float((crt_parent.package_covered_amount if crt_parent else getattr(slot_booking, "package_covered_amount", 0)) or 0),
         "due_amount": float(crt_parent.due_amount if crt_parent else (slot_booking.due_amount or 0)),
@@ -5522,6 +5524,9 @@ async def get_patient_transactions(
             "patient": _patient_shape(patient),
             "active_package": _package_shape(active_package) if active_package else None,
             "packages": [_package_shape(pkg) for pkg in packages],
+            # Use the same recalculated payable balances as the session rows.
+            # Pricing resolution preserves sessions before the effective time.
+            "session_due_total": running_session_due,
             "payable_slots": payable_slot_rows,
             "payable_assessments": [
                 _assessment_billing_transaction_shape(billing)

@@ -1411,6 +1411,7 @@ class PatientSlotBooking(StatusIdMixin, Base):
     fully_paid = Column(Boolean, nullable=False, default=False, server_default="0")
     payment_status = Column(String(50), nullable=False, default="UNPAID", server_default="UNPAID")
     status_id = Column(Integer, ForeignKey("patient_slot_booking_status_master.id"), nullable=False, default=1, server_default="1")
+    completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

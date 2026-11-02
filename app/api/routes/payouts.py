@@ -1,4 +1,5 @@
 """Effective-dated therapist payout calculation and therapy-sheet tracking APIs."""
+from app.services.child_pricing import pricing_starts_at, booking_completion_time
 from calendar import monthrange
 from datetime import date, datetime, time, timedelta
 import json
@@ -165,13 +166,9 @@ def active_therapist_payment_setup(therapist_id: int, db: Session = Depends(get_
     }}
 
 
-def applicable_patient_pricing(db, patient_id, program_id, on_date):
-    return db.query(PatientProgramPricing).filter(
-        PatientProgramPricing.patient_id == patient_id, PatientProgramPricing.program_id == program_id,
-        PatientProgramPricing.is_active.is_(True), PatientProgramPricing.deleted_at.is_(None),
-        PatientProgramPricing.effective_from <= on_date,
-        or_(PatientProgramPricing.effective_to.is_(None), PatientProgramPricing.effective_to >= on_date),
-    ).order_by(PatientProgramPricing.effective_from.desc()).first()
+def applicable_patient_pricing(db, patient_id, program_id, on_date, start_time=None, completed_at=None):
+    from app.services.child_pricing import session_pricing
+    return session_pricing(db, patient_id, program_id, on_date, start_time, completed_at=completed_at)
 
 
 @router.get("/patient-pricing/{patient_id}")
@@ -184,7 +181,7 @@ def patient_pricing(patient_id: int, db: Session = Depends(get_db), user: User =
     rows = db.query(PatientProgramPricing).options(joinedload(PatientProgramPricing.program)).filter(
         PatientProgramPricing.patient_id == patient_id, PatientProgramPricing.deleted_at.is_(None)
     ).order_by(PatientProgramPricing.effective_from.desc(), PatientProgramPricing.id.desc()).all()
-    return {"data": [{"id": row.id, "patientId": row.patient_id, "programId": row.program_id, "programName": row.program.program_name if row.program else f"Program {row.program_id}", "billingType": row.billing_type, "agreedAmount": money(row.agreed_amount), "totalSessions": row.total_sessions, "perSessionAmount": money(row.agreed_amount / row.total_sessions) if row.billing_type == "package" and row.total_sessions else money(row.agreed_amount), "effectiveFrom": row.effective_from.isoformat(), "effectiveTo": row.effective_to.isoformat() if row.effective_to else None, "isActive": row.is_active} for row in rows]}
+    return {"data": [{"id": row.id, "patientId": row.patient_id, "programId": row.program_id, "programName": row.program.program_name if row.program else f"Program {row.program_id}", "billingType": row.billing_type, "agreedAmount": money(row.agreed_amount), "totalSessions": row.total_sessions, "perSessionAmount": money(row.agreed_amount / row.total_sessions) if row.billing_type == "package" and row.total_sessions else money(row.agreed_amount), "effectiveFrom": row.effective_from.isoformat(), "effectiveFromAt": pricing_starts_at(row).isoformat(), "addedAt": row.created_at.isoformat() if row.created_at else None, "effectiveTo": row.effective_to.isoformat() if row.effective_to else None, "isActive": row.is_active} for row in rows]}
 
 
 @router.post("/patient-pricing/{patient_id}")
@@ -207,7 +204,7 @@ def save_patient_pricing(patient_id: int, payload: dict, db: Session = Depends(g
         raise HTTPException(409, "Pricing already exists for this program and effective date")
     previous = db.query(PatientProgramPricing).filter(PatientProgramPricing.patient_id == patient_id, PatientProgramPricing.program_id == program.id, PatientProgramPricing.effective_from < effective, PatientProgramPricing.deleted_at.is_(None)).order_by(PatientProgramPricing.effective_from.desc()).first()
     if previous and (previous.effective_to is None or previous.effective_to >= effective):
-        previous.effective_to = effective - timedelta(days=1)
+        previous.effective_to = effective
     row = PatientProgramPricing(patient_id=patient_id, program_id=program.id, billing_type=billing_type, agreed_amount=amount, total_sessions=total_sessions, effective_from=effective, created_by=user.id, updated_by=user.id)
     db.add(row); db.commit(); db.refresh(row)
     return {"data": {"id": row.id}}
@@ -920,7 +917,7 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             continue
         eligible = money(row.amount)
         package = row.patient_package.package if row.patient_package else None
-        child_pricing = applicable_patient_pricing(db, row.patient_id, row.program_id, mapping.slot_date)
+        child_pricing = applicable_patient_pricing(db, row.patient_id, row.program_id, mapping.slot_date, mapping.slot.start_time if mapping.slot else None, completed_at=booking_completion_time(db, row))
         if child_pricing:
             eligible = money(child_pricing.agreed_amount / child_pricing.total_sessions) if child_pricing.billing_type == "package" and child_pricing.total_sessions else money(child_pricing.agreed_amount)
         therapist_count = 1
