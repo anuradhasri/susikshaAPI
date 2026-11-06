@@ -3,6 +3,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, time, timezone, date
 from decimal import Decimal
 from uuid import uuid4
+from urllib.parse import urlencode
+from app.services.payment_report_links import report_token
 
 from sqlalchemy import func, inspect
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +20,19 @@ IST = timezone(timedelta(hours=5, minutes=30))
 STAFF = {'admin', 'front_office', 'frontoffice', 'front_officer', 'central_head', 'centralhead'}
 GLOBAL = {'admin', 'central_head', 'centralhead'}
 KINDS = ('cash_summary', 'unpaid_sessions', 'unpaid_plans')
+
+
+def notification_data(rule, payload, active=True):
+    if payload.get('patient_id'):
+        url = f"/patients/{payload['patient_id']}?tab=payments"
+    elif payload.get('period_start') and payload.get('period_end_exclusive'):
+        url = '/reports/payment-receipts?' + urlencode({
+            'report': report_token(rule.region_id, payload['period_start'],
+                                   date.fromisoformat(payload['period_end_exclusive']) - timedelta(days=1)),
+        })
+    else:
+        url = '/configuration/payment-alerts'
+    return {'url': url, 'payment_alert': True, 'resolved': not active}
 
 
 def defaults(kind, today=None):
@@ -189,7 +204,7 @@ def reconcile_rule(db, rule, now, preview=False):
             notification = db.get(Notification, delivery.notification_id) if delivery else None
             if delivery and (not notification or notification.deleted_at is not None):
                 continue
-            data = {'url': '/configuration/payment-alerts', 'payment_alert': True, 'resolved': not active}
+            data = notification_data(rule, content['payload'], active)
             if not notification and active:
                 notification = Notification(user_id=user_id, title=content['title'], message=content['message'],
                     notification_type='info' if rule.kind == 'cash_summary' else 'warning', is_read=False, data=data)
@@ -201,6 +216,8 @@ def reconcile_rule(db, rule, now, preview=False):
                 notification.is_read = False
                 # Surface a changed balance/resolution in the bell's newest-first list.
                 notification.created_at = now.replace(tzinfo=None)
+            elif notification and notification.data != data:
+                notification.data = data
     db.commit()
     return len(desired)
 

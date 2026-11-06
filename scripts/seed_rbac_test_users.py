@@ -231,8 +231,6 @@ def _ensure_rbac_tables(cursor):
     role_permissions = {
         "admin": FRONT_OFFICE_PERMISSION_CODES,
         "front_office": FRONT_OFFICE_PERMISSION_CODES,
-        "frontoffice": FRONT_OFFICE_PERMISSION_CODES,
-        "front_officer": FRONT_OFFICE_PERMISSION_CODES,
         "therapist": THERAPIST_PERMISSION_CODES,
         "central_head": CENTRAL_HEAD_PERMISSION_CODES,
     }

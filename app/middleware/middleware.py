@@ -38,6 +38,17 @@ class RegionAccessMiddleware(BaseHTTPMiddleware):
         request.state.user_id = token_data.get("user_id")
         request.state.region_id = token_data.get("region_id")
         request.state.roles = token_data.get("roles", [])
+
+        if request.url.path.startswith('/api/v1/') and request.method != 'OPTIONS':
+            from app.core.database import SessionLocal
+            from app.services.therapist_access import user_is_limited_therapist, therapist_request_allowed
+            from starlette.concurrency import run_in_threadpool
+            def check_role():
+                with SessionLocal() as db:
+                    return user_is_limited_therapist(db, token_data.get('user_id'))
+            limited = await run_in_threadpool(check_role)
+            if limited and not therapist_request_allowed(request.method, request.url.path):
+                return JSONResponse(status_code=403, content={'detail': 'Therapist access is limited to appointments, the three sheets and own earnings.'})
         
         response = await call_next(request)
         return response

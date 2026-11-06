@@ -19,6 +19,8 @@ from app.models.payouts import (
     PatientProgramPricing, TherapistPaymentEarning, PayrollTaxSetting,
 )
 from app.services.payment_earning_service import sync_payment_earnings
+from app.models.payment_alerts import PaymentAlertDelivery, PaymentAlertEvent, PaymentAlertRule
+from app.services.payment_alerts import notification_data
 from app.models.report_sheets import (
     PatientGoalSheet, PatientGoalSheetTherapist, PatientGoalSummary,
     PatientGoalSummaryTherapist, PatientObservationSheet,
@@ -220,11 +222,19 @@ def notifications(db: Session = Depends(get_db), user: User = Depends(get_curren
         # the header and every page that contains it.
         db.rollback()
         notification_rows = []
+    alert_links = {}
+    alert_ids = [row.id for row in notification_rows if isinstance(row.data, dict) and row.data.get('payment_alert')]
+    if alert_ids:
+        for delivery, event, rule in db.query(PaymentAlertDelivery, PaymentAlertEvent, PaymentAlertRule).join(
+                PaymentAlertEvent, PaymentAlertEvent.id == PaymentAlertDelivery.event_id).join(
+                PaymentAlertRule, PaymentAlertRule.id == PaymentAlertEvent.rule_id).filter(
+                PaymentAlertDelivery.notification_id.in_(alert_ids), PaymentAlertDelivery.user_id == user.id).all():
+            alert_links[delivery.notification_id] = notification_data(rule, event.payload, event.active)['url']
     items = [{
         "id": f"notification-{row.id}", "source": "notification", "sourceId": row.id,
         "title": row.title, "message": row.message, "type": row.notification_type,
         "isRead": bool(row.is_read), "createdAt": row.created_at.isoformat(),
-        "url": (row.data or {}).get("url") if isinstance(row.data, dict) else None,
+        "url": alert_links.get(row.id, (row.data or {}).get("url") if isinstance(row.data, dict) else None),
     } for row in notification_rows]
     therapist = db.query(Therapist).filter(Therapist.user_id == user.id).first()
     if therapist:
@@ -279,6 +289,21 @@ def mark_all_notifications_read(db: Session = Depends(get_db), user: User = Depe
         db.query(TherapySheetAssignment).filter(TherapySheetAssignment.therapist_id == therapist.id, TherapySheetAssignment.status == "pending", TherapySheetAssignment.notification_read_at.is_(None), TherapySheetAssignment.deleted_at.is_(None)).update({TherapySheetAssignment.notification_read_at: datetime.now()}, synchronize_session=False)
     db.commit()
     return {"data": {"success": True}}
+
+
+@router.get('/my-earnings')
+def my_earnings(month: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    therapist = db.query(Therapist).filter(Therapist.user_id == user.id, Therapist.is_active.is_(True)).first()
+    if not therapist:
+        raise HTTPException(403, 'No active therapist is linked to your account.')
+    # Reuse the established payout/receipt reconciliation, then expose only
+    # this therapist's earnings. No client-supplied therapist ID is accepted.
+    data = dashboard(month=month, region_id=therapist.region_id, db=db, user=user)['data']
+    return {'data': {'month': data['month'], 'therapistName': therapist.name,
+        'eligibleEarnings': data['summary']['eligibleEarnings'],
+        'pendingCompletion': data['summary']['pendingCompletion'],
+        'rows': [{'date': row['date'], 'program': row['programName'], 'amount': row['therapistAmount'],
+                  'status': row['status']} for row in data['sessionPayouts']]}}
 
 
 @router.get("/dashboard")

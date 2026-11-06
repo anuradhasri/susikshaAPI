@@ -730,7 +730,15 @@ def _default_region(db: Session) -> Region:
     return region
 
 
+CANONICAL_ROLE_NAMES = {"admin", "central_head", "front_office", "therapist"}
+
+
 def _role(db: Session, name: str) -> Role:
+    name = str(name).strip().lower().replace('-', '_').replace(' ', '_')
+    name = {"frontoffice": "front_office", "front_officer": "front_office",
+            "assessment_session": "therapist", "assessment_viewer_session": "therapist"}.get(name, name)
+    if name not in CANONICAL_ROLE_NAMES:
+        raise HTTPException(422, 'Select admin, central_head, front_office or therapist.')
     role = db.query(Role).filter(Role.name == name, Role.deleted_at.is_(None)).first()
     if role:
         return role
@@ -747,6 +755,7 @@ RBAC_RESOURCES = [
     ("menu.therapists", "menu", "Therapists", None, 40),
     ("menu.reports", "menu", "Reports", None, 50),
     ("menu.therapist_payouts", "menu", "Therapist Payouts", "menu.reports", 51),
+    ("menu.my_earnings", "menu", "My Earnings", None, 52),
     ("menu.sheets", "menu", "Sheets", None, 55),
     ("report.action.create_sheet", "action", "Add report sheet", "menu.sheets", 56),
     ("region.switch", "control", "Region switcher", None, 60),
@@ -796,13 +805,9 @@ DELETE_PERMISSION_CODES = {
 }
 THERAPIST_PERMISSION_CODES = {
     "menu.appointments",
-    "menu.therapist_payouts",
+    "menu.my_earnings",
     "menu.sheets",
     "report.action.create_sheet",
-    "child.tab.details",
-    "child.tab.assessment",
-    "child.tab.therapy",
-    "assessment.action.export",
 }
 CENTRAL_HEAD_PERMISSION_CODES = {
     "menu.appointments",
@@ -866,14 +871,12 @@ def _ensure_rbac_tables(db: Session) -> None:
             "display_order": display_order,
         })
 
-    for role_name in ("admin", "front_office", "frontoffice", "front_officer", "therapist", "central_head"):
+    for role_name in ("admin", "front_office", "therapist", "central_head"):
         _role(db, role_name)
 
     role_permissions = {
         "admin": FRONT_OFFICE_PERMISSION_CODES,
         "front_office": FRONT_OFFICE_PERMISSION_CODES,
-        "frontoffice": FRONT_OFFICE_PERMISSION_CODES,
-        "front_officer": FRONT_OFFICE_PERMISSION_CODES,
         "therapist": THERAPIST_PERMISSION_CODES,
         "central_head": CENTRAL_HEAD_PERMISSION_CODES,
     }
@@ -920,7 +923,7 @@ def _permission_shape(db: Session, user: User) -> dict:
           AND resource.is_active = 1
         GROUP BY resource.code
     """), {"user_id": user.id}).all()
-    return {
+    result = {
         row.code: {
             "view": bool(row.can_view),
             "create": bool(row.can_create),
@@ -929,6 +932,11 @@ def _permission_shape(db: Session, user: User) -> dict:
         }
         for row in rows
     }
+    from app.services.therapist_access import is_limited_therapist, THERAPIST_RESOURCES
+    if is_limited_therapist(_user_roles(db, user)):
+        return {code: {'view': True, 'create': code == 'report.action.create_sheet', 'edit': False, 'delete': False}
+                for code in THERAPIST_RESOURCES}
+    return result
 
 
 def _assessment_permission_shape(db: Session, user: User, permissions: Optional[dict] = None) -> dict:
@@ -3232,7 +3240,7 @@ def _base_query(table: str, db: Session, user: Optional[User]):
             query = query.filter(User.id.in_(mapped_user_ids))
         return query
     if table == "roles":
-        return db.query(Role).filter(Role.deleted_at.is_(None))
+        return db.query(Role).filter(Role.deleted_at.is_(None), Role.name.in_(CANONICAL_ROLE_NAMES))
     if table == "user_roles":
         return db.query(UserRole).filter(UserRole.deleted_at.is_(None))
     if table == "therapists":

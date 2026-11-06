@@ -1,13 +1,15 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, time, timedelta
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.core.database import get_db
 from app.api.routes.ui import _require_user, _user_roles, _user_region_ids
-from app.models.models import Region, Program
+from app.models.models import Region, Program, Patient, Payment, PaymentModeMaster
 from app.models.payment_alerts import PaymentAlertRule, provision_payment_alerts
-from app.services.payment_alerts import STAFF, GLOBAL, KINDS, defaults, eligible_users, reconcile_rule
+from app.services.payment_alerts import STAFF, GLOBAL, KINDS, IST, money, defaults, eligible_users, reconcile_rule
+from app.services.payment_report_links import report_token, decode_report_token
 
 router = APIRouter(prefix='/api/v1/ui/payment-alerts', tags=['payment alert settings'])
 
@@ -49,6 +51,36 @@ def access(request, db, region_id=None):
 
 def shape(rule):
     return {'kind': rule.kind, 'enabled': rule.enabled, 'recipients': rule.recipients, 'config': rule.config}
+
+
+@router.get('/receipts')
+def receipts(request: Request, region_id: int | None = None, start_date: date | None = None,
+             end_date: date | None = None, report: str | None = None, db: Session = Depends(get_db)):
+    if report:
+        try:
+            region_id, start_date, end_date = decode_report_token(report)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+    if not region_id or not start_date or not end_date:
+        raise HTTPException(422, 'Select a valid payment report link.')
+    _, regions = access(request, db, region_id)
+    if end_date < start_date:
+        raise HTTPException(422, 'End date must be on or after start date.')
+    lower = datetime.combine(start_date, time.min, IST).astimezone(timezone.utc).replace(tzinfo=None)
+    upper = datetime.combine(end_date + timedelta(days=1), time.min, IST).astimezone(timezone.utc).replace(tzinfo=None)
+    received_at = func.coalesce(Payment.payment_date, Payment.created_at)
+    records = db.query(Payment, Patient).join(Patient, Patient.id == Payment.patient_id).filter(
+        Patient.region_id == region_id, received_at >= lower, received_at < upper).order_by(received_at, Payment.id).all()
+    modes = {row.id: row.payment_mode_name for row in db.query(PaymentModeMaster).all()}
+    return {'data': {'centre': next(region.name for region in regions if region.id == region_id),
+        'start_date': str(start_date), 'end_date': str(end_date),
+        'report': report or report_token(region_id, start_date, end_date),
+        'total': str(sum((money(payment.payment_amount) for payment, _ in records), money(0))),
+        'rows': [{'id': payment.id, 'patient_id': child.id,
+                  'child': f'{child.first_name or ""} {child.last_name or ""}'.strip(),
+                  'date': ((payment.payment_date or payment.created_at).replace(tzinfo=timezone.utc).astimezone(IST)).isoformat(),
+                  'mode': modes.get(payment.payment_mode, 'Unspecified'), 'amount': str(money(payment.payment_amount))}
+                 for payment, child in records]}}
 
 
 @router.get('')

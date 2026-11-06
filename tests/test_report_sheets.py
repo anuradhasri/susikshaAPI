@@ -44,6 +44,76 @@ class ReportSheetTests(unittest.TestCase):
         self.client = TestClient(app)
         self.base = '/api/v1/ui/reports/sheets'
 
+    def test_child_progress_consolidates_history_and_enforces_region(self):
+        for day, answers in [('2026-10-01', [(1, 'E'), (2, 'A')]),
+                             ('2026-10-20', [(1, 'A'), (2, 'NO')])]:
+            response = self.client.post(self.base + '/summaries', json={
+                'patient_id': 1, 'evaluation_date': day, 'therapist_ids': [1],
+                'level_id': 1, 'responses': [{'skill_id': skill, 'status': status, 'comments': 'Saved note'}
+                                           for skill, status in answers],
+            })
+            self.assertEqual(response.status_code, 201, response.text)
+        result = self.client.get(self.base + '/child-progress/1')
+        self.assertEqual(result.status_code, 200, result.text)
+        data = result.json()['data']
+        self.assertEqual(data['evaluation_count'], 2)
+        self.assertEqual(data['latest_evaluation_date'], '2026-10-20')
+        self.assertEqual({item['skill_id']: item['status'] for item in data['responses']}, {1: 'A', 2: 'NO'})
+        self.assertIsNone(data['selected_summary_id'])
+        self.assertEqual(len(data['evaluations']), 2)
+        earlier_id = data['evaluations'][-1]['id']
+        earlier = self.client.get(self.base + f'/child-progress/1?summary_id={earlier_id}').json()['data']
+        self.assertEqual(earlier['selected_summary_id'], earlier_id)
+        self.assertEqual(earlier['evaluation_count'], 1)
+        self.assertEqual(earlier['latest_evaluation_date'], '2026-10-01')
+        self.assertEqual({item['skill_id']: item['status'] for item in earlier['responses']}, {1: 'E', 2: 'A'})
+        self.assertEqual(len(earlier['evaluations']), 2)
+        self.assertEqual(self.client.get(self.base + '/child-progress/1?summary_id=9999').status_code, 404)
+        with patch.object(routes, '_user_region_ids', return_value=[1, 2]):
+            self.assertEqual(self.client.get(self.base + f'/child-progress/2?summary_id={earlier_id}').status_code, 404)
+        self.assertEqual(self.client.get(self.base + '/child-progress/2').status_code, 404)
+        self.assertEqual(self.client.get(self.base + '/child-progress/999').status_code, 404)
+        with patch.object(routes, '_permission_shape', return_value={}):
+            self.assertEqual(self.client.get(self.base + '/child-progress/1').status_code, 403)
+
+    def test_child_progress_without_evaluations(self):
+        data = self.client.get(self.base + '/child-progress/1').json()['data']
+        self.assertEqual(data['evaluation_count'], 0)
+        self.assertEqual(data['responses'], [])
+        self.assertIsNone(data['latest_evaluation_date'])
+
+    def test_entry_ownership_and_append_to_old_sheet(self):
+        from datetime import datetime, timedelta
+        created = self.observation().json()['data']
+        original = created['entries'][0]
+        self.assertEqual(original['created_by_name'], 'Test User')
+        self.assertIsNone(original['updated_by_name'])
+        payload = {'patient_id': 1, 'observation_date': created['observation_date'], 'therapist_ids': [1, 2], 'entries': [original]}
+        payload['entries'][0]['goal'] = 'Changed by creator'
+        edited = self.client.put(f"{self.base}/observations/{created['id']}", json=payload)
+        self.assertEqual(edited.status_code, 200)
+        self.assertEqual(edited.json()['data']['entries'][0]['updated_by_name'], 'Test User')
+        self.assertIsNotNone(edited.json()['data']['entries'][0]['updated_at'])
+        other = User(id=9, username='other', email='other@example.test', hashed_password='unused', first_name='Other', last_name='User')
+        self.db.add(other)
+        self.db.commit()
+        with patch.object(routes, '_require_user', return_value=other):
+            payload['entries'][0]['goal'] = 'Unauthorized change'
+            self.assertEqual(self.client.put(f"{self.base}/observations/{created['id']}", json=payload).status_code, 403)
+        self.db.rollback()
+        old_entry = self.db.get(PatientObservationSheetEntry, original['id'])
+        old_entry.created_at = datetime.utcnow() - timedelta(days=2)
+        self.db.get(PatientObservationSheet, created['id']).created_at = datetime.utcnow() - timedelta(days=2)
+        self.db.commit()
+        saved = self.client.get(f"{self.base}/observations/{created['id']}").json()['data']
+        payload = {'patient_id': 1, 'observation_date': saved['observation_date'], 'therapist_ids': [1, 2], 'entries': saved['entries'] + [{'goal': 'New entry', 'prompts': ''}]}
+        with patch.object(routes, '_require_user', return_value=other):
+            response = self.client.put(f"{self.base}/observations/{created['id']}", json=payload)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['data']['entries'][-1]['created_by'], 9)
+        payload['entries'][0]['goal'] = 'Too late'
+        self.assertEqual(self.client.put(f"{self.base}/observations/{created['id']}", json=payload).status_code, 403)
+
     def tearDown(self):
         for p in reversed(self.patches): p.stop()
         self.client.close()
@@ -108,10 +178,46 @@ class ReportSheetTests(unittest.TestCase):
         self.goal(items=[{'level_id': 1, 'title_id': 1, 'description': 'Child-specific goal'}])
         self.goal(items=[{'level_id': 1, 'title_id': 1, 'description': 'Latest child-specific goal'}, {'description': 'Untitled goal'}])
         titles = self.client.get(endpoint + '1').json()['data']
-        self.assertEqual(titles, [{'id': 1, 'level_id': 1, 'title': 'Engagement', 'description': 'Latest child-specific goal'}])
+        self.assertEqual(titles, [{'id': 1, 'level_id': 1, 'title': 'Engagement', 'description': 'Latest child-specific goal', 'domain_ids': [], 'skill_ids': [], 'objectives': []}])
         self.assertEqual(self.client.get(endpoint + '2').status_code, 404)
         with patch.object(routes, '_user_region_ids', return_value=[1, 2]):
             self.assertEqual(self.client.get(endpoint + '2').json()['data'], [])
+
+    def test_goal_reference_defaults_to_latest_active_and_does_not_mix_sheets(self):
+        old = self.goal(planning_month='2026-08-01', review_month='2026-08-31', items=[{
+            'level_id': 1, 'title_id': 1, 'description': 'Old goal', 'domain_ids': [1], 'skill_ids': [2],
+        }]).json()['data']
+        current = self.goal(planning_month='2026-10-01', review_month='2026-11-30', items=[{
+            'level_id': 1, 'title_id': 1, 'description': 'Current goal', 'domain_ids': [1], 'skill_ids': [1],
+        }, {'level_id': 2, 'description': 'Current custom goal'}]).json()['data']
+        future = self.goal(planning_month='2026-12-01', review_month='2027-02-01').json()['data']
+        endpoint = self.base + '/observations/goal-titles/1?as_of=2026-10-30'
+        data = self.client.get(endpoint).json()
+        self.assertEqual(data['selected_sheet_id'], current['id'])
+        self.assertEqual(data['default_sheet_id'], current['id'])
+        self.assertEqual(data['skill_ids'], [1])
+        self.assertEqual(data['level_ids'], [1, 2])
+        self.assertEqual(data['data'][0]['description'], 'Current goal')
+        self.assertEqual(len(data['sheets']), 3)
+        selected = self.client.get(endpoint + f"&goal_sheet_id={old['id']}").json()
+        self.assertEqual(selected['skill_ids'], [2])
+        self.assertEqual(selected['level_ids'], [1])
+        self.assertEqual(selected['data'][0]['description'], 'Old goal')
+        fallback = self.client.get(self.base + '/observations/goal-titles/1?as_of=2027-03-01').json()
+        self.assertEqual(fallback['selected_sheet_id'], future['id'])
+        self.assertFalse(any(sheet['is_active'] for sheet in fallback['sheets']))
+        self.assertEqual(self.client.get(endpoint + '&goal_sheet_id=9999').status_code, 404)
+        with patch.object(routes, '_user_region_ids', return_value=[1, 2]):
+            self.assertEqual(self.client.get(self.base + f"/observations/goal-titles/2?goal_sheet_id={current['id']}").status_code, 404)
+
+    def test_goal_reference_merges_same_title_only_within_selected_sheet(self):
+        saved = self.goal(items=[
+            {'level_id': 1, 'title_id': 1, 'description': 'First', 'domain_ids': [1], 'skill_ids': [1]},
+            {'level_id': 1, 'title_id': 1, 'description': 'Second', 'domain_ids': [1], 'skill_ids': [2]},
+        ]).json()['data']
+        data = self.client.get(self.base + f"/observations/goal-titles/1?goal_sheet_id={saved['id']}").json()
+        self.assertEqual(data['data'][0]['skill_ids'], [1, 2])
+        self.assertEqual(data['data'][0]['description'], 'First\nSecond')
 
     def test_goal_legacy_therapist_backfill_is_idempotent(self):
         from app.models.report_sheets import PatientGoalSheetTherapist
