@@ -32,7 +32,8 @@ def notification_data(rule, payload, active=True):
         })
     else:
         url = '/configuration/payment-alerts'
-    return {'url': url, 'payment_alert': True, 'resolved': not active}
+    return {'url': url, 'payment_alert': True, 'resolved': bool(payload.get('resolved', False)),
+            'reminder_stopped': bool(payload.get('reminder_stopped', False))}
 
 
 def defaults(kind, today=None):
@@ -144,7 +145,7 @@ def candidates(db, rule, now):
             PatientPackage.deleted_at.is_(None), func.lower(PatientPackage.status) == 'active').options(
                 joinedload(PatientPackage.patient), joinedload(PatientPackage.package)).all()
         for package in packages:
-            if selected_programs and package.package.program_id not in selected_programs:
+            if selected_programs and not (set(selected_programs) & ({package.package.program_id} | {a.program_id for a in package.package.program_assignments})):
                 continue
             if package.fully_paid or (today - package.start_date).days < config['after_days'] or not unpaid(package.due_amount, package.paid_amount, config):
                 continue
@@ -175,6 +176,44 @@ def candidates(db, rule, now):
     return events
 
 
+def stopped_reminder(db, rule, event):
+    # Read balances independently of reminder filters. Leaving a rule is not proof of payment.
+    kind, _, identifier = event.event_key.partition(':')
+    balance = None
+    if identifier.isdigit() and kind == 'package':
+        package = db.get(PatientPackage, int(identifier))
+        if package and package.deleted_at is None:
+            balance = money(0 if package.fully_paid else package.due_amount)
+    elif identifier.isdigit() and kind in ('child', 'fixed'):
+        rows = financial_sessions(db, rule.region_id)
+        if kind == 'child':
+            rows = [row for row in rows if row['patient'].id == int(identifier) and row['completed']]
+        else:
+            plan = db.get(PatientProgramPricing, int(identifier))
+            rows = [row for row in rows if plan and plan.deleted_at is None
+                    and not row['is_package'] and row['patient'].id == plan.patient_id
+                    and row['program_id'] == plan.program_id and row['date'] >= plan.effective_from
+                    and (not plan.effective_to or row['date'] <= plan.effective_to)]
+        if rows:
+            balance = sum((max(row['due'], Decimal('0.00')) for row in rows), Decimal('0.00'))
+    cleared = balance is not None and balance <= 0
+    child = event.message.split(':', 1)[0]
+    payload = {**event.payload, 'resolved': cleared, 'reminder_stopped': not cleared}
+    # Never present the old alert amount as a current balance.
+    payload.pop('amount', None)
+    if balance is not None:
+        payload['amount'] = str(max(balance, Decimal('0.00')))
+    if cleared:
+        return {'title': 'Payment completed',
+                'message': f'{child}: the outstanding balance covered by this reminder is fully cleared.',
+                'payload': payload}
+    detail = (f'₹{balance:,.2f} remains outstanding.' if balance is not None
+              else 'The current balance could not be confirmed. Check the child’s payments.')
+    return {'title': 'Reminder stopped',
+            'message': f'{child}: this reminder no longer matches the configured conditions. '
+                       f'{detail} This does not confirm full payment.', 'payload': payload}
+
+
 def reconcile_rule(db, rule, now, preview=False):
     desired = candidates(db, rule, now)
     if preview:
@@ -184,13 +223,11 @@ def reconcile_rule(db, rule, now, preview=False):
     # Cash summaries are historical snapshots; they do not become payment-due resolutions.
     if rule.kind != 'cash_summary':
         for key, event in existing.items():
-            if event.active and key not in desired:
-                desired[key] = {'title': 'Payment alert resolved',
-                    'message': f'{event.message.split(":", 1)[0]}: this alert no longer meets the configured reminder conditions. Check the child’s payments for the current balance.',
-                    'payload': {**event.payload, 'resolved': True}}
+            if (event.active or event.payload.get('reminder_stopped')) and key not in desired:
+                desired[key] = stopped_reminder(db, rule, event)
     for key, content in desired.items():
         event = existing.get(key)
-        active = not content['payload'].get('resolved', False)
+        active = not (content['payload'].get('resolved', False) or content['payload'].get('reminder_stopped', False))
         changed = not event or event.payload != content['payload'] or event.message != content['message']
         if not event:
             event = PaymentAlertEvent(rule_id=rule.id, event_key=key, active=active, updated_at=now.replace(tzinfo=None), **content)

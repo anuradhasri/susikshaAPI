@@ -496,8 +496,8 @@ class AppointmentService:
                 SELECT 'General' AS program_name, 1200 AS per_session_amount, 45 AS duration_minutes, 1 AS capacity, 'individual' AS session_type
                 UNION ALL SELECT 'Academic Intervention', 1200, 45, 1, 'individual'
                 UNION ALL SELECT 'Sushiksha Online', 1200, 45, 1, 'individual'
-                UNION ALL SELECT 'CRT', 1800, 120, 1, 'structured'
-                UNION ALL SELECT 'Vocational', 1200, 60, 10, 'group'
+                UNION ALL SELECT 'CRT', 0, 120, 1, 'structured'
+                UNION ALL SELECT 'Vocational', 0, 60, 10, 'group'
                 UNION ALL SELECT 'Social Group', 1200, 60, 8, 'group'
                 UNION ALL SELECT 'Parent Training Program: Prewriting Skills', 1200, 60, 10, 'group'
                 UNION ALL SELECT 'Parent Training Program: Toilet Training', 1200, 60, 10, 'group'
@@ -505,12 +505,7 @@ class AppointmentService:
                 UNION ALL SELECT 'Schooling', 800, 30, 1, 'individual'
             ) AS program_seed
             WHERE r.deleted_at IS NULL
-            ON DUPLICATE KEY UPDATE
-                is_active = VALUES(is_active),
-                duration_minutes = VALUES(duration_minutes),
-                capacity = VALUES(capacity),
-                session_type = VALUES(session_type),
-                deleted_at = NULL
+            ON DUPLICATE KEY UPDATE id = programs.id
         """))
         inspector = inspect(db.bind)
         if not inspector.has_table("program_segments"):
@@ -541,10 +536,7 @@ class AppointmentService:
                 UNION ALL SELECT 3, 'Therapist 3', 30
             ) AS segment_seed
             WHERE LOWER(p.program_name) LIKE '%crt%'
-            ON DUPLICATE KEY UPDATE
-                label = VALUES(label),
-                duration_minutes = VALUES(duration_minutes),
-                is_active = VALUES(is_active)
+            ON DUPLICATE KEY UPDATE id = program_segments.id
         """))
         db.commit()
         AppointmentService._PROGRAM_SCHEMA_READY = True
@@ -1264,7 +1256,7 @@ class AppointmentService:
             .filter(
                 PatientPackage.patient_id == slot_booking.patient_id,
                 PatientPackage.deleted_at.is_(None),
-                Package.program_id == slot_booking.program_id,
+                or_(Package.program_id == slot_booking.program_id, Package.program_assignments.any(program_id=slot_booking.program_id)),
             )
             .order_by(PatientPackage.start_date.asc(), PatientPackage.id.asc())
             .with_for_update()
@@ -1276,7 +1268,8 @@ class AppointmentService:
         return None
 
     @staticmethod
-    def _active_patient_package(db: Session, patient_id: int, program_type: str | None = None) -> PatientPackage | None:
+    def _active_patient_package(db: Session, patient_id: int, program_type: str | None = None,
+                                program: Program | None = None) -> PatientPackage | None:
         AppointmentService._ensure_package_billing_schema(db)
         packages = (
             db.query(PatientPackage)
@@ -1293,10 +1286,7 @@ class AppointmentService:
         )
         if program_type:
             for patient_package in packages:
-                package = patient_package.package
-                package_program_name = package.program.program_name if package and package.program else None
-                package_name = package.name if package else None
-                if AppointmentService._program_type(package_program_name or package_name) == program_type:
+                if AppointmentService._package_matches_program(patient_package, program, program_type):
                     return patient_package
             return None
         return packages[0] if packages else None
@@ -1323,38 +1313,12 @@ class AppointmentService:
         rule = AppointmentService._auto_package_rule(program_type)
         if not rule or not program:
             return None
-
-        package = (
+        return (
             db.query(Package)
-            .filter(
-                Package.program_id == program.id,
-                Package.name == rule["name"],
-                Package.deleted_at.is_(None),
-            )
-            .order_by(Package.id.asc())
+            .filter_by(program_id=program.id, region_id=program.region_id, is_active=True, deleted_at=None)
+            .order_by((Package.name == rule["name"]).desc(), Package.id.asc())
             .first()
         )
-        if package:
-            package.total_sessions = rule["total_sessions"]
-            package.price = rule["price"]
-            package.duration_days = rule["duration_days"]
-            package.region_id = program.region_id
-            package.is_active = True
-            return package
-
-        package = Package(
-            name=rule["name"],
-            description=f"{program.program_name} package",
-            region_id=program.region_id,
-            program_id=program.id,
-            total_sessions=rule["total_sessions"],
-            price=rule["price"],
-            duration_days=rule["duration_days"],
-            is_active=True,
-        )
-        db.add(package)
-        db.flush()
-        return package
 
     @staticmethod
     def _get_or_create_auto_patient_package(
@@ -1373,7 +1337,7 @@ class AppointmentService:
         if not package:
             return None
 
-        existing = AppointmentService._active_patient_package(db, patient_id, program_type)
+        existing = AppointmentService._active_patient_package(db, patient_id, program_type, program)
         if existing:
             return existing
 
@@ -1439,8 +1403,8 @@ class AppointmentService:
         package = patient_package.package if patient_package else None
         if not package:
             return False
-        if package.program_id and program and package.program_id == program.id:
-            return True
+        if package.program_id and program:
+            return package.program_id == program.id or any(a.program_id == program.id for a in package.program_assignments)
 
         package_names = [
             package.program.program_name if package.program else None,
@@ -1497,7 +1461,8 @@ class AppointmentService:
 
     @staticmethod
     def _program_capacity_from_row(row, program_type: str) -> int | None:
-        return int(getattr(row, "program_capacity", None) or AppointmentService._program_capacity(program_type) or 1)
+        return int(getattr(row, "capacity", None) or getattr(row, "program_capacity", None)
+                   or AppointmentService._program_capacity(program_type) or 1)
 
     @staticmethod
     def _add_minutes_to_time(value: str, minutes: int) -> str:
@@ -1651,30 +1616,20 @@ class AppointmentService:
         current_user,
         region_id: int | None = None,
     ):
-        # =========================
-        # FETCH AVAILABLE PATIENTS
-        # =========================
+        region_ids = getattr(current_user, "region_ids", None) or []
+        is_admin = "admin" in UserRepository.role_names(db, current_user.id)
+        if region_id and not is_admin and region_id not in region_ids:
+            raise HTTPException(status_code=403, detail="Selected centre is outside your region access")
 
-        patients = UserRepository.get_available_patients(
-            db=db,
-            current_user = current_user
+        patient_query = db.query(Patient).filter(
+            Patient.is_available.is_(True),
+            Patient.status.is_(True),
         )
         if region_id:
-            patients = [patient for patient in patients if patient.region_id == region_id]
-
-        if not patients:
-            patient_query = db.query(Patient).filter(
-                Patient.is_available == True,
-                Patient.status == True,
-                Patient.region_id.in_(current_user.region_ids),
-            )
-            if region_id:
-                patient_query = patient_query.filter(Patient.region_id == region_id)
-            patients = (
-                patient_query
-                .order_by(Patient.first_name.asc(), Patient.last_name.asc(), Patient.id.asc())
-                .all()
-            )
+            patient_query = patient_query.filter(Patient.region_id == region_id)
+        elif not is_admin:
+            patient_query = patient_query.filter(Patient.region_id.in_(region_ids))
+        patients = patient_query.order_by(Patient.first_name, Patient.last_name, Patient.id).all()
 
         response = []
 
@@ -1801,7 +1756,7 @@ class AppointmentService:
         if program and getattr(program, "region_id", None) and program.region_id != booking_create.region_id:
             raise ValueError("Selected program is not available for this region")
         program_type = AppointmentService._program_type(program.program_name if program else None)
-        group_program = program_type in {"vocational", "social", "parent_training", "peg"}
+        group_program = program.session_type == "group" if program else False
         shared_slot_booking = bool(getattr(booking_create, "allow_shared_slot", False))
         existing_group_mapping = None
         if group_program or shared_slot_booking:
@@ -1896,9 +1851,9 @@ class AppointmentService:
             )
             if not active_package or not AppointmentService._package_matches_program(active_package, program, program_type):
                 raise ValueError("Selected package is not active for this child or does not match this program")
-        elif booking_create.use_package or group_program:
-            active_package = AppointmentService._active_patient_package(db, booking_create.patient_id, program_type)
-        if not active_package and program_type in {"crt", "vocational"}:
+        elif booking_create.use_package:
+            active_package = AppointmentService._active_patient_package(db, booking_create.patient_id, program_type, program)
+        if not active_package and booking_create.use_package and program_type in {"crt", "vocational"}:
             active_package = AppointmentService._get_or_create_auto_patient_package(
                 db,
                 patient_id=booking_create.patient_id,
@@ -1906,6 +1861,13 @@ class AppointmentService:
                 program_type=program_type,
                 start_date=booking_create.slot_date,
             )
+        if (program and not active_package
+                and not getattr(booking_create, "parent_program_group_id", None)
+                and (program_type in {"crt", "vocational"} or (
+                    not program.per_session_amount
+                    and db.query(Package.id).filter_by(program_id=program.id, is_active=True, deleted_at=None).first()
+                ))):
+            raise ValueError("This program requires an active package for this child")
         is_package_session = active_package is not None
         package_total = float(active_package.total_amount or 0) if active_package else 0
         package_paid = float(active_package.paid_amount or 0) if active_package else 0

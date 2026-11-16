@@ -1,11 +1,10 @@
-import multiprocessing
 
 # Server Socket
 bind = "0.0.0.0:8000"
 backlog = 2048
 
 # Worker processes
-workers = 10  # Number of worker processes
+workers = 1  # In-process WebSocket events require one shared application worker.
 worker_class = "uvicorn.workers.UvicornWorker"
 worker_connections = 1000
 timeout = 30
@@ -46,8 +45,9 @@ preload_app = True
 
 
 def on_starting(server):
-    """Hook run on server startup"""
-    pass
+    """Prevent CLI worker overrides from breaking in-process live delivery."""
+    if server.cfg.workers != 1:
+        raise RuntimeError("Live updates require exactly one backend worker in this deployment.")
 
 
 def when_ready(server):

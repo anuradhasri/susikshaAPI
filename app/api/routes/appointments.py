@@ -377,7 +377,7 @@ async def get_waitlist_patients(
     await check_region_access(
         current_user=current_user,
         db=db,
-        target_region_id=_user_region_ids(current_user)
+        target_region_id=[region_id] if region_id else _user_region_ids(current_user)
     )
     await _require_waitlist_access(current_user, db)
 
@@ -398,6 +398,9 @@ async def get_waitlist_patients(
         )
 
         return response
+
+    except HTTPException:
+        raise
 
     except ValueError as e:
 
@@ -602,6 +605,10 @@ async def book_slot(
 
         program = db.query(Program).filter(Program.id == booking_create.program_id).first() if booking_create.program_id else None
         program_type = AppointmentService._program_type(program.program_name if program else None)
+        if program and booking_create.parent_program_group_id is None:
+            capacity = program.capacity if program.session_type == "group" else 1
+            if len(patient_ids) > capacity:
+                raise ValueError(f"This program allows up to {capacity} children per slot")
         booking_date = booking_create.slot_date
         therapist_ids = sorted({
             int(allocation.get("therapist_id") or 0)

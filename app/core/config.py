@@ -15,13 +15,6 @@ class Settings(BaseSettings):
         "mysql+pymysql://root:root@localhost:3306/autism_therapy"
     )
 
-    # Redis
-    REDIS_URL: str = os.getenv(
-        "REDIS_URL",
-        "redis://localhost:6379/0"
-    )
-    REDIS_CACHE_TTL: int = 300  # 5 minutes
-
     # JWT
     SECRET_KEY: str = os.getenv(
         "SECRET_KEY",
@@ -140,6 +133,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"  # Ignore obsolete deployment keys, including former broker settings.
 
 
 @lru_cache()

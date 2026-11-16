@@ -17,7 +17,7 @@ Complete guide for deploying the Autism Therapy Management System backend to pro
 
 - [ ] Change `SECRET_KEY` in `.env` to a strong random string
 - [ ] Update `DATABASE_URL` to production database
-- [ ] Update `REDIS_URL` to production Redis instance
+- [ ] Run exactly one backend worker for in-process WebSocket updates
 - [ ] Set `DEBUG=False` in `.env`
 - [ ] Configure `CORS_ORIGINS` for your domain
 - [ ] Review and adjust `ACCESS_TOKEN_EXPIRE_MINUTES`
@@ -45,8 +45,6 @@ DEBUG=False
 DATABASE_URL=mysql+pymysql://user:password@prod-db.example.com:3306/autism_therapy
 SQLALCHEMY_ECHO=False
 
-# Redis (Production)
-REDIS_URL=redis://:password@prod-redis.example.com:6379/0
 
 # JWT
 SECRET_KEY=your-super-secret-production-key-min-32-chars-very-random
@@ -187,7 +185,7 @@ Create `/etc/systemd/system/autism-backend.service`:
 ```ini
 [Unit]
 Description=Autism Therapy Management Backend
-After=network.target mysql.service redis.service
+After=network.target mysql.service
 
 [Service]
 Type=notify
@@ -280,31 +278,16 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   backend:
     build: .
     environment:
       DATABASE_URL: mysql+pymysql://${DB_USER}:${DB_PASSWORD}@db:3306/autism_therapy
-      REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${SECRET_KEY}
       DEBUG: "False"
     ports:
       - "8000:8000"
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     volumes:
       - ./logs:/app/logs
@@ -316,7 +299,6 @@ services:
 
 volumes:
   db_data:
-  redis_data:
 ```
 
 Deploy:
@@ -357,7 +339,6 @@ sudo ufw allow 22/tcp    # SSH
 sudo ufw allow 80/tcp    # HTTP
 sudo ufw allow 443/tcp   # HTTPS
 sudo ufw deny 8000/tcp   # Block direct Gunicorn access
-sudo ufw deny 6379/tcp   # Block direct Redis access
 sudo ufw deny 3306/tcp   # Block direct MySQL access
 ```
 
@@ -454,15 +435,9 @@ Schedule with cron:
 0 2 * * * /usr/local/bin/backup-autism-db.sh
 ```
 
-### 2. Redis Persistence
+### 2. Live updates
 
-In `gunicorn_conf.py`, ensure Redis is configured for persistence:
-
-```bash
-# Redis should have appendonly.aof enabled
-redis-cli CONFIG GET appendonly
-redis-cli CONFIG SET appendonly yes
-```
+Live updates use memory in a single backend worker. Redis is not required. Clients resync after reconnecting.
 
 ### 3. Recovery Procedure
 
@@ -496,22 +471,11 @@ SET GLOBAL long_query_time = 2;
 EXPLAIN SELECT * FROM patients WHERE region_id = 1;
 ```
 
-### 2. Redis Optimization
-
-```bash
-# Adjust Redis memory
-redis-cli CONFIG GET maxmemory
-redis-cli CONFIG SET maxmemory 2gb
-
-# Set eviction policy
-redis-cli CONFIG SET maxmemory-policy allkeys-lru
-```
-
 ### 3. Gunicorn Tuning
 
 ```python
-# Adjust worker count based on CPU
-workers = (multiprocessing.cpu_count() * 2) + 1
+# Keep one worker so every WebSocket shares the event hub
+workers = 1
 
 # Adjust timeout based on slowest endpoint
 timeout = 60
@@ -543,16 +507,6 @@ mysql -u app_user -p -h localhost -e "SELECT 1"
 
 # Check pool settings
 # Increase pool_size and max_overflow in database.py
-```
-
-### 3. Redis Connection Issues
-
-```bash
-# Test Redis
-redis-cli ping
-
-# Check Redis logs
-tail -f /var/log/redis/redis-server.log
 ```
 
 ### 4. Nginx Errors

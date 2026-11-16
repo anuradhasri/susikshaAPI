@@ -146,14 +146,8 @@ class PaymentService:
         created_by: int
     ):
 
-        # Get User Region IDs
-        user_regions = (
-            db.query(UserRegionMapping.regionid)
-            .filter(UserRegionMapping.userid == created_by)
-            .all()
-        )
-
-        region_ids = [region.regionid for region in user_regions]
+        from app.repositories.user_repository import UserRepository
+        region_ids = UserRepository.region_ids(db, created_by)
 
         query = (
             db.query(

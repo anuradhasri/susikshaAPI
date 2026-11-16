@@ -6,7 +6,6 @@ Get the backend running in 5 minutes!
 
 - Python 3.8+
 - MySQL 5.7+
-- Redis 6.0+
 - pip
 
 ## 2. Clone & Setup
@@ -21,7 +20,7 @@ pip install -r requirements.txt
 # Copy environment file
 cp .env.example .env
 
-# Edit .env with your database and Redis credentials
+# Edit .env with your database credentials
 ```
 
 ## 3. Database Setup
@@ -146,9 +145,9 @@ sudo systemctl start autism-backend
 - Check DATABASE_URL in .env
 - Verify credentials
 
-### Redis Connection Error
-- Ensure Redis is running: `redis-cli ping` (should return PONG)
-- Check REDIS_URL in .env
+### Live updates
+- Use exactly one backend worker. No Redis service is required.
+- See REALTIME.md for the WebSocket reverse proxy settings.
 
 ### Port Already in Use
 ```bash

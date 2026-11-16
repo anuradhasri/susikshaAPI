@@ -572,7 +572,10 @@ def _time_with_duration(start: Optional[time], duration_minutes: Optional[int]) 
 def _full_name(user: Optional[User]) -> str:
     if not user:
         return "Unknown"
-    return f"{user.first_name} {user.last_name}".strip()
+    return " ".join(
+        str(part).strip() for part in (user.first_name, user.last_name)
+        if part is not None and str(part).strip().lower() not in {"", "none", "null"}
+    )
 
 
 def _table_exists(db: Session, table_name: str) -> bool:
@@ -585,25 +588,8 @@ def _table_exists(db: Session, table_name: str) -> bool:
 def _user_region_ids(db: Session, user: Optional[User]) -> list[int]:
     if not user:
         return []
-    try:
-        region_ids = [
-            region_id
-            for (region_id,) in (
-                db.query(UserRegionMapping.regionid)
-                .filter(UserRegionMapping.userid == user.id)
-                .all()
-            )
-        ]
-        if region_ids:
-            return region_ids
-        therapist = (
-            db.query(Therapist.region_id)
-            .filter(Therapist.user_id == user.id, Therapist.is_active.is_(True))
-            .first()
-        )
-        return [therapist.region_id] if therapist and therapist.region_id else []
-    except Exception:
-        return []
+    from app.repositories.user_repository import UserRepository
+    return UserRepository.region_ids(db, user.id)
 
 
 def _primary_region_id(db: Session, user: Optional[User]) -> Optional[int]:
@@ -2027,6 +2013,7 @@ def _package_shape(patient_package: PatientPackage) -> dict:
         "patient_id": patient_package.patient_id,
         "package_id": patient_package.package_id,
         "package_name": patient_package.package.name if patient_package.package else None,
+        "program_ids": sorted(set(([patient_package.package.program_id] if patient_package.package.program_id else []) + [a.program_id for a in patient_package.package.program_assignments])) if patient_package.package else [],
         "program_id": patient_package.package.program_id if patient_package.package else None,
         "program_name": patient_package.package.program.program_name if patient_package.package and patient_package.package.program else None,
         "total_sessions": stats["total"],
@@ -2056,6 +2043,7 @@ def _master_package_shape(package: Package) -> dict:
         "name": package.name,
         "description": package.description,
         "region_id": package.region_id,
+        "program_ids": sorted(set(([package.program_id] if package.program_id else []) + [a.program_id for a in package.program_assignments])),
         "program_id": package.program_id,
         "program_name": package.program.program_name if getattr(package, "program", None) else None,
         "total_sessions": package.total_sessions,
@@ -2075,16 +2063,6 @@ def _ensure_package_master_schema(db: Session) -> None:
     if "program_id" not in package_columns:
         db.execute(text("ALTER TABLE packages ADD COLUMN program_id INT NULL"))
     if inspect(db.bind).has_table("programs"):
-        seed_names = (
-            "General 16 Session - Package",
-            "General 12 Session - Package",
-            "CRT 5 Session - Package",
-            "Vocational 8 Session - Package",
-        )
-        db.query(Package).filter(Package.program_id.isnot(None), Package.name.notin_(seed_names)).update(
-            {"is_active": False},
-            synchronize_session=False,
-        )
         package_seed = """
             SELECT 'General' AS program_name, 'General 12 Session - Package' AS package_name, 12 AS total_sessions, 13200 AS price, 30 AS duration_days
             UNION ALL SELECT 'General', 'General 16 Session - Package', 16, 17600, 120
@@ -2093,23 +2071,6 @@ def _ensure_package_master_schema(db: Session) -> None:
             UNION ALL SELECT 'Vocational', 'Vocational 8 Session - Package', 8, 10000, 60
             UNION ALL SELECT 'Vocational Program', 'Vocational 8 Session - Package', 8, 10000, 60
         """
-        db.execute(text(f"""
-            UPDATE packages pkg
-            JOIN programs p ON p.id = pkg.program_id
-            JOIN ({package_seed}) seed
-              ON seed.program_name = p.program_name
-             AND seed.package_name = pkg.name
-            SET pkg.total_sessions = seed.total_sessions,
-                pkg.price = seed.price,
-                pkg.duration_days = seed.duration_days,
-                pkg.description = CONCAT(p.program_name, ' package'),
-                pkg.region_id = p.region_id,
-                pkg.is_active = 1
-            WHERE p.deleted_at IS NULL
-              AND p.is_active = 1
-              AND p.region_id = 1
-              AND pkg.deleted_at IS NULL
-        """))
         db.execute(text(f"""
             INSERT INTO packages (
                 name,
@@ -3289,27 +3250,13 @@ def _base_query(table: str, db: Session, user: Optional[User]):
         return query
     if table == "packages":
         _ensure_package_master_schema(db)
-        allowed_package_names = (
-            "General 16 Session - Package",
-            "General 12 Session - Package",
-            "CRT 5 Session - Package",
-            "Vocational 8 Session - Package",
-        )
-        return db.query(Package).options(joinedload(Package.program)).filter(
+        query = db.query(Package).options(joinedload(Package.program)).filter(
             Package.deleted_at.is_(None),
             Package.is_active.is_(True),
-            or_(
-                Package.name.in_(allowed_package_names),
-                Package.program.has(or_(
-                    Program.program_name.ilike("%parent training%"),
-                    Program.program_name.ilike("%parent program%"),
-                    Program.program_name.ilike("%prewriting%"),
-                    Program.program_name.ilike("%prewritting%"),
-                    Program.program_name.ilike("%toilet training%"),
-                    Program.program_name.ilike("%peg%"),
-                )),
-            ),
         )
+        if region_ids:
+            query = query.filter(Package.region_id.in_(region_ids))
+        return query
     if table == "patient_packages":
         query = db.query(PatientPackage).options(joinedload(PatientPackage.package)).filter(PatientPackage.deleted_at.is_(None))
         if region_ids:
@@ -3404,7 +3351,8 @@ def _apply_filters(query, table: str, filters: list[dict]):
         elif field == "region_id" and table == "therapists":
             if op == "eq":
                 query = query.filter(Therapist.region_id == value)
-                continue
+            elif op == "in":
+                query = query.filter(Therapist.region_id.in_(value or []))
         elif table == "therapist_therapy_mapping" and field in {"id", "therapist_id", "therapy_id"}:
             col = getattr(TherapistTherapyMapping, field)
             if op == "eq":
@@ -5522,6 +5470,14 @@ async def get_patient_transactions(
         row["overall_due_amount"] = running_session_due
     payable_slot_rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
 
+    # The newest ordinary-session receipt must agree with the current
+    # completed-session balance, including receipts saved before status filtering.
+    if latest_non_package_payment_id is not None:
+        for history_row in transaction_rows:
+            if history_row.get("id") == f"payment-{latest_non_package_payment_id}":
+                history_row["due_amount"] = running_session_due
+                break
+
     transaction_count = len(transaction_rows)
     transaction_start = (page - 1) * limit
     transaction_end = transaction_start + limit
@@ -5864,6 +5820,7 @@ async def create_patient_transaction(
                 PatientSlotBooking.is_package_session.is_(False),
                 PatientSlotBooking.fully_paid.is_(False),
                 PatientSlotBooking.due_amount > 0,
+                func.upper(PatientSlotBooking.status).in_(["COMPLETED", "PAID_CANCELLED"]),
             )
             if not crt_parent:
                 slot_due_query = slot_due_query.filter(PatientSlotBooking.id != slot_booking.id)
@@ -5902,6 +5859,9 @@ async def create_patient_transaction(
                 CrtProgramBooking.is_package_session.is_(False),
                 CrtProgramBooking.fully_paid.is_(False),
                 CrtProgramBooking.due_amount > 0,
+                CrtProgramBooking.id.in_(db.query(PatientSlotBooking.crt_program_booking_id).filter(
+                    func.upper(PatientSlotBooking.status).in_(["COMPLETED", "PAID_CANCELLED"]),
+                )),
             )
             if crt_parent:
                 crt_due_query = crt_due_query.filter(CrtProgramBooking.id != crt_parent.id)
@@ -6163,16 +6123,15 @@ async def create_patient_transaction(
         mirror_linked_program_slot_payment_state(slot_booking)
 
     db.commit()
-    if slot_booking and getattr(slot_booking, "group_program_booking_id", None):
+    if slot_booking:
         mapping = slot_booking.therapist_slot_mapping
         if mapping and mapping.slot_date:
-            # Reconcile Parent Program projections/eligibility immediately.
-            # Before the group end date this remains pending_completion; after
-            # it ends, later collections increase only the earned payout.
+            # Reconcile every session payment, including ordinary individual sessions.
+            # Include today for the payment-date ledger when an older session is paid.
             from app.api.routes.payouts import sync as sync_payouts
             sync_payouts(
-                start_date=mapping.slot_date,
-                end_date=mapping.slot_date,
+                start_date=min(mapping.slot_date, datetime.utcnow().date()),
+                end_date=max(mapping.slot_date, datetime.utcnow().date()),
                 region_id=patient.region_id,
                 db=db,
                 user=user,
@@ -6717,9 +6676,13 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
     elif table == "patient_packages":
         _ensure_package_billing_schema(db)
         _ensure_package_master_schema(db)
-        package = db.query(Package).filter(Package.id == item["package_id"], Package.deleted_at.is_(None)).first()
+        package = db.query(Package).filter(Package.id == item["package_id"], Package.deleted_at.is_(None),
+                                           Package.is_active.is_(True)).first()
         if not package:
             raise HTTPException(status_code=404, detail="Package not found")
+        patient = db.get(Patient, item["patient_id"])
+        if not patient or (package.region_id and package.region_id != patient.region_id):
+            raise HTTPException(status_code=422, detail="The package must belong to the child's centre")
 
         total_sessions = int(item.get("total_sessions") or package.total_sessions or 0)
         total_amount = float(item.get("total_amount") if item.get("total_amount") is not None else package.price or 0)
@@ -6908,8 +6871,15 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             if existing_user:
                 raise HTTPException(status_code=400, detail="Email already exists")
         first, last = _split_name(item.get("full_name", ""))
+        username_base = " ".join(part for part in (first, last) if part).strip()[:100]
+        username = username_base
+        suffix = 2
+        while db.query(User.id).filter(User.username == username).first():
+            ending = f" {suffix}"
+            username = f"{username_base[:100 - len(ending)]}{ending}"
+            suffix += 1
         row = User(
-            username=item.get("email"),
+            username=username,
             email=email_value,
             hashed_password=hash_password(item.get("password") or "Temp@123456"),
             first_name=first,
@@ -7082,7 +7052,6 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
                 if existing_user:
                     raise HTTPException(status_code=400, detail="Email already exists")
                 row.user.email = email_value
-                row.user.username = email_value
         if "phone" in item and row.user:
             row.user.phone = item["phone"]
         for key, attr in {"qualification": "qualification", "bio": "qualification"}.items():
@@ -7132,7 +7101,6 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
                 if existing_user:
                     raise HTTPException(status_code=400, detail="Email already exists")
             row.email = email_value or row.email
-            row.username = email_value or row.username
         if "phone" in item:
             row.phone = item["phone"]
     elif table == "invoices":

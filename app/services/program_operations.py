@@ -70,12 +70,15 @@ def combine_booking_rows(bookings, pending, today):
         if not program and row.patient_package and row.patient_package.package:
             program = row.patient_package.package.program
         name = program.program_name if program else 'General'
+        therapy_names = sorted({item.therapist_slot_mapping.therapy.name.strip() for item in items
+                                if item.therapist_slot_mapping.therapy and item.therapist_slot_mapping.therapy.name})
         codes = [item.patient_slot_booking_status_master.code if item.patient_slot_booking_status_master else item.status for item in items]
         therapists = {item.therapist_slot_mapping.therapist_id: item.therapist_slot_mapping.therapist.name for item in items}
         patient = row.patient
         result.append({
             'key': ':'.join(map(str, key)), 'date': mapping.slot_date.isoformat(),
-            'category': category_for(name), 'program': name, 'activity': 'Session',
+            'category': category_for(name), 'program': name,
+            'therapy': ', '.join(therapy_names) or 'Therapy not recorded', 'activity': 'Session',
             'patient_id': row.patient_id, 'child': f'{patient.first_name} {patient.last_name}'.strip() if patient else 'Unassigned',
             'therapist_ids': sorted(therapists), 'therapists': ', '.join(sorted(therapists.values())),
             'therapist_options': [{'id': key, 'name': value} for key, value in sorted(therapists.items())],

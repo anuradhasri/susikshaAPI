@@ -6,23 +6,15 @@ from app.core.database import get_db
 from app.core.security import decode_token, TokenData
 from app.models.models import User, UserRole, Role, UserRegionMapping
 from app.core.config import get_settings
+from app.repositories.user_repository import UserRepository
 
 settings = get_settings()
 security = HTTPBearer()
 
 
 def _user_region_ids(db: Session, user_id: int) -> list[int]:
-    try:
-        return [
-            region_id
-            for (region_id,) in (
-                db.query(UserRegionMapping.regionid)
-                .filter(UserRegionMapping.userid == user_id)
-                .all()
-            )
-        ]
-    except Exception:
-        return []
+    return UserRepository.region_ids(db, user_id)
+
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),

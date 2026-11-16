@@ -42,6 +42,7 @@ def program_operations(request: Request, start_date: date, end_date: date,
         Patient.id == PatientSlotBooking.patient_id).filter(
         TherapistSlotMapping.slot_date.between(start_date, end_date)).options(
         joinedload(PatientSlotBooking.patient), joinedload(PatientSlotBooking.program),
+        joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
         joinedload(PatientSlotBooking.patient_slot_booking_status_master),
         joinedload(PatientSlotBooking.crt_program_booking).joinedload(CrtProgramBooking.program),
         joinedload(PatientSlotBooking.group_program_booking).joinedload(GroupProgramBooking.program),
@@ -80,7 +81,7 @@ def program_operations(request: Request, start_date: date, end_date: date,
             status = {'COMPLETED': 'Completed', 'CANCELLED': 'Cancelled', 'IN_PROGRESS': 'In progress'}.get(code, 'Pending')
             day = assessment.completed_date or assessment.created_date
             rows.append({'key': f'assessment:{assessment.id}', 'date': day.date().isoformat(),
-                         'category': 'Assessment', 'program': master.assessment_name or master.title,
+                         'category': 'Assessment', 'program': master.assessment_name or master.title, 'therapy': '',
                          'activity': 'Assessment record', 'patient_id': patient.id,
                          'child': f'{patient.first_name} {patient.last_name}'.strip(),
                          'therapist_ids': [], 'therapist_options': [], 'therapists': 'Not recorded', 'region_id': patient.region_id,

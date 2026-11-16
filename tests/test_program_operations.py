@@ -63,6 +63,18 @@ class ProgramOperationsTests(unittest.TestCase):
         self.db.commit()
         return row
 
+    def test_session_details_show_program_and_actual_therapy(self):
+        self.db.add(Program(id=7, program_name='Academic Intervention', region_id=1))
+        self.db.get(TherapyMaster, 1).name = 'Physiotherapy'
+        self.db.commit()
+        self.booking(1, 7)
+        self.booking(2, 1)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()['data']['rows']
+        self.assertEqual({row['program'] for row in rows}, {'Academic Intervention', 'General'})
+        self.assertTrue(all(row['therapy'] == 'Physiotherapy' for row in rows))
+
     def test_all_categories_deduplication_and_assessment_dates(self):
         self.db.add_all([CrtProgramBooking(id=1, patient_id=1, program_id=2, slot_date=date(2026, 10, 10)),
             GroupProgramBooking(id=1, program_id=3, region_id=1, slot_id=1, slot_date=date(2026, 10, 10)),

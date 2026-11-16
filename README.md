@@ -6,7 +6,7 @@ A production-ready backend system for managing autism therapy operations, includ
 
 - **Framework**: FastAPI with Python 3.8+
 - **Database**: MySQL with SQLAlchemy ORM
-- **Caching & Background Jobs**: Redis
+- **Live Updates**: In-process WebSockets with one backend worker
 - **Server**: Uvicorn (ASGI) + Gunicorn (Process Manager with 10 workers)
 - **Authentication**: JWT-based with Role-Based Access Control (RBAC)
 - **API Documentation**: Swagger UI
@@ -20,7 +20,6 @@ autism-backend/
 │   ├── core/
 │   │   ├── config.py          # Configuration settings
 │   │   ├── database.py        # Database setup
-│   │   ├── redis_client.py    # Redis configuration
 │   │   └── security.py        # JWT and password hashing
 │   ├── models/
 │   │   └── models.py          # SQLAlchemy ORM models
@@ -190,11 +189,10 @@ POST /api/v1/billing/invoices
 }
 ```
 
-### 5. Redis Integration
-- **Caching**: Appointments cached for 5 minutes
-- **Background Jobs**: Duplicate detection, alerts
-- **Session Management**: Recent sessions stored in Redis
-- **Performance Optimization**: Reduced database queries
+### 5. Live updates
+- In-process WebSocket invalidations after database commits.
+- One backend worker; no external broker dependency.
+- See REALTIME.md for configuration and tests.
 
 ### 6. Comprehensive Logging
 - **JSON-structured logging** for easy parsing
@@ -308,7 +306,6 @@ db.commit()
 
 - Python 3.8+
 - MySQL 5.7+
-- Redis 6.0+
 
 ### 1. Install Dependencies
 
@@ -488,9 +485,9 @@ def test_admin_cross_region_access():
 ## 📈 Performance Considerations
 
 1. **Connection Pooling**: Database connections pooled (pool_size=10, max_overflow=20)
-2. **Redis Caching**: 5-minute TTL on appointment caches
+2. **Live Updates**: Debounced topic-based refreshes
 3. **Index Optimization**: Strategic indexes on frequently queried fields
-4. **Gunicorn Workers**: 10 workers for concurrent request handling
+4. **Gunicorn Workers**: One asynchronous worker for shared WebSocket delivery
 5. **Query Optimization**: Efficient filtering and joins
 6. **Soft Deletes**: Prevents data bloat while maintaining audit trail
 
@@ -558,7 +555,6 @@ All responses follow a consistent format:
 See `.env.example` for all configuration options:
 
 - `DATABASE_URL`: MySQL connection string
-- `REDIS_URL`: Redis connection string
 - `SECRET_KEY`: JWT signing key (change in production!)
 - `ACCESS_TOKEN_EXPIRE_MINUTES`: Token expiration time
 - `LOG_LEVEL`: Logging verbosity
@@ -588,7 +584,6 @@ See `.env.example` for all configuration options:
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
 - [SQLAlchemy ORM](https://docs.sqlalchemy.org/)
 - [Pydantic](https://pydantic-settings.readthedocs.io/)
-- [Redis Documentation](https://redis.io/documentation)
 - [Gunicorn Configuration](https://docs.gunicorn.org/en/stable/configure.html)
 
 ## 📄 License
@@ -607,4 +602,4 @@ For issues and questions:
 
 **Version**: 1.0.0  
 **Last Updated**: May 4, 2026  
-**Built with**: FastAPI, SQLAlchemy, Redis, MySQL
+**Built with**: FastAPI, SQLAlchemy, WebSockets, MySQL

@@ -5,7 +5,8 @@ from sqlalchemy import (
     Date, Time, JSON, UniqueConstraint, Index, select
 )
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
+from app.core.names import normalize_person_name
 from sqlalchemy.sql import func
 import enum
 from app.core.database import Base
@@ -201,6 +202,12 @@ class Role(Base):
 class User(Base):
     __tablename__ = "users"
 
+    @validates("first_name", "last_name", "username")
+    def normalize_name(self, key, value):
+        if key == "username" and value and "@" in value:
+            return value.strip()
+        return normalize_person_name(value)
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(100), unique=True, nullable=False, index=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
@@ -302,6 +309,10 @@ class Region(Base):
 class Patient(Base):
     __tablename__ = "patients"
 
+    @validates("first_name", "last_name", "father_name", "mother_name")
+    def normalize_name(self, key, value):
+        return normalize_person_name(value)
+
     id = Column(Integer, primary_key=True, index=True)
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
@@ -378,6 +389,10 @@ class Enquiry(Base):
 
 class Therapist(Base):
     __tablename__ = "therapists"
+
+    @validates("name")
+    def normalize_name(self, key, value):
+        return normalize_person_name(value)
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, unique=True)
@@ -573,9 +588,17 @@ class Package(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
+    program_assignments = relationship("PackageProgramAssignment", cascade="all, delete-orphan")
     patient_packages = relationship("PatientPackage", back_populates="package")
     region = relationship("Region")
     program = relationship("Program")
+
+
+class PackageProgramAssignment(Base):
+    __tablename__ = "package_program_assignments"
+    package_id = Column(Integer, ForeignKey("packages.id"), primary_key=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), primary_key=True)
+
 
 
 class Program(Base):

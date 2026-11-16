@@ -70,7 +70,10 @@ class PaymentAlertTests(unittest.TestCase):
         self.db.commit()
         service.reconcile_rule(self.db, rule, self.now)
         notice = self.db.query(Notification).first()
-        self.assertTrue(notice.data['resolved'])
+        self.assertFalse(notice.data['resolved'])
+        self.assertTrue(notice.data['reminder_stopped'])
+        self.assertEqual(notice.title, 'Reminder stopped')
+        self.assertIn('280.00', notice.message)
         self.assertEqual(self.db.query(Notification).count(), 1)
         rule.config = {**rule.config, 'include_partial': True}
         self.db.commit()
@@ -78,6 +81,24 @@ class PaymentAlertTests(unittest.TestCase):
         self.assertFalse(notice.data['resolved'])
         self.assertIn('280.00', notice.message)
         self.assertEqual(self.db.query(PaymentAlertEvent).count(), 1)
+
+    def test_full_payment_completes_reminder_with_zero_current_balance(self):
+        bookings = [self.fixture.booking(index, 1) for index in (1, 2, 3)]
+        for row in bookings:
+            row.amount = 100; row.due_amount = 100; row.paid_amount = 0
+        self.db.commit()
+        rule = self.rule('unpaid_sessions')
+        service.reconcile_rule(self.db, rule, self.now)
+        for row in bookings:
+            row.paid_amount = 100; row.due_amount = 0; row.fully_paid = True
+        self.db.commit()
+        service.reconcile_rule(self.db, rule, self.now)
+        notice = self.db.query(Notification).first()
+        self.assertEqual(notice.title, 'Payment completed')
+        self.assertTrue(notice.data['resolved'])
+        event = self.db.query(PaymentAlertEvent).first()
+        self.assertEqual(event.payload['amount'], '0.00')
+        self.assertFalse(event.active)
 
     def test_receipt_details_match_summary_and_enforce_centre_access(self):
         self.db.add_all([PaymentModeMaster(id=1, payment_mode_name='Cash'), PaymentModeMaster(id=2, payment_mode_name='UPI')])

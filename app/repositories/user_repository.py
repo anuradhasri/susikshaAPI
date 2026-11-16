@@ -3,7 +3,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.models import PasswordResetToken, Patient, Role, Therapist, User, UserRegionMapping, UserRole
+from app.models.models import PasswordResetToken, Patient, Region, Role, Therapist, User, UserRegionMapping, UserRole
 from app.schemas.schemas import UserCreate, UserUpdate
 
 
@@ -56,6 +56,10 @@ class UserRepository:
 
     @staticmethod
     def region_ids(db: Session, user_id: int) -> list[int]:
+        # Admin access follows the region catalogue, including centres added later.
+        if "admin" in UserRepository.role_names(db, user_id):
+            return [region_id for (region_id,) in db.query(Region.id)
+                    .filter(Region.deleted_at.is_(None)).order_by(Region.id).all()]
         rows = db.query(UserRegionMapping.regionid).filter(UserRegionMapping.userid == user_id).all()
         region_ids = [region_id for (region_id,) in rows]
         if region_ids:

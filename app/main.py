@@ -6,12 +6,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.core.config import get_settings
-from app.core.database import init_db
+from app.core.database import AppSession, Base, init_db
 from app.middleware.middleware import RegionAccessMiddleware, LoggingMiddleware, QueryFilteringMiddleware
 from app.api.routes import routers
 from app.utils.logger import setup_logging
 from app.services.goal_review_reminder import send_scheduled_goal_review_reminders
 from app.services.payment_alerts import run_payment_alerts
+from app.services.realtime import hub
+from app.services.realtime_events import install_realtime_events
+
+install_realtime_events(hub, Base.metadata, AppSession)
 
 settings = get_settings()
 logger = setup_logging(__name__)
@@ -55,6 +59,7 @@ async def lifespan(app: FastAPI):
             settings.GOAL_REVIEW_REMINDER_INTERVAL_MINUTES,
         )
 
+    await hub.start()
     payment_alert_task = asyncio.create_task(payment_alert_loop())
     yield
     payment_alert_task.cancel()
@@ -67,6 +72,8 @@ async def lifespan(app: FastAPI):
         reminder_task.cancel()
         with suppress(asyncio.CancelledError):
             await reminder_task
+
+    await hub.stop()
 
     # Shutdown
     logger.info(f"Shutting down {settings.APP_NAME}")

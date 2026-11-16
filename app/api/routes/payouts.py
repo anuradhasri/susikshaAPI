@@ -1,6 +1,7 @@
 """Effective-dated therapist payout calculation and therapy-sheet tracking APIs."""
 from app.services.child_pricing import pricing_starts_at, booking_completion_time
 from calendar import monthrange
+import math
 from datetime import date, datetime, time, timedelta
 import json
 
@@ -68,7 +69,7 @@ def inclusive_gst(amount, rate):
 
 def tax_settings(db):
     row = db.query(PayrollTaxSetting).filter(PayrollTaxSetting.deleted_at.is_(None)).order_by(PayrollTaxSetting.id).first()
-    return row or PayrollTaxSetting(income_threshold=25000, regular_month_amount=200, march_amount=300)
+    return row or PayrollTaxSetting(income_threshold=25000, regular_month_amount=200, march_amount=300, tds_threshold=100000, tds_rate=10)
 
 
 def professional_tax_for(db, gross_income, payroll_month):
@@ -76,6 +77,58 @@ def professional_tax_for(db, gross_income, payroll_month):
     if money(gross_income) <= money(settings.income_threshold):
         return 0.0
     return money(settings.march_amount if payroll_month.month == 3 else settings.regular_month_amount)
+
+
+
+def monthly_tds_for(db, gross_income):
+    """Apply configured TDS to full pre-PT monthly income, strictly above threshold."""
+    settings = tax_settings(db)
+    gross = money(gross_income)
+    if gross <= money(settings.tds_threshold):
+        return 0.0
+    return money(gross * float(settings.tds_rate) / 100)
+
+
+
+def validated_adjustment_amount(value):
+    try:
+        amount = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise HTTPException(400, "Enter a valid adjustment amount")
+    if not math.isfinite(amount):
+        raise HTTPException(400, "Enter a finite adjustment amount")
+    if amount == 0:
+        raise HTTPException(400, "Adjustment amount cannot be zero")
+    if abs(amount) > 9999999.99:
+        raise HTTPException(400, "Adjustment cannot exceed 99,99,999.99")
+    if abs(amount * 100 - round(amount * 100)) > 0.000001:
+        raise HTTPException(400, "Adjustment must have at most two decimal places")
+    return money(amount)
+
+
+def apply_payable_adjustment(monthly, adjustment):
+    """Apply manual adjustments to the saved after-tax amount, without retaxing."""
+    payable = money(monthly.gross_amount - monthly.tds_amount + adjustment)
+    if payable < 0:
+        raise HTTPException(400, "Deduction cannot reduce payable below zero")
+    monthly.adjustment_amount = money(adjustment)
+    monthly.payable_amount = payable
+
+
+def apply_monthly_salary_breakdown(db, monthly, base_salary, adjustment):
+    """Deduct taxes from earnings, then apply adjustments only to payable."""
+    actual = money(base_salary)
+    if actual < 0:
+        raise HTTPException(400, "Actual salary cannot be below zero")
+    pt = professional_tax_for(db, actual, monthly.payout_month)
+    tds = monthly_tds_for(db, actual)
+    if money(actual - tds - pt + adjustment) < 0:
+        raise HTTPException(400, "Deduction cannot reduce payable below zero")
+    monthly.actual_salary = actual
+    monthly.professional_tax_amount = pt
+    monthly.tds_amount = tds
+    monthly.gross_amount = money(actual - pt)
+    apply_payable_adjustment(monthly, adjustment)
 
 
 def config_shape(row):
@@ -256,6 +309,17 @@ def notifications(db: Session = Depends(get_db), user: User = Depends(get_curren
     return {"data": {"items": items[:50], "unreadCount": sum(not item["isRead"] for item in items)}}
 
 
+@router.delete("/notifications/{notification_id}")
+def dismiss_notification(notification_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    row = db.query(Notification).filter(Notification.id == notification_id, Notification.user_id == user.id, Notification.deleted_at.is_(None)).first()
+    if not row:
+        raise HTTPException(404, "Notification was not found")
+    row.deleted_at = datetime.now()
+    row.is_read = True
+    db.commit()
+    return {"data": {"success": True}}
+
+
 @router.post("/notifications/{notification_id}/read")
 def mark_notification_read(notification_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     try:
@@ -402,15 +466,15 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
     pt_settings = tax_settings(db)
     return {"data": {
         "month": month_start.strftime("%Y-%m"),
-        "programs": [{"id": p.id, "name": p.program_name, "regionId": p.region_id} for p in program_rows],
+        "programs": [{"id": p.id, "name": p.program_name, "regionId": p.region_id, "createdAt": p.created_at.isoformat() if p.created_at else None} for p in program_rows],
         "therapists": [{"id": t.id, "name": t.name, "regionId": t.region_id} for t in db.query(Therapist).filter(Therapist.is_active.is_(True), Therapist.region_id == region_id if region_id else True).order_by(Therapist.name).all()],
         "configs": [config_shape(c) for c in configs],
         "payrollConfigs": [{"id": c.id, "therapistId": c.therapist_id, "baseSalary": money(c.base_salary), "flatCommission": money(c.flat_commission), "professionalTax": money(c.professional_tax), "fixedSalaryOnly": bool(c.fixed_salary_only), "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in payroll_configs],
-        "taxSettings": {"incomeThreshold": money(pt_settings.income_threshold), "regularMonthAmount": money(pt_settings.regular_month_amount), "marchAmount": money(pt_settings.march_amount)},
+        "taxSettings": {"incomeThreshold": money(pt_settings.income_threshold), "regularMonthAmount": money(pt_settings.regular_month_amount), "marchAmount": money(pt_settings.march_amount), "tdsThreshold": money(pt_settings.tds_threshold), "tdsRate": money(pt_settings.tds_rate)},
         "sheetConfigs": [{"id": c.id, "programId": c.program_id, "programName": c.program.program_name if c.program else None, "sheetType": c.sheet_type, "isRequired": c.is_required, "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in sheet_configs],
         "sheets": [{"id": s.id, "sessionId": s.patient_slot_booking_id, "patientId": s.patient_id, "therapistId": s.therapist_id, "sessionDate": session_dates.get(s.id), "patientName": patient_names.get(s.patient_id, f"Child {s.patient_id}"), "therapistName": names.get(s.therapist_id, f"Therapist {s.therapist_id}"), "programName": program_names.get(s.program_id, "—"), "sheetType": s.sheet_type, "status": s.status, "assignedAt": s.assigned_at.isoformat(), "dueAt": s.due_at.isoformat() if s.due_at else None, "notifiedAt": s.notified_at.isoformat() if s.notified_at else None} for s in sheets],
         "sessionPayouts": session_payout_rows,
-        "monthlyPayouts": [{"id": p.id, "therapistName": names.get(p.therapist_id, f"Therapist {p.therapist_id}"), "grossAmount": money(p.gross_amount), "adjustmentAmount": money(p.adjustment_amount), "payableAmount": money(p.payable_amount), "status": p.status, "approvedAt": p.approved_at.isoformat() if p.approved_at else None, "paidAt": p.paid_at.isoformat() if p.paid_at else None, "paymentReference": p.payment_reference} for p in monthly],
+        "monthlyPayouts": [{"id": p.id, "therapistName": names.get(p.therapist_id, f"Therapist {p.therapist_id}"), "actualSalary": money(p.actual_salary) if p.actual_salary is not None else None, "professionalTax": money(p.professional_tax_amount) if p.professional_tax_amount is not None else None, "afterTds": money(p.actual_salary - p.tds_amount) if p.actual_salary is not None else None, "afterPt": money(p.gross_amount - p.tds_amount), "grossAmount": money(p.gross_amount), "tdsAmount": money(p.tds_amount), "adjustmentAmount": money(p.adjustment_amount), "payableAmount": money(p.payable_amount), "status": p.status, "approvedAt": p.approved_at.isoformat() if p.approved_at else None, "paidAt": p.paid_at.isoformat() if p.paid_at else None, "paymentReference": p.payment_reference} for p in monthly],
         "summary": {"pendingSheets": sum(s.status == "pending" for s in sheets), "eligibleEarnings": money(sum(p.therapist_amount for p in payouts if p.eligibility_status == "eligible") + sum(e.therapist_amount for e in payment_earnings if e.status == "eligible")), "pendingCompletion": sum(p.eligibility_status == "pending_completion" for p in payouts), "payable": money(sum(p.payable_amount for p in monthly))},
     }}
 
@@ -521,6 +585,25 @@ def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depen
     if method in {"fixed", "completion"} and fixed is None and percentage is None:
         raise HTTPException(400, "Fixed amount or percentage is required")
     existing = db.query(ProgramPaymentConfig).filter(ProgramPaymentConfig.therapist_id == therapist_id, ProgramPaymentConfig.program_id == program_id, ProgramPaymentConfig.effective_from == effective, ProgramPaymentConfig.deleted_at.is_(None)).first()
+    if existing:
+        if is_structured_program:
+            payout_is_set = float(existing.fixed_amount or 0) > 0 or float(existing.therapist_pool_percentage or 0) > 0
+        elif existing.payment_method == "package":
+            payout_is_set = float(existing.therapist_pool_percentage or 0) > 0
+        elif existing.payment_method == "fixed":
+            payout_is_set = float(existing.fixed_amount or 0) > 0
+        elif existing.payment_method == "completion":
+            payout_is_set = float(existing.fixed_amount or 0) > 0 or float(existing.percentage or 0) > 0
+        else:
+            payout_is_set = float(existing.percentage or 0) > 0
+        if payout_is_set:
+            raise HTTPException(409, "This program payout is already set. Create a new rule version to change it.")
+    version_rows = db.query(ProgramPaymentConfig).filter(ProgramPaymentConfig.therapist_id == therapist_id, ProgramPaymentConfig.effective_from == effective, ProgramPaymentConfig.deleted_at.is_(None)).all()
+    version_end_dates = [item.effective_to for item in version_rows if item.effective_to]
+    if version_rows and (existing or effective < date.today()) and (not program.created_at or program.created_at.date() <= effective):
+        raise HTTPException(409, "Only programs created after this rule date with an unset payout can be configured. Create a new rule version for older programs.")
+    if (existing and existing.effective_to and existing.effective_to < date.today()) or (version_end_dates and max(version_end_dates) < date.today()):
+        raise HTTPException(409, "Expired payment rules are read-only. Create a new rule version.")
     previous_snapshot = snapshot(existing) if existing else None
     if existing:
         row = existing
@@ -569,6 +652,8 @@ def save_payroll_config(payload: dict, db: Session = Depends(get_db), user: User
     if previous and (previous.effective_to is None or previous.effective_to >= effective):
         previous.effective_to = effective - timedelta(days=1)
     row = db.query(TherapistPayrollConfig).filter_by(therapist_id=therapist_id, effective_from=effective).first()
+    if row and row.effective_to and row.effective_to < date.today():
+        raise HTTPException(409, "Expired payment rules are read-only. Create a new rule version.")
     if not row:
         row = TherapistPayrollConfig(therapist_id=therapist_id, effective_from=effective, created_by=user.id)
         db.add(row)
@@ -582,14 +667,23 @@ def save_tax_settings(payload: dict, db: Session = Depends(get_db), user: User =
     values = [money(payload.get(key)) for key in ("incomeThreshold", "regularMonthAmount", "marchAmount")]
     if any(value < 0 for value in values):
         raise HTTPException(400, "Professional tax values cannot be negative")
+    try:
+        tds_threshold = float(payload.get("tdsThreshold", 100000))
+        tds_rate = float(payload.get("tdsRate", 10))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Enter valid TDS settings")
+    if not math.isfinite(tds_threshold) or not math.isfinite(tds_rate) or tds_threshold < 0 or not 0 <= tds_rate <= 100:
+        raise HTTPException(400, "TDS threshold must be non-negative and rate must be between 0 and 100")
     row = db.query(PayrollTaxSetting).filter(PayrollTaxSetting.deleted_at.is_(None)).order_by(PayrollTaxSetting.id).first()
     if not row:
         row = PayrollTaxSetting()
         db.add(row)
     row.income_threshold, row.regular_month_amount, row.march_amount = values
+    row.tds_threshold = money(tds_threshold)
+    row.tds_rate = tds_rate
     row.updated_by = user.id
     db.commit(); db.refresh(row)
-    return {"data": {"incomeThreshold": money(row.income_threshold), "regularMonthAmount": money(row.regular_month_amount), "marchAmount": money(row.march_amount)}}
+    return {"data": {"incomeThreshold": money(row.income_threshold), "regularMonthAmount": money(row.regular_month_amount), "marchAmount": money(row.march_amount), "tdsThreshold": money(row.tds_threshold), "tdsRate": money(row.tds_rate)}}
 
 
 @router.get("/billing-reports")
@@ -850,8 +944,12 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
         earnings = money(non_ledger_session_earnings + payment_earnings_by_therapist.get(tid, 0)); config = applicable_payroll_config(db, tid, end)
         if config and config.fixed_salary_only:
             earnings = 0.0
-        base = money(config.base_salary if config and config.fixed_salary_only else 0); flat = 0.0; gross = money(base + earnings); pt = professional_tax_for(db, gross, start)
-        payroll.append({"therapistId": tid, "therapist": therapists[tid].name, "sessionEarnings": earnings, "baseSalary": base, "flatCommission": flat, "professionalTax": pt, "fixedSalaryOnly": bool(config.fixed_salary_only) if config else False, "gross": gross, "netPay": money(gross - pt), "effectiveFrom": config.effective_from.isoformat() if config else None})
+        base = money(config.base_salary if config and config.fixed_salary_only else 0); flat = 0.0
+        monthly_record = db.query(TherapistMonthlyPayout).filter_by(therapist_id=tid, payout_month=start).first()
+        adjustment = money(monthly_record.adjustment_amount) if monthly_record else 0.0
+        gross = money(base + earnings)
+        pt = professional_tax_for(db, gross, start); tds = monthly_tds_for(db, gross)
+        payroll.append({"therapistId": tid, "therapist": therapists[tid].name, "sessionEarnings": earnings, "baseSalary": base, "flatCommission": flat, "professionalTax": pt, "fixedSalaryOnly": bool(config.fixed_salary_only) if config else False, "gross": gross, "adjustments": adjustment, "afterTds": money(gross - tds), "afterPt": money(gross - tds - pt), "tds": tds, "netPay": money(gross - pt - tds + adjustment), "effectiveFrom": config.effective_from.isoformat() if config else None})
     totals = {field: money(sum(item[field] for item in detailed)) for field in ("amountDue", "amountReceived", "balance", "gst", "netAmount", "therapistPayout")}
     totals["therapistPayout"] = money(sum(item["therapistPayout"] for item in detailed if (item["bookingId"], item["therapistId"]) not in payment_booking_therapists and "parent" not in str(item["program"] or "").lower()) + sum(payment_earnings_by_therapist.values()))
     return {"data": {"month": month, "detailed": detailed, "children": summarize("child"), "therapists": therapist_summary, "payroll": payroll, "totals": totals}}
@@ -1095,8 +1193,7 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
                 if payroll_config and payroll_config.fixed_salary_only:
                     session_earnings = 0.0
                 gross_before_tax = money(session_earnings + (payroll_config.base_salary if payroll_config and payroll_config.fixed_salary_only else 0))
-                existing_monthly.gross_amount = money(gross_before_tax - professional_tax_for(db, gross_before_tax, existing_monthly.payout_month))
-                existing_monthly.payable_amount = money(existing_monthly.gross_amount + existing_monthly.adjustment_amount)
+                apply_monthly_salary_breakdown(db, existing_monthly, gross_before_tax, float(existing_monthly.adjustment_amount or 0))
             reconciled += 1
         else:
             db.add(TherapistSessionPayout(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id, **payout_values))
@@ -1169,9 +1266,7 @@ def generate_month(payload: dict, db: Session = Depends(get_db), user: User = De
         gross_before_tax = money(session_earnings + (payroll_config.base_salary if payroll_config and payroll_config.fixed_salary_only else 0))
         gross = money(gross_before_tax - professional_tax_for(db, gross_before_tax, start))
         adjustment = money(sum(row.amount for row in db.query(TherapistPayoutAdjustment).filter_by(monthly_payout_id=monthly.id).all()))
-        monthly.gross_amount = gross
-        monthly.adjustment_amount = adjustment
-        monthly.payable_amount = money(gross + adjustment)
+        apply_monthly_salary_breakdown(db, monthly, gross_before_tax, adjustment)
         for earning in session_rows + payment_rows:
             if earning.monthly_payout_id is None:
                 earning.monthly_payout_id = monthly.id
@@ -1190,7 +1285,7 @@ def update_status(payout_id: int, payload: dict, db: Session = Depends(get_db), 
             row.approved_by = user.id; row.approved_at = datetime.utcnow()
         row.paid_at = datetime.utcnow(); row.payment_reference = payload.get("paymentReference")
     db.commit()
-    return {"data": {"id": row.id, "status": row.status}}
+    return {"data": {"id": row.id, "status": row.status, "approvedAt": row.approved_at.isoformat() if row.approved_at else None, "paidAt": row.paid_at.isoformat() if row.paid_at else None, "paymentReference": row.payment_reference}}
 
 
 @router.post("/monthly/{payout_id}/adjustments")
@@ -1200,22 +1295,15 @@ def add_adjustment(payout_id: int, payload: dict, db: Session = Depends(get_db),
         raise HTTPException(404, "Monthly payout not found")
     if row.status == "paid":
         raise HTTPException(409, "Paid payouts cannot be adjusted")
-    try:
-        amount = money(payload.get("amount"))
-    except (TypeError, ValueError):
-        raise HTTPException(400, "Enter a valid adjustment amount")
+    amount = validated_adjustment_amount(payload.get("amount"))
     reason = str(payload.get("reason") or "").strip()
-    if amount == 0:
-        raise HTTPException(400, "Adjustment amount cannot be zero")
     if not reason:
         raise HTTPException(400, "Adjustment reason is required")
-    new_adjustment_total = money(row.adjustment_amount + amount)
-    new_payable = money(row.gross_amount + new_adjustment_total)
-    if new_payable < 0:
-        raise HTTPException(400, "Adjustment cannot reduce the payable amount below zero")
+    if row.actual_salary is None:
+        raise HTTPException(409, "Recalculate this payout before adding an adjustment")
+    new_adjustment_total = money(float(row.adjustment_amount or 0) + amount)
+    apply_payable_adjustment(row, new_adjustment_total)
     adjustment = TherapistPayoutAdjustment(monthly_payout_id=row.id, amount=amount, reason=reason, approved_by=user.id, approved_at=datetime.utcnow())
     db.add(adjustment)
-    row.adjustment_amount = new_adjustment_total
-    row.payable_amount = new_payable
     db.commit(); db.refresh(adjustment)
     return {"data": {"id": adjustment.id, "monthlyPayoutId": row.id, "amount": amount, "adjustmentAmount": row.adjustment_amount, "payableAmount": row.payable_amount}}
