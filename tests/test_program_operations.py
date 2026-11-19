@@ -67,13 +67,15 @@ class ProgramOperationsTests(unittest.TestCase):
         self.db.add(Program(id=7, program_name='Academic Intervention', region_id=1))
         self.db.get(TherapyMaster, 1).name = 'Physiotherapy'
         self.db.commit()
-        self.booking(1, 7)
+        self.booking(1, 7, duration_minutes=30)
         self.booking(2, 1)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         rows = response.json()['data']['rows']
         self.assertEqual({row['program'] for row in rows}, {'Academic Intervention', 'General'})
         self.assertTrue(all(row['therapy'] == 'Physiotherapy' for row in rows))
+        academic = next(row for row in rows if row['program'] == 'Academic Intervention')
+        self.assertEqual((academic['slot_start'], academic['slot_end']), ('09:00', '09:30'))
 
     def test_all_categories_deduplication_and_assessment_dates(self):
         self.db.add_all([CrtProgramBooking(id=1, patient_id=1, program_id=2, slot_date=date(2026, 10, 10)),
@@ -99,14 +101,38 @@ class ProgramOperationsTests(unittest.TestCase):
         data = response.json()['data']
         self.assertEqual(len(data['rows']), 7)  # six child sessions plus one assessment record
         self.assertEqual({row['patient_id'] for row in data['rows']}, {1})
-        self.assertEqual({row['category'] for row in data['rows']}, {'General', 'Structured', 'Parent', 'Schooling', 'Vocational', 'Assessment'})
-        structured = next(row for row in data['rows'] if row['category'] == 'Structured')
+        self.assertEqual({row['category'] for row in data['rows']}, {'General', 'Structured Programming', 'Parent Training', 'Schooling', 'Vocational', 'Assessment'})
+        structured = next(row for row in data['rows'] if row['category'] == 'Structured Programming')
         self.assertEqual(structured['therapist_ids'], [1, 2])
         self.assertEqual(structured['pending_sheets'], 1)
+        self.assertEqual(structured['pending_sheet_types'], {'observation': 1})
         assessment = next(row for row in data['rows'] if row['activity'] == 'Assessment record')
         self.assertEqual(assessment['date'], '2026-10-12')
         self.assertEqual(sum(item['activities'] for item in data['summary']), 7)
         self.assertEqual(sum(item['cancelled'] for item in data['summary']), 1)
+
+    def test_past_booked_session_is_counted_as_booked(self):
+        self.booking(1, 1, status=1)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()['data']
+        self.assertEqual(data['rows'][0]['status'], 'Booked')
+        summary = next(item for item in data['summary'] if item['category'] == 'General')
+        self.assertEqual((summary['booked'], summary['pending']), (1, 0))
+
+    def test_cancelled_therapist_allocation_does_not_make_booked_session_in_progress(self):
+        self.db.add(Program(id=7, program_name='Academic Intervention', region_id=1))
+        self.db.add(GroupProgramBooking(id=1, program_id=7, region_id=1, slot_id=1,
+                                        slot_date=date(2026, 10, 10)))
+        self.db.commit()
+        self.booking(1, 7, status=1, group_program_booking_id=1)
+        self.booking(2, 7, status=2, therapist=2, group_program_booking_id=1)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()['data']
+        self.assertEqual([row['status'] for row in data['rows']], ['Booked'])
+        summary = next(item for item in data['summary'] if item['category'] == 'Academic Intervention')
+        self.assertEqual((summary['booked'], summary['pending']), (1, 0))
 
     def test_permissions_period_and_own_therapist_scope(self):
         self.assertEqual(self.client.get(self.url + '&region_id=2').status_code, 403)

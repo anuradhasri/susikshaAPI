@@ -1,11 +1,22 @@
 """Read-only operational reporting helpers; no billing or payout synchronization."""
 from collections import defaultdict
+from datetime import datetime, timedelta
 
-CATEGORIES = ['General', 'Structured', 'Parent', 'Schooling', 'Vocational', 'Assessment', 'Other']
+CATEGORIES = ['General', 'Structured', 'Parent', 'Schooling', 'Academic Intervention', 'Vocational', 'Assessment', 'Other']
+
+
+def program_display_name(name):
+    name = (name or '').strip() or 'General'
+    normalized = name.lower().replace('-', ' ').replace('_', ' ')
+    if normalized in ('crt', 'crt program', 'crt programming', 'structured', 'structured program', 'structured programming'):
+        return 'Structured Programming'
+    return name
 
 
 def category_for(name):
     name = (name or '').lower()
+    if 'academic' in name:
+        return 'Academic Intervention'
     if 'assessment' in name:
         return 'Assessment'
     if 'crt' in name or 'structured' in name:
@@ -22,19 +33,23 @@ def category_for(name):
 
 
 def booking_status(codes, day, today):
-    codes = [str(code or '').upper() for code in codes]
-    if all(code == 'COMPLETED' for code in codes):
-        return 'Completed'
-    if all('CANCEL' in code for code in codes):
+    codes = [str(code or '').strip().upper() for code in codes]
+    active_codes = [code for code in codes if 'CANCEL' not in code]
+    if codes and not active_codes:
         return 'Cancelled'
-    if any(code == 'COMPLETED' or 'CANCEL' in code for code in codes):
+    if active_codes and all(code == 'COMPLETED' for code in active_codes):
+        return 'Completed'
+    if any(code in {'COMPLETED', 'IN_PROGRESS'} for code in active_codes):
         return 'In progress'
+    if 'BOOKED' in active_codes:
+        return 'Booked'
     return 'Pending' if day < today else 'Booked'
 
 
-def summarize_operations(rows):
+
+def summarize_operations(rows, programs=None):
     groups = []
-    for category in CATEGORIES:
+    for category in dict.fromkeys([*(programs or []), *(row['category'] for row in rows)]):
         items = [row for row in rows if row['category'] == category]
         groups.append({
             'category': category, 'activities': len(items),
@@ -69,15 +84,30 @@ def combine_booking_rows(bookings, pending, today):
             row.group_program_booking.program if row.group_program_booking else None)
         if not program and row.patient_package and row.patient_package.package:
             program = row.patient_package.package.program
-        name = program.program_name if program else 'General'
+        name = program_display_name(program.program_name if program else 'General')
         therapy_names = sorted({item.therapist_slot_mapping.therapy.name.strip() for item in items
                                 if item.therapist_slot_mapping.therapy and item.therapist_slot_mapping.therapy.name})
         codes = [item.patient_slot_booking_status_master.code if item.patient_slot_booking_status_master else item.status for item in items]
         therapists = {item.therapist_slot_mapping.therapist_id: item.therapist_slot_mapping.therapist.name for item in items}
+        sheet_counts = defaultdict(int)
+        if pending is not None:
+            for item in items:
+                for sheet_type, count in pending.get(item.id, {}).items():
+                    sheet_counts[sheet_type] += count
+        windows = []
+        for item in items:
+            slot = item.therapist_slot_mapping.slot
+            if slot:
+                start = datetime.combine(mapping.slot_date, slot.start_time)
+                duration = item.duration_minutes or (program.duration_minutes if program and key[0] != 'structured' else None)
+                end = start + timedelta(minutes=duration) if duration else datetime.combine(mapping.slot_date, slot.end_time)
+                windows.append((start, end))
         patient = row.patient
         result.append({
             'key': ':'.join(map(str, key)), 'date': mapping.slot_date.isoformat(),
-            'category': category_for(name), 'program': name,
+            'slot_start': min(start for start, _ in windows).strftime('%H:%M') if windows else None,
+            'slot_end': max(end for _, end in windows).strftime('%H:%M') if windows else None,
+            'category': name, 'program': name,
             'therapy': ', '.join(therapy_names) or 'Therapy not recorded', 'activity': 'Session',
             'patient_id': row.patient_id, 'child': f'{patient.first_name} {patient.last_name}'.strip() if patient else 'Unassigned',
             'therapist_ids': sorted(therapists), 'therapists': ', '.join(sorted(therapists.values())),
@@ -85,6 +115,7 @@ def combine_booking_rows(bookings, pending, today):
             'region_id': patient.region_id if patient else mapping.therapist.region_id,
             'status': booking_status(codes, mapping.slot_date, today),
             'recorded_status': ', '.join(sorted(set(codes))),
-            'pending_sheets': sum(pending.get(item.id, 0) for item in items) if pending is not None else None,
+            'pending_sheets': sum(sheet_counts.values()) if pending is not None else None,
+            'pending_sheet_types': dict(sorted(sheet_counts.items())),
         })
     return result

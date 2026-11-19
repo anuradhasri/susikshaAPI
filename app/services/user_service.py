@@ -5,7 +5,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.models.models import User, UserRole, Role, UserRegionMapping
+from app.models.models import User, UserRole, Role, UserRegionMapping, Therapist
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token
 from app.schemas.schemas import UserCreate, UserUpdate
 from app.repositories.user_repository import UserRepository
@@ -14,6 +14,20 @@ from app.utils.query_utils import soft_delete, filter_by_region
 
 class UserService:
     """Service for user operations"""
+
+    @staticmethod
+    def assign_missing_therapist_role(db: Session, user_id: int) -> bool:
+        """Fill a missing initial role without overriding assigned or revoked roles."""
+        if db.query(UserRole.id).filter(UserRole.user_id == user_id).first():
+            return False
+        role = db.query(Role).filter(Role.name == "therapist", Role.deleted_at.is_(None)).first()
+        if not role:
+            role = Role(name="therapist", description="Therapist role")
+            db.add(role)
+            db.flush()
+        db.add(UserRole(user_id=user_id, role_id=role.id))
+        db.flush()
+        return True
     
     @staticmethod
     def create_user(db: Session, user_create: UserCreate) -> User:
@@ -48,6 +62,13 @@ class UserService:
         
         if not verify_password(password, user.hashed_password):
             return None
+
+        therapist = db.query(Therapist.id).filter(
+            Therapist.user_id == user.id, Therapist.is_active.is_(True)
+        ).first()
+        if therapist and UserService.assign_missing_therapist_role(db, user.id):
+            db.commit()
+            db.expire(user, ["user_roles"])
         
         return user
     

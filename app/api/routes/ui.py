@@ -2098,6 +2098,20 @@ def _ensure_package_master_schema(db: Session) -> None:
               AND p.region_id = 1
               AND NOT EXISTS (
                 SELECT 1
+                FROM packages configured
+                WHERE (p.per_session_amount = 0 OR seed.program_name <> 'General')
+                  AND configured.region_id = p.region_id
+                  AND configured.is_active = 1
+                  AND configured.deleted_at IS NULL
+                  AND (
+                      configured.program_id = p.id OR EXISTS (
+                          SELECT 1 FROM package_program_assignments assignment
+                          WHERE assignment.package_id = configured.id AND assignment.program_id = p.id
+                      )
+                  )
+              )
+              AND NOT EXISTS (
+                SELECT 1
                 FROM packages existing
                 WHERE existing.program_id = p.id
                   AND existing.name = seed.package_name
@@ -6767,6 +6781,8 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             created_by=user_id,
             updated_by=user_id,
         )
+        if row.user_id:
+            UserService.assign_missing_therapist_role(db, row.user_id)
     elif table == "therapist_therapy_mapping":
         therapist_id = item.get("therapist_id")
         therapy_id = item.get("therapy_id")
@@ -6881,7 +6897,7 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
         row = User(
             username=username,
             email=email_value,
-            hashed_password=hash_password(item.get("password") or "Temp@123456"),
+            hashed_password=hash_password(item.get("password") or "Test@123"),
             first_name=first,
             last_name=last,
             phone=item.get("phone"),

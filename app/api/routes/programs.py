@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.ui import _require_user, _user_region_ids, _user_roles
 from app.core.database import get_db
-from app.models.models import Package, PackageProgramAssignment, Program, ProgramSegment, Region
+from app.models.models import Package, PackageProgramAssignment, PatientPackage, Program, ProgramSegment, Region
 from app.services.appointment_service import AppointmentService
 
 router = APIRouter(prefix='/api/v1/ui/program-catalog', tags=['program catalogue'])
@@ -30,13 +30,19 @@ class PackageInput(BaseModel):
     duration_days: int | None = Field(default=None, ge=1, le=3650)
 
 
+class NewProgramPackage(PackageInput):
+    name: str = Field(min_length=1, max_length=100)
+
+
 class ProgramInput(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     duration_minutes: int = Field(ge=1, le=720)
     session_type: Literal['individual', 'group']
-    capacity: int = Field(default=1, ge=1, le=100)
+    capacity: int = Field(default=1, ge=0, le=100)
     session_amount: Price | None = None
     packages: list[PackageInput] | None = Field(default=None, max_length=30)
+    package_ids: list[int] = Field(default_factory=list, max_length=100)
+    new_packages: list[NewProgramPackage] = Field(default_factory=list, max_length=30)
 
 
 def centre_access(db, request, region_id):
@@ -54,11 +60,19 @@ def active_packages(db, region_id):
                                     Package.deleted_at.is_(None))
 
 
+def is_package_priced(program):
+    return not program.per_session_amount or AppointmentService._program_type(program.program_name) in {'crt', 'vocational'}
+
+
+def validate_used_package_terms(row, sessions, amount):
+    if (row.total_sessions, Decimal(str(row.price))) != (sessions, amount) and row.patient_packages:
+        raise HTTPException(422, 'Price and session count are locked after a child has been assigned this package.')
+
+
 def shape(program, packages):
-    package_only = AppointmentService._program_type(program.program_name) in {'crt', 'vocational'}
     return {'id': program.id, 'name': program.program_name, 'duration_minutes': program.duration_minutes,
             'session_type': 'group' if program.session_type == 'group' else 'individual',
-            'capacity': program.capacity, 'session_amount': None if package_only else program.per_session_amount or None,
+            'capacity': program.capacity, 'session_amount': None if is_package_priced(program) else program.per_session_amount,
             'name_locked': program.program_name.lower() in BUILT_IN_NAMES,
             'packages': [{'id': row.id, 'sessions': row.total_sessions, 'amount': row.price,
                           'duration_days': row.duration_days} for row in packages]}
@@ -69,7 +83,8 @@ def list_programs(region_id: int, request: Request, db: Session = Depends(get_db
     centre_access(db, request, region_id)
     packages_by_program = {}
     for row in active_packages(db, region_id).order_by(Package.total_sessions, Package.id).all():
-        packages_by_program.setdefault(row.program_id, []).append(row)
+        for program_id in assigned_ids(row):
+            packages_by_program.setdefault(program_id, []).append(row)
     programs = db.query(Program).filter(Program.region_id == region_id, Program.is_active.is_(True),
                                         Program.deleted_at.is_(None)).order_by(Program.program_name).all()
     return {'data': [shape(program, packages_by_program.get(program.id, [])) for program in programs]}
@@ -86,7 +101,18 @@ def save_program(region_id: int, payload: ProgramInput, request: Request, progra
             raise HTTPException(422, 'Structured and Vocational programs require package pricing.')
     if not name:
         raise HTTPException(422, 'Enter a program name and configure session or package pricing.')
-    if payload.session_type == 'group' and payload.capacity < 2:
+    option_count = len(payload.package_ids) + len(payload.new_packages) + len(payload.packages or [])
+    if payload.session_amount is None and option_count != 1:
+        raise HTTPException(422, 'Choose one existing package or create one new package.')
+    if payload.session_amount is not None and option_count:
+        raise HTTPException(422, 'Choose either per-session pricing or package pricing.')
+    selected_packages = (
+        active_packages(db, region_id).filter(Package.id.in_(payload.package_ids)).with_for_update().all()
+        if payload.package_ids else []
+    )
+    if len(selected_packages) != len(set(payload.package_ids)):
+        raise HTTPException(422, 'Choose active packages from this centre.')
+    if payload.session_type == 'group' and payload.capacity == 1:
         raise HTTPException(422, 'A group session needs space for at least two children.')
     program = None
     if program_id:
@@ -105,16 +131,25 @@ def save_program(region_id: int, payload: ProgramInput, request: Request, progra
     segment_count = len(segments) or (3 if is_structured else 0)
     if payload.duration_minutes < segment_count:
         raise HTTPException(422, 'Allow at least one minute per therapist segment.')
-    existing = {row.id: row for row in active_packages(db, region_id).filter_by(program_id=program_id).all()} if program_id else {}
+    existing = {row.id: row for row in AppointmentService._program_package_options(db, program).all()} if program else {}
     selected = [row.id for row in (payload.packages or []) if row.id is not None]
     if len(set(selected)) != len(selected) or not set(selected) <= existing.keys():
         raise HTTPException(422, 'Reload the program before editing its packages.')
+    retained_ids = set(payload.package_ids) | set(selected)
+    if program and (
+        payload.session_amount is None or is_package_priced(program)
+    ) and any(row.patient_packages for pid, row in existing.items() if pid not in retained_ids):
+        raise HTTPException(422, 'This package is in use and cannot be removed from the program.')
+    reused_packages = selected_packages + [existing[pid] for pid in selected]
+    if any(set(assigned_ids(row)) - {program_id} for row in reused_packages):
+        raise HTTPException(422, 'Choose an unassigned package or a package assigned only to this program.')
+
     if program is None:
         program = Program(region_id=region_id, is_active=True)
         db.add(program)
     program.program_name = name
     program.duration_minutes = payload.duration_minutes
-    program.session_type = payload.session_type
+    program.session_type = 'structured' if is_structured else payload.session_type
     program.capacity = payload.capacity if payload.session_type == 'group' else 1
     program.per_session_amount = float(payload.session_amount or 0)
     if segments and sum(segment.duration_minutes for segment in segments) != payload.duration_minutes:
@@ -130,27 +165,42 @@ def save_program(region_id: int, payload: ProgramInput, request: Request, progra
                 db.add(ProgramSegment(program_id=program.id, sequence_no=index + 1,
                                       label=f'Therapist {index + 1}', duration_minutes=minutes + (index < extra)))
         for option in (payload.packages or []):
-            previous = existing.pop(option.id, None)
+            previous = existing.get(option.id)
+            if previous:
+                validate_used_package_terms(previous, option.sessions, option.amount)
+                if previous.patient_packages:
+                    previous.duration_days = option.duration_days
+                    packages.append(previous)
+                    continue
             if previous and (previous.total_sessions, Decimal(str(previous.price)), previous.duration_days) == (
                 option.sessions, option.amount, option.duration_days
             ):
                 packages.append(previous)
                 continue
-            if previous:
-                previous.is_active = False
             # Keep purchased packages linked to the terms they were sold under.
             row = Package(region_id=region_id, program_id=program.id, name=f'{name[:70]} {option.sessions} Session Package',
                           total_sessions=option.sessions, price=float(option.amount),
                           duration_days=option.duration_days, is_active=True)
             db.add(row)
-            if previous:
-                row.program_assignments = [PackageProgramAssignment(program_id=a.program_id) for a in previous.program_assignments]
             packages.append(row)
-        if payload.packages is not None:
-            for row in existing.values():
-                row.is_active = False
+        for row in selected_packages:
+            row.program_id = program.id
+            row.program_assignments = []
+            packages.append(row)
+        for option in payload.new_packages:
+            if not option.name.strip():
+                raise HTTPException(422, 'Enter a package name.')
+            row = Package(region_id=region_id, program_id=program.id, name=option.name.strip(),
+                          total_sessions=option.sessions, price=float(option.amount),
+                          duration_days=option.duration_days, is_active=True)
+            db.add(row)
+            packages.append(row)
+        if payload.session_amount is None:
+            db.flush()
+            for row in AppointmentService._program_package_options(db, program).filter(Package.id != packages[0].id).all():
+                retire_program_assignment(db, row, program.id)
         else:
-            packages = list(existing.values())
+            packages = AppointmentService._program_package_options(db, program).all()
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -163,20 +213,37 @@ class SharedPackageInput(BaseModel):
     sessions: int = Field(ge=1, le=10000)
     amount: Price
     duration_days: int | None = Field(default=None, ge=1, le=3650)
-    program_ids: list[int] = Field(min_length=1, max_length=100)
+    program_ids: list[int] = Field(max_length=100)
 
 
 def assigned_ids(row):
     return sorted(set(([row.program_id] if row.program_id else []) + [a.program_id for a in row.program_assignments]))
 
 
+def retire_program_assignment(db, row, program_id):
+    remaining_ids = set(assigned_ids(row)) - {program_id}
+    row.is_active = False
+    if remaining_ids:
+        owner_id = row.program_id if row.program_id in remaining_ids else min(remaining_ids)
+        replacement = Package(
+            region_id=row.region_id, program_id=owner_id, name=row.name, description=row.description,
+            total_sessions=row.total_sessions, price=row.price, duration_days=row.duration_days, is_active=True,
+        )
+        replacement.program_assignments = [
+            PackageProgramAssignment(program_id=pid) for pid in sorted(remaining_ids - {owner_id})
+        ]
+        db.add(replacement)
+
+
 @router.get('/{region_id}/packages')
 def list_shared_packages(region_id: int, request: Request, db: Session = Depends(get_db)):
     centre_access(db, request, region_id)
+    used = db.query(PatientPackage.id).filter(PatientPackage.package_id == Package.id).exists()
+    rows = active_packages(db, region_id).add_columns(used).order_by(Package.name, Package.id).all()
     return {'data': [{'id': row.id, 'name': row.name, 'sessions': row.total_sessions,
                      'amount': row.price, 'duration_days': row.duration_days,
-                     'program_ids': assigned_ids(row)}
-                    for row in active_packages(db, region_id).order_by(Package.name, Package.id).all()]}
+                     'program_ids': assigned_ids(row), 'terms_locked': bool(terms_locked)}
+                    for row, terms_locked in rows]}
 
 
 @router.post('/{region_id}/packages')
@@ -189,15 +256,35 @@ def save_shared_package(region_id: int, payload: SharedPackageInput, request: Re
                                      Program.is_active.is_(True), Program.deleted_at.is_(None)).all()
     if len(valid) != len(ids) or any(AppointmentService._program_type(p.program_name) in {'parent_training', 'peg'} for p in valid):
         raise HTTPException(422, 'Select active programs from this centre. Manage parent programs separately.')
+    if len(ids) > 1 and any(is_package_priced(program) for program in valid):
+        raise HTTPException(422, 'A package assigned to a package-based program cannot be shared with other programs.')
+
     row = active_packages(db, region_id).filter(Package.id == package_id).with_for_update().first() if package_id else None
     if package_id and row is None:
         raise HTTPException(404, 'Package not found. Reload the catalogue.')
-    if row and (row.total_sessions, Decimal(str(row.price)), row.duration_days) != (payload.sessions, payload.amount, payload.duration_days):
-        # Existing purchases retain the price, sessions and eligibility they were sold under.
-        row.is_active = False
-        row = None
+    for program in valid:
+        if is_package_priced(program):
+            options = AppointmentService._program_package_options(db, program)
+            if row:
+                options = options.filter(Package.id != row.id)
+            if options.first():
+                raise HTTPException(422, f'{program.program_name} already has a package. Change it in the program editor.')
+
+    description = row.description if row else None
+    if row:
+        validate_used_package_terms(row, payload.sessions, payload.amount)
+        removed_ids = set(assigned_ids(row)) - ids
+        if removed_ids and row.patient_packages:
+            raise HTTPException(422, 'This package is in use and cannot be unassigned from its programs.')
+        terms_changed = (row.total_sessions, Decimal(str(row.price)), row.duration_days) != (
+            payload.sessions, payload.amount, payload.duration_days
+        )
+        if (terms_changed and not row.patient_packages) or (removed_ids and not ids):
+            # Keep previous purchase eligibility and prevent default packages from being seeded again.
+            row.is_active = False
+            row = None
     if row is None:
-        row = Package(region_id=region_id, is_active=True)
+        row = Package(region_id=region_id, description=description, is_active=True)
         db.add(row)
     row.name = payload.name.strip()
     if not row.name:
@@ -205,9 +292,10 @@ def save_shared_package(region_id: int, payload: SharedPackageInput, request: Re
     row.total_sessions = payload.sessions
     row.price = float(payload.amount)
     row.duration_days = payload.duration_days
-    row.program_id = row.program_id if row.program_id in ids else min(ids)
+    row.program_id = row.program_id if row.program_id in ids else min(ids, default=None)
     existing_assignments = {assignment.program_id: assignment for assignment in row.program_assignments}
     row.program_assignments = [existing_assignments.get(pid) or PackageProgramAssignment(program_id=pid)
                                for pid in sorted(ids - {row.program_id})]
     db.commit()
     return {'data': {'id': row.id}}
+

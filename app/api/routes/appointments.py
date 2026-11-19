@@ -343,7 +343,7 @@ async def get_programs(
                     "program_name": program.program_name,
                     "per_session_amount": float(program.per_session_amount or 0),
                     "duration_minutes": int(program.duration_minutes or 45),
-                    "capacity": int(program.capacity or 1),
+                    "capacity": int(program.capacity) if program.capacity is not None else 1,
                     "session_type": program.session_type or "individual",
                     "segments": segments_by_program.get(program.id, []),
                 }
@@ -602,13 +602,11 @@ async def book_slot(
             "is_primary": True,
         }]
         bulk_booking = len(patient_ids) > 1 or len(allocations) > 1
+        if bulk_booking:
+            AppointmentService._ensure_package_billing_schema(db)
 
         program = db.query(Program).filter(Program.id == booking_create.program_id).first() if booking_create.program_id else None
         program_type = AppointmentService._program_type(program.program_name if program else None)
-        if program and booking_create.parent_program_group_id is None:
-            capacity = program.capacity if program.session_type == "group" else 1
-            if len(patient_ids) > capacity:
-                raise ValueError(f"This program allows up to {capacity} children per slot")
         booking_date = booking_create.slot_date
         therapist_ids = sorted({
             int(allocation.get("therapist_id") or 0)
@@ -735,7 +733,7 @@ async def book_slot(
                     ),
                     "use_package": bool(booking_create.use_package and allocation.get("is_primary", True)),
                     "crt_program_booking_id": crt_parent_by_patient.get(patient_id),
-                    "allow_shared_slot": bool(bulk_booking and not is_crt_booking),
+                    "allow_shared_slot": bulk_booking,
                 })
                 booking = AppointmentService.book_slot(db, patient_booking_create, commit=not bulk_booking)
                 patient_slot_booking = booking["patient_slot_booking"]
@@ -1203,3 +1201,4 @@ async def get_therapists(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error fetching therapists"
         )
+

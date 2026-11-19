@@ -21,6 +21,45 @@ class TherapistAccessTests(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
+    def test_login_restores_missing_therapist_role_and_returns_it(self):
+        from app.services.user_service import UserService, AuthService
+        from app.api.routes.ui import _user_shape
+        from app.core.security import decode_token
+        self.db.get(Therapist, 1).user_id = self.user.id
+        self.db.commit()
+        with patch('app.services.user_service.verify_password', return_value=True):
+            user = UserService.authenticate_user(self.db, self.user.email, 'password')
+        self.assertEqual(UserService.get_user_roles(self.db, user.id), ['therapist'])
+        with patch('app.api.routes.ui._permission_shape', return_value={}):
+            profile = _user_shape(user, self.db)
+        self.assertEqual(profile['user_roles'][0]['roles']['name'], 'therapist')
+        tokens = AuthService.create_tokens(user, self.db)
+        self.assertEqual(decode_token(tokens['access_token'])['roles'], ['therapist'])
+        self.assertFalse(UserService.assign_missing_therapist_role(self.db, user.id))
+
+    def test_missing_role_repair_preserves_existing_and_revoked_roles(self):
+        from app.services.user_service import UserService
+        from datetime import datetime
+        role = Role(name='front_office')
+        self.db.add(role); self.db.flush()
+        mapping = UserRole(user_id=self.user.id, role_id=role.id)
+        self.db.add(mapping); self.db.commit()
+        self.assertFalse(UserService.assign_missing_therapist_role(self.db, self.user.id))
+        mapping.deleted_at = datetime.utcnow(); self.db.commit()
+        self.assertFalse(UserService.assign_missing_therapist_role(self.db, self.user.id))
+
+    def test_creating_therapist_assigns_user_role_in_same_transaction(self):
+        from app.api.routes.ui import _create_one
+        from app.services.user_service import UserService
+        with patch('app.api.routes.ui._user_region_ids', return_value=[1]):
+            therapist = _create_one('therapists', {
+                'user_id': self.user.id, 'full_name': 'New Therapist', 'region_id': 1,
+            }, self.db, self.user)
+        self.assertEqual(therapist.user_id, self.user.id)
+        self.assertEqual(UserService.get_user_roles(self.db, self.user.id), ['therapist'])
+        self.db.rollback()
+        self.assertEqual(UserService.get_user_roles(self.db, self.user.id), [])
+
     def test_role_aliases_resolve_to_existing_canonical_roles(self):
         from app.api.routes.ui import _role
         from fastapi import HTTPException

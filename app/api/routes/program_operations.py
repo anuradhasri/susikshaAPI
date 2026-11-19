@@ -8,9 +8,9 @@ from app.core.database import get_db
 from app.api.routes.ui import _require_user, _permission_shape, _user_region_ids, _user_roles
 from app.models.models import (PatientSlotBooking, TherapistSlotMapping, Therapist, Patient,
                                CrtProgramBooking, GroupProgramBooking, PatientPackage, Package,
-                               PatientAssessment, AssessmentMaster)
+                               PatientAssessment, AssessmentMaster, Program)
 from app.models.payouts import TherapySheetAssignment
-from app.services.program_operations import combine_booking_rows, summarize_operations
+from app.services.program_operations import combine_booking_rows, summarize_operations, program_display_name
 
 router = APIRouter(prefix='/api/v1/ui/reports/program-operations', tags=['program operations'])
 
@@ -43,6 +43,7 @@ def program_operations(request: Request, start_date: date, end_date: date,
         TherapistSlotMapping.slot_date.between(start_date, end_date)).options(
         joinedload(PatientSlotBooking.patient), joinedload(PatientSlotBooking.program),
         joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapy),
+        joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.slot),
         joinedload(PatientSlotBooking.patient_slot_booking_status_master),
         joinedload(PatientSlotBooking.crt_program_booking).joinedload(CrtProgramBooking.program),
         joinedload(PatientSlotBooking.group_program_booking).joinedload(GroupProgramBooking.program),
@@ -60,12 +61,13 @@ def program_operations(request: Request, start_date: date, end_date: date,
         booking_ids = [row.id for row in bookings]
         # Keep IN clauses below common database parameter limits.
         for start in range(0, len(booking_ids), 500):
-            assignments = db.query(TherapySheetAssignment.patient_slot_booking_id, func.count()).filter(
+            assignments = db.query(TherapySheetAssignment.patient_slot_booking_id, TherapySheetAssignment.sheet_type, func.count()).filter(
                 TherapySheetAssignment.patient_slot_booking_id.in_(booking_ids[start:start + 500]),
                 TherapySheetAssignment.deleted_at.is_(None),
                 TherapySheetAssignment.status.in_(['pending', 'assigned', 'overdue'])).group_by(
-                    TherapySheetAssignment.patient_slot_booking_id).all()
-            pending.update(dict(assignments))
+                    TherapySheetAssignment.patient_slot_booking_id, TherapySheetAssignment.sheet_type).all()
+            for booking_id, sheet_type, count in assignments:
+                pending.setdefault(booking_id, {})[sheet_type] = count
     today = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
     rows = combine_booking_rows(bookings, pending, today)
     if not own:
@@ -87,7 +89,12 @@ def program_operations(request: Request, start_date: date, end_date: date,
                          'therapist_ids': [], 'therapist_options': [], 'therapists': 'Not recorded', 'region_id': patient.region_id,
                          'status': status, 'recorded_status': code, 'pending_sheets': None})
     rows.sort(key=lambda row: (row['date'], row['key']), reverse=True)
-    return {'data': {'rows': rows, 'summary': summarize_operations(rows),
+    catalog = db.query(Program.program_name).filter(Program.deleted_at.is_(None), Program.is_active.is_(True))
+    if scope:
+        catalog = catalog.filter(Program.region_id.in_(scope))
+    programs = sorted({program_display_name(name) for (name,) in catalog.all() if name and name.strip()})
+    programs = list(dict.fromkeys([*programs, *(row['category'] for row in rows)]))
+    return {'data': {'rows': rows, 'programs': programs, 'summary': summarize_operations(rows, programs),
                      'start_date': start_date, 'end_date': end_date,
                      'sheets_available': pending is not None,
                      'therapist_scoped': own is not None}}
