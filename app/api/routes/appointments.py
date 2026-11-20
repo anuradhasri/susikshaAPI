@@ -87,7 +87,7 @@ def _parent_program_group_shape(db: Session, group_id: int) -> dict:
     planned = int(group["number_of_sessions"] or 0)
     completed = min(planned, int(progress["completed_sessions"] or 0))
     shaped_group = dict(group)
-    if planned > 0 and completed >= planned and str(group["status"] or "").upper() != "COMPLETED":
+    if planned > 0 and completed >= planned and str(group["status"] or "ACTIVE").upper() == "ACTIVE":
         completed_at = datetime.utcnow()
         db.execute(text("""UPDATE parent_program_groups
             SET status='COMPLETED', completed_at=:completed_at, updated_at=CURRENT_TIMESTAMP
@@ -116,7 +116,7 @@ async def list_parent_program_groups(region_id: int, program_id: int | None = No
 @router.post("/parent-program-groups", status_code=status.HTTP_201_CREATED)
 async def create_parent_program_group(payload: ParentProgramGroupPayload, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     await check_region_access(current_user=current_user, db=db, target_region_id=[payload.region_id])
-    await _require_calendar_write(current_user, db)
+    await _require_parent_program_write(current_user, db)
     _ensure_parent_program_group_schema(db)
     if payload.start_date < date.today():
         raise HTTPException(status_code=400, detail="The group start date cannot be in the past")
@@ -126,7 +126,8 @@ async def create_parent_program_group(payload: ParentProgramGroupPayload, curren
     valid_count = db.query(Patient).filter(Patient.id.in_(patient_ids), Patient.region_id == payload.region_id).count()
     program = db.query(Program).filter(Program.id == payload.program_id).first()
     if valid_count != len(patient_ids): raise HTTPException(status_code=400, detail="Every child in the group must belong to the selected region")
-    if not program or AppointmentService._program_type(program.program_name) not in {"parent_training", "peg"}: raise HTTPException(status_code=400, detail="Select a Parent Program")
+    if not program or program.region_id != payload.region_id or AppointmentService._program_type(program.program_name) not in {"parent_training", "peg"}:
+        raise HTTPException(status_code=400, detail="Select a Parent Program from the selected centre")
     result = db.execute(text("INSERT INTO parent_program_groups (name, program_id, region_id, start_date, end_date, pro_rata_amount, number_of_sessions, is_active) VALUES (:name,:program_id,:region_id,:start_date,:end_date,:pro_rata_amount,:number_of_sessions,:is_active)"), {"name": payload.name.strip(), "program_id": payload.program_id, "region_id": payload.region_id, "start_date": payload.start_date, "end_date": payload.end_date, "pro_rata_amount": payload.pro_rata_amount, "number_of_sessions": payload.number_of_sessions, "is_active": payload.is_active})
     group_id = int(result.lastrowid)
     for patient_id in patient_ids: db.execute(text("INSERT INTO parent_program_group_members (group_id,patient_id) VALUES (:group_id,:patient_id)"), {"group_id": group_id, "patient_id": patient_id})
@@ -147,6 +148,9 @@ async def update_parent_program_group(group_id: int, payload: ParentProgramGroup
         existing_group = _parent_program_group_shape(db, group_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Parent Program group not found")
+    await check_region_access(current_user=current_user, db=db, target_region_id=[existing_group["region_id"]])
+    if str(existing_group["status"] or "").upper() in {"COMPLETED", "CANCELLED"}:
+        raise HTTPException(409, "A completed or cancelled Parent Program cannot be edited")
     if existing_group["used_sessions"] > 0:
         raise HTTPException(
             status_code=400,
@@ -155,8 +159,8 @@ async def update_parent_program_group(group_id: int, payload: ParentProgramGroup
     patient_ids = list(dict.fromkeys(payload.patient_ids))
     valid_count = db.query(Patient).filter(Patient.id.in_(patient_ids), Patient.region_id == payload.region_id).count()
     if valid_count != len(patient_ids): raise HTTPException(status_code=400, detail="Every child in the group must belong to the selected region")
-    updated = db.execute(text("UPDATE parent_program_groups SET name=:name,program_id=:program_id,region_id=:region_id,start_date=:start_date,end_date=:end_date,pro_rata_amount=:pro_rata_amount,number_of_sessions=:number_of_sessions,is_active=:is_active,updated_at=CURRENT_TIMESTAMP WHERE id=:id"), {"id": group_id, "name": payload.name.strip(), "program_id": payload.program_id, "region_id": payload.region_id, "start_date": payload.start_date, "end_date": payload.end_date, "pro_rata_amount": payload.pro_rata_amount, "number_of_sessions": payload.number_of_sessions, "is_active": payload.is_active})
-    if not updated.rowcount: raise HTTPException(status_code=404, detail="Parent Program group not found")
+    updated = db.execute(text("UPDATE parent_program_groups SET name=:name,program_id=:program_id,region_id=:region_id,start_date=:start_date,end_date=:end_date,pro_rata_amount=:pro_rata_amount,number_of_sessions=:number_of_sessions,is_active=:is_active,updated_at=CURRENT_TIMESTAMP WHERE id=:id AND UPPER(COALESCE(status, 'ACTIVE')) = 'ACTIVE'"), {"id": group_id, "name": payload.name.strip(), "program_id": payload.program_id, "region_id": payload.region_id, "start_date": payload.start_date, "end_date": payload.end_date, "pro_rata_amount": payload.pro_rata_amount, "number_of_sessions": payload.number_of_sessions, "is_active": payload.is_active})
+    if not updated.rowcount: raise HTTPException(409, "The Parent Program group changed. Refresh and try again.")
     db.execute(text("DELETE FROM parent_program_group_members WHERE group_id=:group_id"), {"group_id": group_id})
     for patient_id in patient_ids: db.execute(text("INSERT INTO parent_program_group_members (group_id,patient_id) VALUES (:group_id,:patient_id)"), {"group_id": group_id, "patient_id": patient_id})
     db.commit()
@@ -172,9 +176,14 @@ async def complete_parent_program_group(group_id: int, current_user: User = Depe
     if not group:
         raise HTTPException(status_code=404, detail="Parent Program group not found")
     await check_region_access(current_user=current_user, db=db, target_region_id=[int(group["region_id"])])
-    await _require_calendar_write(current_user, db)
-    if str(group["status"] or "").upper() != "COMPLETED":
-        db.execute(text("UPDATE parent_program_groups SET status='COMPLETED', completed_at=:completed_at, updated_at=CURRENT_TIMESTAMP WHERE id=:id"), {"id": group_id, "completed_at": datetime.utcnow()})
+    await _require_parent_program_write(current_user, db)
+    if str(group["status"] or "ACTIVE").upper() == "ACTIVE":
+        progress = _parent_program_group_shape(db, group_id)
+        status = "COMPLETED" if progress["used_sessions"] > 0 else "CANCELLED"
+        db.execute(text("""UPDATE parent_program_groups
+            SET status=:status, completed_at=:completed_at, updated_at=CURRENT_TIMESTAMP
+            WHERE id=:id AND UPPER(COALESCE(status, 'ACTIVE'))='ACTIVE'"""),
+            {"id": group_id, "status": status, "completed_at": datetime.utcnow() if status == "COMPLETED" else None})
         db.commit()
     return {"data": _parent_program_group_shape(db, group_id)}
 
@@ -220,6 +229,17 @@ def _rbac_allowed(db: Session, user_id: int, code: str, action: str = "view") ->
         return bool(row and row[0])
     except Exception:
         return False
+
+
+async def _require_parent_program_write(current_user: User, db: Session) -> None:
+    from app.services.therapist_access import CENTRAL_HEAD_ROLES
+
+    roles = _normalized_roles(await get_user_roles(current_user, db))
+    if roles & CENTRAL_HEAD_ROLES or _is_front_office_role(roles) or _rbac_allowed(
+        db, current_user.id, "appointment.action.create", "create"
+    ):
+        return
+    raise HTTPException(403, "You do not have permission to manage Parent Program groups")
 
 
 async def _require_calendar_write(current_user: User, db: Session) -> None:

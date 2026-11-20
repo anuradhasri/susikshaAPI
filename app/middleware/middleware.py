@@ -48,7 +48,7 @@ class RegionAccessMiddleware(BaseHTTPMiddleware):
                     return user_is_limited_therapist(db, token_data.get('user_id'))
             limited = await run_in_threadpool(check_role)
             if limited and not therapist_request_allowed(request.method, request.url.path):
-                return JSONResponse(status_code=403, content={'detail': 'Therapist access is limited to appointments, the three sheets and own earnings.'})
+                return JSONResponse(status_code=403, content={'detail': 'Therapist access is limited to appointments, sheets and own earnings.'})
         
         response = await call_next(request)
         return response

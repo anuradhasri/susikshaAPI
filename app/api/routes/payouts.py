@@ -33,9 +33,12 @@ METHODS = {"percentage", "fixed", "package", "completion"}
 SHEET_TYPES = {"observation", "goal", "goal_summary"}
 
 
-def get_payout_manager(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
-    """Allow Admin and Front Office users to manage payout configuration and processing."""
-    role_names = {
+PAYOUT_MANAGER_ROLES = {"admin", "front_office", "frontoffice", "front_officer"}
+PAYOUT_CONFIG_ROLES = PAYOUT_MANAGER_ROLES | {"central_head", "centralhead"}
+
+
+def payout_roles(db: Session, user: User) -> set[str]:
+    return {
         str(name or "").strip().lower().replace("-", "_").replace(" ", "_")
         for (name,) in (
             db.query(Role.name)
@@ -48,8 +51,17 @@ def get_payout_manager(user: User = Depends(get_current_user), db: Session = Dep
             .all()
         )
     }
-    if not role_names.intersection({"admin", "front_office", "frontoffice", "front_officer"}):
-        raise HTTPException(status_code=403, detail="Only Front Office or Admin users can manage therapist payouts")
+
+
+def get_payout_manager(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    if not payout_roles(db, user) & PAYOUT_MANAGER_ROLES:
+        raise HTTPException(403, "Only Front Office or Admin users can process therapist payouts")
+    return user
+
+
+def get_payout_config_manager(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+    if not payout_roles(db, user) & PAYOUT_CONFIG_ROLES:
+        raise HTTPException(403, "Only centre administration can manage payout configuration")
     return user
 
 
@@ -188,7 +200,7 @@ def applicable_payroll_config(db, therapist_id, on_date):
 
 
 @router.get("/therapists/{therapist_id}/active-setup")
-def active_therapist_payment_setup(therapist_id: int, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+def active_therapist_payment_setup(therapist_id: int, db: Session = Depends(get_db), user: User = Depends(get_payout_config_manager)):
     therapist = db.get(Therapist, therapist_id)
     if not therapist:
         raise HTTPException(404, "Therapist not found")
@@ -362,7 +374,7 @@ def my_earnings(month: str | None = None, db: Session = Depends(get_db), user: U
         raise HTTPException(403, 'No active therapist is linked to your account.')
     # Reuse the established payout/receipt reconciliation, then expose only
     # this therapist's earnings. No client-supplied therapist ID is accepted.
-    data = dashboard(month=month, region_id=therapist.region_id, db=db, user=user)['data']
+    data = payout_dashboard_data(db, month, [therapist.region_id], therapist)['data']
     return {'data': {'month': data['month'], 'therapistName': therapist.name,
         'eligibleEarnings': data['summary']['eligibleEarnings'],
         'pendingCompletion': data['summary']['pendingCompletion'],
@@ -370,17 +382,66 @@ def my_earnings(month: str | None = None, db: Session = Depends(get_db), user: U
                   'status': row['status']} for row in data['sessionPayouts']]}}
 
 
+@router.get("/my-pending-sheets")
+def my_pending_sheets(region_id: int | None = None, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    therapist = db.query(Therapist).filter(Therapist.user_id == user.id, Therapist.is_active.is_(True)).first()
+    if not therapist:
+        raise HTTPException(403, "No active therapist is linked to your account.")
+    if region_id is not None and therapist.region_id != region_id:
+        return {"data": []}
+    rows = db.query(TherapySheetAssignment, PatientSlotBooking, Program.program_name).join(
+        PatientSlotBooking, PatientSlotBooking.id == TherapySheetAssignment.patient_slot_booking_id
+    ).outerjoin(Program, Program.id == TherapySheetAssignment.program_id).options(
+        joinedload(PatientSlotBooking.patient), joinedload(PatientSlotBooking.therapist_slot_mapping)
+    ).filter(
+        TherapySheetAssignment.therapist_id == therapist.id,
+        TherapySheetAssignment.deleted_at.is_(None),
+        TherapySheetAssignment.status == "pending",
+    ).order_by(TherapySheetAssignment.assigned_at.desc(), TherapySheetAssignment.id.desc()).all()
+    sheets = []
+    for sheet, booking, program_name in rows:
+        patient = booking.patient
+        slot = booking.therapist_slot_mapping
+        sheets.append({
+            "id": sheet.id, "sessionId": sheet.patient_slot_booking_id,
+            "patientId": sheet.patient_id, "therapistId": therapist.id,
+            "patientName": f"{patient.first_name} {patient.last_name or ''}".strip() if patient else f"Child {sheet.patient_id}",
+            "therapistName": therapist.name, "programName": program_name or "-",
+            "sheetType": sheet.sheet_type, "status": sheet.status,
+            "sessionDate": slot.slot_date.isoformat() if slot and slot.slot_date else None,
+            "assignedAt": sheet.assigned_at.isoformat(),
+            "dueAt": sheet.due_at.isoformat() if sheet.due_at else None,
+            "notifiedAt": sheet.notified_at.isoformat() if sheet.notified_at else None,
+        })
+    return {"data": sheets}
+
+
 @router.get("/dashboard")
 def dashboard(month: str | None = None, region_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    regions = payout_report_regions(user, region_id)
+    scoped_therapist = None
+    if not payout_roles(db, user) & PAYOUT_CONFIG_ROLES:
+        scoped_therapist = db.query(Therapist).filter(Therapist.user_id == user.id).first()
+    return payout_dashboard_data(db, month, regions, scoped_therapist)
+
+
+def payout_report_regions(user, region_id):
+    allowed_regions = getattr(user, "region_ids", None) or []
+    if region_id is not None and allowed_regions and region_id not in allowed_regions:
+        raise HTTPException(403, "This centre is outside your region access")
+    return [region_id] if region_id is not None else allowed_regions
+
+
+def payout_dashboard_data(db, month, regions, scoped_therapist):
     try:
         month_start = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
     except ValueError:
         raise HTTPException(400, "month must use YYYY-MM")
     month_end = month_start.replace(day=monthrange(month_start.year, month_start.month)[1])
-    scoped_therapist = db.query(Therapist).filter(Therapist.user_id == user.id).first()
     programs = db.query(Program).filter(Program.deleted_at.is_(None), Program.is_active.is_(True))
-    if region_id:
-        programs = programs.filter(Program.region_id == region_id)
+    if regions:
+        programs = programs.filter(Program.region_id.in_(regions))
     program_rows = programs.order_by(Program.program_name).all()
     program_ids = [p.id for p in program_rows]
     configs = db.query(ProgramPaymentConfig).options(joinedload(ProgramPaymentConfig.program), joinedload(ProgramPaymentConfig.therapist)).filter(
@@ -410,8 +471,8 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
         monthly_q = monthly_q.filter(TherapistMonthlyPayout.therapist_id == scoped_therapist.id)
         configs = []
         payroll_configs_q = payroll_configs_q.filter(TherapistPayrollConfig.therapist_id == scoped_therapist.id)
-    if region_id:
-        therapist_ids = [r[0] for r in db.query(Therapist.id).filter(Therapist.region_id == region_id).all()]
+    if regions:
+        therapist_ids = [r[0] for r in db.query(Therapist.id).filter(Therapist.region_id.in_(regions)).all()]
         sheets_q = sheets_q.filter(TherapySheetAssignment.therapist_id.in_(therapist_ids) if therapist_ids else False)
         payouts_q = payouts_q.filter(TherapistSessionPayout.therapist_id.in_(therapist_ids) if therapist_ids else False)
         earnings_q = earnings_q.filter(TherapistPaymentEarning.therapist_id.in_(therapist_ids) if therapist_ids else False)
@@ -467,7 +528,7 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
     return {"data": {
         "month": month_start.strftime("%Y-%m"),
         "programs": [{"id": p.id, "name": p.program_name, "regionId": p.region_id, "createdAt": p.created_at.isoformat() if p.created_at else None} for p in program_rows],
-        "therapists": [{"id": t.id, "name": t.name, "regionId": t.region_id} for t in db.query(Therapist).filter(Therapist.is_active.is_(True), Therapist.region_id == region_id if region_id else True).order_by(Therapist.name).all()],
+        "therapists": [{"id": t.id, "name": t.name, "regionId": t.region_id} for t in db.query(Therapist).filter(Therapist.is_active.is_(True), Therapist.region_id.in_(regions) if regions else True).order_by(Therapist.name).all()],
         "configs": [config_shape(c) for c in configs],
         "payrollConfigs": [{"id": c.id, "therapistId": c.therapist_id, "baseSalary": money(c.base_salary), "flatCommission": money(c.flat_commission), "professionalTax": money(c.professional_tax), "fixedSalaryOnly": bool(c.fixed_salary_only), "effectiveFrom": c.effective_from.isoformat(), "effectiveTo": c.effective_to.isoformat() if c.effective_to else None, "isActive": c.is_active} for c in payroll_configs],
         "taxSettings": {"incomeThreshold": money(pt_settings.income_threshold), "regularMonthAmount": money(pt_settings.regular_month_amount), "marchAmount": money(pt_settings.march_amount), "tdsThreshold": money(pt_settings.tds_threshold), "tdsRate": money(pt_settings.tds_rate)},
@@ -523,7 +584,7 @@ def submit_assigned_sheet(assignment_id: int, payload: dict, db: Session = Depen
 
 
 @router.post("/sheet-configs")
-def save_sheet_config(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+def save_sheet_config(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_config_manager)):
     program_id = int(payload.get("programId") or 0)
     sheet_type = str(payload.get("sheetType") or "").strip().lower()
     try:
@@ -552,7 +613,7 @@ def save_sheet_config(payload: dict, db: Session = Depends(get_db), user: User =
 
 
 @router.post("/configs")
-def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_config_manager)):
     therapist_id = int(payload.get("therapistId") or 0)
     program_id = int(payload.get("programId") or 0)
     method = str(payload.get("paymentMethod") or "").lower()
@@ -639,7 +700,7 @@ def save_config(payload: dict, db: Session = Depends(get_db), user: User = Depen
 
 
 @router.post("/payroll-configs")
-def save_payroll_config(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+def save_payroll_config(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_config_manager)):
     therapist_id = int(payload.get("therapistId") or 0)
     try:
         effective = datetime.strptime(payload.get("effectiveFrom", ""), "%Y-%m-%d").date()
@@ -648,6 +709,8 @@ def save_payroll_config(payload: dict, db: Session = Depends(get_db), user: User
     therapist = db.get(Therapist, therapist_id)
     if not therapist:
         raise HTTPException(400, "Select a valid therapist")
+    if getattr(user, "region_ids", None) and therapist.region_id not in user.region_ids:
+        raise HTTPException(403, "Therapist is outside your region access")
     previous = db.query(TherapistPayrollConfig).filter(TherapistPayrollConfig.therapist_id == therapist_id, TherapistPayrollConfig.effective_from < effective, TherapistPayrollConfig.deleted_at.is_(None)).order_by(TherapistPayrollConfig.effective_from.desc()).first()
     if previous and (previous.effective_to is None or previous.effective_to >= effective):
         previous.effective_to = effective - timedelta(days=1)
@@ -663,7 +726,7 @@ def save_payroll_config(payload: dict, db: Session = Depends(get_db), user: User
 
 
 @router.post("/tax-settings")
-def save_tax_settings(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_manager)):
+def save_tax_settings(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_payout_config_manager)):
     values = [money(payload.get(key)) for key in ("incomeThreshold", "regularMonthAmount", "marchAmount")]
     if any(value < 0 for value in values):
         raise HTTPException(400, "Professional tax values cannot be negative")
@@ -688,21 +751,23 @@ def save_tax_settings(payload: dict, db: Session = Depends(get_db), user: User =
 
 @router.get("/billing-reports")
 def billing_reports(month: str, region_id: int | None = None, therapist_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if not payout_roles(db, user) & PAYOUT_CONFIG_ROLES:
+        raise HTTPException(403, "You do not have permission to view billing reports")
+    regions = payout_report_regions(user, region_id)
     try: start = datetime.strptime(month, "%Y-%m").date().replace(day=1)
     except ValueError: raise HTTPException(400, "month must use YYYY-MM")
     end = start.replace(day=monthrange(start.year, start.month)[1])
-    scoped = db.query(Therapist).filter(Therapist.user_id == user.id).first()
     query = db.query(TherapistSessionPayout).filter(TherapistSessionPayout.session_date.between(start, end), TherapistSessionPayout.deleted_at.is_(None))
-    if scoped: query = query.filter(TherapistSessionPayout.therapist_id == scoped.id)
-    elif therapist_id: query = query.filter(TherapistSessionPayout.therapist_id == therapist_id)
+    if therapist_id: query = query.filter(TherapistSessionPayout.therapist_id == therapist_id)
+    if regions:
+        centre_therapists = db.query(Therapist.id).filter(Therapist.region_id.in_(regions))
+        query = query.filter(TherapistSessionPayout.therapist_id.in_(centre_therapists))
     rows = query.order_by(
         TherapistSessionPayout.session_date.desc(),
         TherapistSessionPayout.id.desc(),
     ).all()
     therapist_ids = {row.therapist_id for row in rows}
     therapists = {row.id: row for row in db.query(Therapist).filter(Therapist.id.in_(therapist_ids)).all()} if therapist_ids else {}
-    if region_id:
-        rows = [row for row in rows if row.therapist_id in therapists and therapists[row.therapist_id].region_id == region_id]
     program_ids = {row.program_id for row in rows}; booking_ids = {row.patient_slot_booking_id for row in rows}
     programs = {row.id: row.program_name for row in db.query(Program).filter(Program.id.in_(program_ids)).all()} if program_ids else {}
     bookings = {row.id: row for row in db.query(PatientSlotBooking).filter(PatientSlotBooking.id.in_(booking_ids)).all()} if booking_ids else {}
@@ -825,14 +890,11 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
         TherapistPaymentEarning.status == "eligible",
         TherapistPaymentEarning.deleted_at.is_(None),
     )
-    if scoped:
-        payment_earning_query = payment_earning_query.filter(TherapistPaymentEarning.therapist_id == scoped.id)
-    elif therapist_id:
+    if therapist_id:
         payment_earning_query = payment_earning_query.filter(TherapistPaymentEarning.therapist_id == therapist_id)
+    if regions:
+        payment_earning_query = payment_earning_query.filter(TherapistPaymentEarning.therapist_id.in_(centre_therapists))
     payment_earnings = payment_earning_query.all()
-    if region_id:
-        allowed_ids = {row[0] for row in db.query(Therapist.id).filter(Therapist.region_id == region_id).all()}
-        payment_earnings = [row for row in payment_earnings if row.therapist_id in allowed_ids]
     payment_booking_therapists = {(row.patient_slot_booking_id, row.therapist_id) for row in payment_earnings}
     earning_therapist_ids = {row.therapist_id for row in payment_earnings}
     earning_program_ids = {row.program_id for row in payment_earnings}

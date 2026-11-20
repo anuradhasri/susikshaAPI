@@ -16,6 +16,7 @@ from app.models.report_sheets import (
     PatientGoalSummary, PatientGoalSummaryTherapist, PatientGoalSummaryResponse,
 )
 from app.api.routes.ui import _require_user, _permission_shape, _user_region_ids, _user_roles
+from app.services.therapist_access import CENTRAL_HEAD_ROLES
 from app.services.child_progress import consolidate_progress
 
 router = APIRouter(prefix='/api/v1/ui/reports/sheets', tags=['report-sheets'])
@@ -88,10 +89,13 @@ class GoalSummaryInput(BaseModel):
     responses: list[GoalSummaryResponseInput] = Field(default_factory=list, max_length=500)
 
 
+def sheet_roles(db, user):
+    return {'_'.join(str(role).strip().lower().replace('-', ' ').split()) for role in _user_roles(db, user)}
+
+
 def authorize(request, db, action='view'):
     user = _require_user(request, db)
-    roles = {str(role).strip().lower().replace('-', '_').replace(' ', '_') for role in _user_roles(db, user)}
-    if roles & {'admin', 'front_office', 'frontoffice', 'front_officer', 'central_head', 'centralhead'}:
+    if sheet_roles(db, user) & (CENTRAL_HEAD_ROLES | {'admin', 'front_office', 'frontoffice', 'front_officer'}):
         return user
     permissions = _permission_shape(db, user)
     if not permissions.get('menu.sheets', {}).get('view', False) or (action == 'create' and not permissions.get('report.action.create_sheet', {}).get('create', False)):
@@ -101,7 +105,7 @@ def authorize(request, db, action='view'):
 
 def region_ids(db, user):
     ids = _user_region_ids(db, user)
-    if not ids and not (_user_roles(db, user) & {'admin', 'central_head'}):
+    if not ids and not (sheet_roles(db, user) & (CENTRAL_HEAD_ROLES | {'admin'})):
         raise HTTPException(403, 'No centre is assigned to your account.')
     return ids
 

@@ -1817,8 +1817,8 @@ class AppointmentService:
             ).mappings().first()
             if not parent_group_pricing or int(parent_group_pricing["number_of_sessions"] or 0) <= 0:
                 raise ValueError("Parent Program group must have a valid session count")
-            if not bool(parent_group_pricing["is_active"]) or str(parent_group_pricing["status"] or "").upper() == "COMPLETED":
-                raise ValueError("This Parent Program group is completed and cannot be booked")
+            if not bool(parent_group_pricing["is_active"]) or str(parent_group_pricing["status"] or "").upper() in {"COMPLETED", "CANCELLED"}:
+                raise ValueError("This Parent Program group is closed and cannot be booked")
             amount_per_session = float(parent_group_pricing["pro_rata_amount"] or 0) / int(parent_group_pricing["number_of_sessions"])
         requires_package = (
             is_primary
@@ -3096,7 +3096,7 @@ class AppointmentService:
             db.execute(text("""
                 UPDATE parent_program_groups
                 SET status='COMPLETED', completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP
-                WHERE id=:group_id AND UPPER(COALESCE(status, 'ACTIVE'))!='COMPLETED'
+                WHERE id=:group_id AND UPPER(COALESCE(status, 'ACTIVE'))='ACTIVE'
             """), {"group_id": int(parent_group_id)})
 
     @staticmethod

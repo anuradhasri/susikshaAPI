@@ -90,7 +90,8 @@ def settings(request: Request, region_id: int | None = None, db: Session = Depen
     provision_payment_alerts(db)
     rules = {rule.kind: shape(rule) for rule in db.query(PaymentAlertRule).filter_by(region_id=selected).all()}
     return {'data': {'regions': [{'id': region.id, 'name': region.name} for region in regions], 'region_id': selected,
-        'recipients': [{'id': user.id, 'name': f'{user.first_name or ""} {user.last_name or ""}'.strip() or user.username} for user in eligible_users(db, selected)] if selected else [],
+        'recipients': [{'id': user.id, 'name': f'{user.first_name or ""} {user.last_name or ""}'.strip() or user.username,
+                        'role': role} for user, role in eligible_users(db, selected, include_role=True)] if selected else [],
         'programs': [{'id': row.id, 'name': row.program_name} for row in db.query(Program).filter_by(region_id=selected, is_active=True).all()] if selected else [],
         'rules': [rules.get(kind, {'kind': kind, 'enabled': False, 'recipients': [], 'config': defaults(kind)}) for kind in KINDS]}}
 
@@ -101,7 +102,7 @@ def validate(request, db, region_id, payload):
         raise HTTPException(422, 'Choose at least one recipient before enabling this alert.')
     allowed = {user.id for user in eligible_users(db, region_id)}
     if not set(payload.recipients) <= allowed:
-        raise HTTPException(422, 'Select active administration recipients with access to this centre.')
+        raise HTTPException(422, 'Select active staff recipients with access to this centre.')
     programs = {row.id for row in db.query(Program).filter(Program.region_id == region_id).all()}
     if not set(payload.config.program_ids) <= programs:
         raise HTTPException(422, 'Select programs belonging to this centre.')

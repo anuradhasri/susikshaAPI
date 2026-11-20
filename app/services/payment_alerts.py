@@ -11,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from app.core.database import SessionLocal
 from app.models.models import (Patient, Payment, PatientPackage, PatientSlotBooking, TherapistSlotMapping,
-    CrtProgramBooking, User, Role, UserRole, UserRegionMapping, Notification, Region)
+    CrtProgramBooking, User, Role, Therapist, UserRole, UserRegionMapping, Notification, Region)
+from app.services.therapist_access import THERAPIST_ROLES
 from app.models.payouts import PatientProgramPricing
 from app.models.payment_alerts import PaymentAlertRule, PaymentAlertEvent, PaymentAlertDelivery, PaymentAlertLease
 
@@ -42,16 +43,28 @@ def defaults(kind, today=None):
             'plan_types': ['fixed', 'package'], 'program_ids': []}
 
 
-def eligible_users(db, region_id):
+def eligible_users(db, region_id, *, include_role=False):
     users = db.query(User).filter(User.is_active.is_(True), User.deleted_at.is_(None)).all()
+    centre_therapists = {user_id for (user_id,) in db.query(Therapist.user_id).filter(
+        Therapist.region_id == region_id, Therapist.is_active.is_(True), Therapist.user_id.is_not(None),
+    ).all()}
     result = []
     for user in users:
         roles = {str(name).lower().replace(' ', '_').replace('-', '_') for (name,) in db.query(Role.name).join(
             UserRole, UserRole.role_id == Role.id).filter(UserRole.user_id == user.id,
             UserRole.deleted_at.is_(None), Role.deleted_at.is_(None)).all()}
         mapped = {item.regionid for item in db.query(UserRegionMapping).filter_by(userid=user.id).all()}
-        if (roles & GLOBAL and (not mapped or region_id in mapped)) or (roles & STAFF and region_id in mapped):
-            result.append(user)
+        if 'admin' in roles and (not mapped or region_id in mapped):
+            group = 'Admin'
+        elif roles & {'central_head', 'centralhead'} and (not mapped or region_id in mapped):
+            group = 'Central Head'
+        elif roles & {'front_office', 'frontoffice', 'front_officer'} and region_id in mapped:
+            group = 'Front Office'
+        elif roles & THERAPIST_ROLES and (region_id in mapped or (not mapped and user.id in centre_therapists)):
+            group = 'Therapist'
+        else:
+            continue
+        result.append((user, group) if include_role else user)
     return result
 
 
@@ -97,7 +110,7 @@ def financial_sessions(db, region_id):
     return result
 
 
-def candidates(db, rule, now):
+def candidates(db, rule, now, *, preview=False):
     config = rule.config
     today = now.astimezone(IST).date()
     centre = db.get(Region, rule.region_id).name
@@ -105,13 +118,15 @@ def candidates(db, rule, now):
     if rule.kind == 'cash_summary':
         anchor = date.fromisoformat(config['start_date'])
         interval = config['interval_days']
-        cycles = (today - anchor).days // interval
+        cycles = 1 if preview else (today - anchor).days // interval
         if cycles < 1:
             return events
         end = anchor + timedelta(days=cycles * interval)
         start = end - timedelta(days=config['period_days'])
         lower = datetime.combine(start, time.min, IST).astimezone(timezone.utc).replace(tzinfo=None)
         upper = datetime.combine(end, time.min, IST).astimezone(timezone.utc).replace(tzinfo=None)
+        if preview:
+            upper = min(upper, now.astimezone(timezone.utc).replace(tzinfo=None))
         received_at = func.coalesce(Payment.payment_date, Payment.created_at)
         values = db.query(Payment.payment_amount).join(Patient).filter(Patient.region_id == rule.region_id,
                     received_at >= lower, received_at < upper).all()
@@ -215,7 +230,7 @@ def stopped_reminder(db, rule, event):
 
 
 def reconcile_rule(db, rule, now, preview=False):
-    desired = candidates(db, rule, now)
+    desired = candidates(db, rule, now, preview=preview)
     if preview:
         return list(desired.values())
     allowed = {user.id for user in eligible_users(db, rule.region_id)} & set(rule.recipients)

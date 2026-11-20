@@ -11,6 +11,7 @@ from app.api.routes.ui import _require_user, _user_region_ids, _user_roles
 from app.core.database import get_db
 from app.models.models import Package, PackageProgramAssignment, PatientPackage, Program, ProgramSegment, Region
 from app.services.appointment_service import AppointmentService
+from app.services.package_catalogue import active_packages, lock_package_centre, validate_package_name
 
 router = APIRouter(prefix='/api/v1/ui/program-catalog', tags=['program catalogue'])
 STAFF = {'admin', 'front_office', 'frontoffice', 'front_officer', 'central_head', 'centralhead'}
@@ -45,19 +46,15 @@ class ProgramInput(BaseModel):
     new_packages: list[NewProgramPackage] = Field(default_factory=list, max_length=30)
 
 
-def centre_access(db, request, region_id):
+def centre_access(db, request, region_id, *, lock_for_write=False):
     user = _require_user(request, db)
     roles = {role.lower().replace(' ', '_').replace('-', '_') for role in _user_roles(db, user)}
     ids = _user_region_ids(db, user)
     if not roles & STAFF or (region_id not in ids and (ids or not roles & GLOBAL)):
         raise HTTPException(403, 'You do not have access to manage programs at this centre.')
-    if not db.query(Region.id).filter(Region.id == region_id, Region.deleted_at.is_(None)).first():
+    centre = db.query(Region.id).filter(Region.id == region_id, Region.deleted_at.is_(None))
+    if not (lock_package_centre(db, region_id) if lock_for_write else centre.first()):
         raise HTTPException(404, 'Centre not found.')
-
-
-def active_packages(db, region_id):
-    return db.query(Package).filter(Package.region_id == region_id, Package.is_active.is_(True),
-                                    Package.deleted_at.is_(None))
 
 
 def is_package_priced(program):
@@ -94,7 +91,7 @@ def list_programs(region_id: int, request: Request, db: Session = Depends(get_db
 @router.put('/{region_id}/{program_id}')
 def save_program(region_id: int, payload: ProgramInput, request: Request, program_id: int | None = None,
                  db: Session = Depends(get_db)):
-    centre_access(db, request, region_id)
+    centre_access(db, request, region_id, lock_for_write=True)
     name = payload.name.strip()
     if AppointmentService._program_type(name) in {'crt', 'vocational'}:
         if payload.session_amount is not None:
@@ -140,8 +137,18 @@ def save_program(region_id: int, payload: ProgramInput, request: Request, progra
         payload.session_amount is None or is_package_priced(program)
     ) and any(row.patient_packages for pid, row in existing.items() if pid not in retained_ids):
         raise HTTPException(422, 'This package is in use and cannot be removed from the program.')
+    package_assignment_locked = bool(program and is_package_priced(program) and existing)
+    if package_assignment_locked:
+        if payload.session_amount is not None or not retained_ids or not retained_ids <= existing.keys():
+            raise HTTPException(422, 'The assigned package for a package-based program is locked.')
+        for option in payload.packages or []:
+            current = existing[option.id]
+            if (option.sessions, option.amount, option.duration_days) != (
+                current.total_sessions, Decimal(str(current.price)), current.duration_days
+            ):
+                raise HTTPException(422, 'Edit package details in the package catalogue.')
     reused_packages = selected_packages + [existing[pid] for pid in selected]
-    if any(set(assigned_ids(row)) - {program_id} for row in reused_packages):
+    if not package_assignment_locked and any(set(assigned_ids(row)) - {program_id} for row in reused_packages):
         raise HTTPException(422, 'Choose an unassigned package or a package assigned only to this program.')
 
     if program is None:
@@ -164,6 +171,9 @@ def save_program(region_id: int, payload: ProgramInput, request: Request, progra
             for index in range(3):
                 db.add(ProgramSegment(program_id=program.id, sequence_no=index + 1,
                                       label=f'Therapist {index + 1}', duration_minutes=minutes + (index < extra)))
+        if package_assignment_locked:
+            db.commit()
+            return {'data': shape(program, list(existing.values()))}
         for option in (payload.packages or []):
             previous = existing.get(option.id)
             if previous:
@@ -178,7 +188,10 @@ def save_program(region_id: int, payload: ProgramInput, request: Request, progra
                 packages.append(previous)
                 continue
             # Keep purchased packages linked to the terms they were sold under.
-            row = Package(region_id=region_id, program_id=program.id, name=f'{name[:70]} {option.sessions} Session Package',
+            package_name = f'{name[:70]} {option.sessions} Session Package'
+            replaced_id = previous.id if previous and assigned_ids(previous) == [program.id] else None
+            validate_package_name(db, region_id, package_name, replaced_id)
+            row = Package(region_id=region_id, program_id=program.id, name=package_name,
                           total_sessions=option.sessions, price=float(option.amount),
                           duration_days=option.duration_days, is_active=True)
             db.add(row)
@@ -188,9 +201,9 @@ def save_program(region_id: int, payload: ProgramInput, request: Request, progra
             row.program_assignments = []
             packages.append(row)
         for option in payload.new_packages:
-            if not option.name.strip():
-                raise HTTPException(422, 'Enter a package name.')
-            row = Package(region_id=region_id, program_id=program.id, name=option.name.strip(),
+            package_name = option.name.strip()
+            validate_package_name(db, region_id, package_name)
+            row = Package(region_id=region_id, program_id=program.id, name=package_name,
                           total_sessions=option.sessions, price=float(option.amount),
                           duration_days=option.duration_days, is_active=True)
             db.add(row)
@@ -250,7 +263,7 @@ def list_shared_packages(region_id: int, request: Request, db: Session = Depends
 @router.put('/{region_id}/packages/{package_id}')
 def save_shared_package(region_id: int, payload: SharedPackageInput, request: Request,
                         package_id: int | None = None, db: Session = Depends(get_db)):
-    centre_access(db, request, region_id)
+    centre_access(db, request, region_id, lock_for_write=True)
     ids = set(payload.program_ids)
     valid = db.query(Program).filter(Program.id.in_(ids), Program.region_id == region_id,
                                      Program.is_active.is_(True), Program.deleted_at.is_(None)).all()
@@ -262,13 +275,15 @@ def save_shared_package(region_id: int, payload: SharedPackageInput, request: Re
     row = active_packages(db, region_id).filter(Package.id == package_id).with_for_update().first() if package_id else None
     if package_id and row is None:
         raise HTTPException(404, 'Package not found. Reload the catalogue.')
+    name = payload.name.strip()
+    validate_package_name(db, region_id, name, package_id)
     for program in valid:
         if is_package_priced(program):
             options = AppointmentService._program_package_options(db, program)
             if row:
                 options = options.filter(Package.id != row.id)
             if options.first():
-                raise HTTPException(422, f'{program.program_name} already has a package. Change it in the program editor.')
+                raise HTTPException(422, f'{program.program_name} already has a package.')
 
     description = row.description if row else None
     if row:
@@ -276,6 +291,12 @@ def save_shared_package(region_id: int, payload: SharedPackageInput, request: Re
         removed_ids = set(assigned_ids(row)) - ids
         if removed_ids and row.patient_packages:
             raise HTTPException(422, 'This package is in use and cannot be unassigned from its programs.')
+        removed_programs = db.query(Program).filter(
+            Program.id.in_(removed_ids), Program.region_id == region_id,
+            Program.is_active.is_(True), Program.deleted_at.is_(None),
+        ).all() if removed_ids else []
+        if any(is_package_priced(program) for program in removed_programs):
+            raise HTTPException(422, 'Package-based programs must keep a package. The existing assignment is locked.')
         terms_changed = (row.total_sessions, Decimal(str(row.price)), row.duration_days) != (
             payload.sessions, payload.amount, payload.duration_days
         )
@@ -286,9 +307,7 @@ def save_shared_package(region_id: int, payload: SharedPackageInput, request: Re
     if row is None:
         row = Package(region_id=region_id, description=description, is_active=True)
         db.add(row)
-    row.name = payload.name.strip()
-    if not row.name:
-        raise HTTPException(422, 'Enter a package name.')
+    row.name = name
     row.total_sessions = payload.sessions
     row.price = float(payload.amount)
     row.duration_days = payload.duration_days

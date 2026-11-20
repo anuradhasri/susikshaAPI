@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from tests import test_program_operations as fixture
 from app.core.database import get_db
-from app.models.models import Payment, PatientPackage, Package, Notification, PaymentModeMaster, CrtProgramBooking, GroupProgramBooking, Role, UserRole, UserRegionMapping
+from app.models.models import Payment, PatientPackage, Package, Notification, PaymentModeMaster, CrtProgramBooking, GroupProgramBooking, Role, Therapist, UserRole, UserRegionMapping
 from app.models.payouts import PatientProgramPricing
 from app.models.payment_alerts import PaymentAlertRule, PaymentAlertEvent, PaymentAlertLease
 from app.services import payment_alerts as service
@@ -155,6 +155,14 @@ class PaymentAlertTests(unittest.TestCase):
         service.reconcile_rule(self.db, rule, now)
         self.assertEqual(self.db.query(Notification).count(), 1)
 
+    def test_cash_preview_uses_first_receipt_period_after_schedule_start(self):
+        rule = self.rule('cash_summary', start_date='2026-09-30')
+        now = datetime(2026, 11, 20, 6, tzinfo=timezone.utc)
+        preview = service.candidates(self.db, rule, now, preview=True)
+        scheduled = service.candidates(self.db, rule, now)
+        self.assertEqual(preview['period:2026-10-10']['payload']['period_start'], '2026-09-30')
+        self.assertEqual(scheduled['period:2026-11-19']['payload']['period_start'], '2026-11-09')
+
     def test_multi_therapist_sessions_count_once_and_other_centres_are_excluded(self):
         self.db.add_all([CrtProgramBooking(id=1, patient_id=1, program_id=2, slot_date=date(2026, 10, 10), due_amount=200),
             GroupProgramBooking(id=1, program_id=3, slot_id=1, slot_date=date(2026, 10, 10), region_id=1)])
@@ -205,9 +213,11 @@ class PaymentAlertTests(unittest.TestCase):
         with TestClient(app) as client, patch.object(routes, '_require_user', return_value=self.fixture.user), \
              patch.object(routes, '_user_roles', return_value={'front_office'}), \
              patch.object(routes, '_user_region_ids', return_value=[1]), \
-             patch.object(routes, 'eligible_users', return_value=[self.fixture.user]):
+             patch.object(routes, 'eligible_users', side_effect=lambda db, region, include_role=False:
+                          [(self.fixture.user, 'Front Office')] if include_role else [self.fixture.user]):
             base = '/api/v1/ui/payment-alerts'
             settings = client.get(base + '?region_id=1').json()['data']
+            self.assertEqual(settings['recipients'][0]['role'], 'Front Office')
             self.assertTrue(all(not rule['enabled'] for rule in settings['rules']))
             payload = settings['rules'][1]
             payload['enabled'] = True
@@ -251,6 +261,19 @@ class PaymentAlertTests(unittest.TestCase):
         try:
             self.assertEqual(service.eligible_users(self.db, 1), [])
             self.assertEqual([user.id for user in service.eligible_users(self.db, 2)], [1])
+        finally:
+            self.recipients.start()
+
+
+    def test_therapist_recipient_uses_linked_profile_centre_without_mapping(self):
+        self.db.add_all([Role(id=1, name='therapist'), UserRole(id=1, user_id=1, role_id=1),
+                         Therapist(name='New Therapist', user_id=1, region_id=1)])
+        self.db.commit()
+        self.recipients.stop()
+        try:
+            self.assertEqual([(user.id, role) for user, role in service.eligible_users(
+                self.db, 1, include_role=True)], [(1, 'Therapist')])
+            self.assertEqual(service.eligible_users(self.db, 2), [])
         finally:
             self.recipients.start()
 

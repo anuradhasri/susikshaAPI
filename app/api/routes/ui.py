@@ -57,6 +57,7 @@ from app.models.models import (
     CrtProgramBooking,
     GroupProgramBooking,
 )
+from app.services.package_catalogue import lock_package_centre, validate_package_name
 from app.models.payouts import PatientProgramPricing, ProgramPaymentConfig, TherapistPayrollConfig
 from app.services.user_service import AuthService, UserService
 
@@ -918,10 +919,17 @@ def _permission_shape(db: Session, user: User) -> dict:
         }
         for row in rows
     }
-    from app.services.therapist_access import is_limited_therapist, THERAPIST_RESOURCES
-    if is_limited_therapist(_user_roles(db, user)):
+    from app.services.therapist_access import CENTRAL_HEAD_ROLES, is_limited_therapist, THERAPIST_RESOURCES
+    roles = _user_roles(db, user)
+    if is_limited_therapist(roles):
         return {code: {'view': True, 'create': code == 'report.action.create_sheet', 'edit': False, 'delete': False}
                 for code in THERAPIST_RESOURCES}
+    if {'_'.join(str(role).strip().lower().replace('-', ' ').split()) for role in roles} & CENTRAL_HEAD_ROLES:
+        for code in ('menu.sheets', 'report.action.create_sheet'):
+            result[code] = {
+                'create': False, 'edit': False, 'delete': False, **result.get(code, {}), 'view': True,
+            }
+        result['report.action.create_sheet']['create'] = True
     return result
 
 
@@ -6677,6 +6685,9 @@ def _create_one(table: str, item: dict, db: Session, user: Optional[User]):
             program = db.query(Program).filter(Program.id == int(program_id), Program.deleted_at.is_(None)).first()
             if not program or (program.region_id and program.region_id != region_id):
                 raise HTTPException(status_code=400, detail="Selected program is not available for this region")
+        if bool(item.get("is_active", True)):
+            lock_package_centre(db, region_id)
+            validate_package_name(db, region_id, name)
         row = Package(
             name=name,
             description=item.get("description"),
@@ -7136,6 +7147,15 @@ def _update_one(table: str, row: Any, item: dict, db: Session, user: Optional[Us
     elif table == "session_assignments":
         if "unassigned_at" in item:
             row.deleted_at = _parse_dt(item["unassigned_at"])
+    elif table == "packages":
+        region_id = item.get("region_id", row.region_id)
+        name = (item.get("name", row.name) or "").strip()
+        if item.get("is_active", row.is_active) and not item.get("deleted_at", row.deleted_at):
+            lock_package_centre(db, region_id)
+            validate_package_name(db, region_id, name, row.id)
+        for key, value in item.items():
+            if hasattr(row, key):
+                setattr(row, key, name if key == "name" else value)
     else:
         for key, value in item.items():
             if hasattr(row, key):

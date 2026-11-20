@@ -44,7 +44,7 @@ class ProgramCatalogTests(unittest.TestCase):
         self.addCleanup(db.close)
         db.add_all([Region(id=1, name='One', code='ONE'), Region(id=2, name='Two', code='TWO')])
         db.flush()
-        db.add_all([Program(id=1, region_id=1, program_name='General'),
+        db.add_all([Program(id=1, region_id=1, program_name='General', per_session_amount=1200),
                     Program(id=2, region_id=1, program_name='CRT'),
                     Program(id=3, region_id=2, program_name='Other'),
                     Program(id=4, region_id=1, program_name='Parent Training Program: PEG')])
@@ -92,34 +92,26 @@ class ProgramCatalogTests(unittest.TestCase):
             self.assertEqual(db.get(Package, package_id).price, 13200)
 
             revised_id = result.json()['data']['id']
-            result = client.put(f'{path}/{revised_id}', json={**payload, 'amount': '14000', 'program_ids': []})
-            self.assertEqual(result.status_code, 200, result.text)
-            unassigned_id = result.json()['data']['id']
-            option = client.get(path).json()['data'][0]
-            self.assertEqual(option['id'], unassigned_id)
-            self.assertEqual(option['program_ids'], [])
-            self.assertIsNone(db.get(Package, unassigned_id).program_id)
-            self.assertEqual(programs.assigned_ids(db.get(Package, revised_id)), [2])
-            self.assertIsNone(AppointmentService._program_package_options(db, db.get(Program, 2)).first())
-            result = client.put(f'{path}/{unassigned_id}', json={**payload, 'amount': '14000', 'program_ids': [2]})
-            self.assertEqual(result.status_code, 200, result.text)
+            unassign_unused = client.put(f'{path}/{revised_id}', json={**payload, 'amount': '14000', 'program_ids': []})
+            self.assertEqual(unassign_unused.status_code, 422)
+            self.assertIn('must keep a package', unassign_unused.json()['detail'])
             self.assertEqual(client.get(path).json()['data'][0]['program_ids'], [2])
-            reserved = client.put(f'{path}/{unassigned_id}', json={**payload, 'amount': '14000', 'program_ids': [1, 2]})
+            reserved = client.put(f'{path}/{revised_id}', json={**payload, 'amount': '14000', 'program_ids': [1, 2]})
             self.assertEqual(reserved.status_code, 422)
             reused = client.post('/api/v1/ui/program-catalog/1', json={
                 'name': 'New Program', 'duration_minutes': 45, 'session_type': 'individual',
-                'package_ids': [unassigned_id],
+                'package_ids': [revised_id],
             })
             self.assertEqual(reused.status_code, 422)
             expiry = date(2026, 12, 18)
             db.add(Patient(id=1, first_name='Test', last_name='Child', date_of_birth=date(2020, 1, 1), region_id=1))
-            purchase = PatientPackage(patient_id=1, package_id=unassigned_id, start_date=date(2026, 11, 18),
+            purchase = PatientPackage(patient_id=1, package_id=revised_id, start_date=date(2026, 11, 18),
                                       end_date=expiry, sessions_remaining=12, total_amount=14000)
             db.add(purchase)
             db.commit()
             self.assertTrue(client.get(path).json()['data'][0]['terms_locked'])
             saved = {**payload, 'amount': '14000', 'program_ids': [2]}
-            unassign = client.put(f'{path}/{unassigned_id}', json={**saved, 'program_ids': []})
+            unassign = client.put(f'{path}/{revised_id}', json={**saved, 'program_ids': []})
             self.assertEqual(unassign.status_code, 422)
             self.assertIn('in use', unassign.json()['detail'])
             replacement = client.put('/api/v1/ui/program-catalog/1/2', json={
@@ -130,11 +122,11 @@ class ProgramCatalogTests(unittest.TestCase):
             self.assertIn('in use', replacement.json()['detail'])
 
             for change in ({'amount': '15000'}, {'sessions': 13}):
-                self.assertEqual(client.put(f'{path}/{unassigned_id}', json={**saved, **change}).status_code, 422)
-            validity = client.put(f'{path}/{unassigned_id}', json={**saved, 'duration_days': 45})
+                self.assertEqual(client.put(f'{path}/{revised_id}', json={**saved, **change}).status_code, 422)
+            validity = client.put(f'{path}/{revised_id}', json={**saved, 'duration_days': 45})
             self.assertEqual(validity.status_code, 200, validity.text)
-            self.assertEqual(validity.json()['data']['id'], unassigned_id)
-            self.assertEqual(db.get(Package, unassigned_id).duration_days, 45)
+            self.assertEqual(validity.json()['data']['id'], revised_id)
+            self.assertEqual(db.get(Package, revised_id).duration_days, 45)
             self.assertEqual(purchase.end_date, expiry)
 
 
@@ -169,14 +161,14 @@ class ProgramCatalogTests(unittest.TestCase):
             result = client.put(edit_path, json={**data, 'packages': [{'sessions': 4, 'amount': '3000'}]})
             self.assertEqual(result.status_code, 200, result.text)
             option = result.json()['data']['packages'][0]
-            result = client.put(edit_path, json={**data, 'packages': [{**option, 'amount': '3200'}]})
-            self.assertEqual(result.status_code, 200, result.text)
-            replacement = result.json()['data']['packages'][0]
-            self.assertNotEqual(replacement['id'], option['id'])
-            previous = db.get(Package, option['id'])
-            self.assertEqual(previous.price, 3000)
-            self.assertFalse(previous.is_active)
-            self.assertEqual(client.get(path).json()['data'][0]['packages'], [replacement])
+            self.assertEqual(client.put(edit_path, json={**data, 'packages': [{**option, 'amount': '3200'}]}).status_code, 422)
+            self.assertEqual(client.put(edit_path, json={**data, 'new_packages': [package]}).status_code, 422)
+            self.assertEqual(client.put(edit_path, json={**data, 'session_amount': '850'}).status_code, 422)
+            kept = client.put(edit_path, json={**data, 'duration_minutes': 60, 'package_ids': [option['id']]})
+            self.assertEqual(kept.status_code, 200, kept.text)
+            self.assertEqual(kept.json()['data']['packages'], [option])
+            self.assertEqual(kept.json()['data']['duration_minutes'], 60)
+
 
 
     def test_custom_package_booking_purchases_once_and_uses_session_rate(self):
