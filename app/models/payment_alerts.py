@@ -1,5 +1,6 @@
 from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, text
 from app.core.database import Base
+from app.models.models import Notification
 
 
 class PaymentAlertRule(Base):
@@ -55,7 +56,7 @@ def provision_payment_alerts(db):
         if mysql:
             connection.exec_driver_sql('SET SESSION lock_wait_timeout=10')
         try:
-            for model in (PaymentAlertRule, PaymentAlertEvent, PaymentAlertDelivery, PaymentAlertLease):
+            for model in (Notification, PaymentAlertRule, PaymentAlertEvent, PaymentAlertDelivery, PaymentAlertLease):
                 model.__table__.create(connection, checkfirst=True)
         finally:
             if mysql:

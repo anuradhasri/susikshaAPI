@@ -1,4 +1,5 @@
 """Effective-dated therapist payout calculation and therapy-sheet tracking APIs."""
+from app.services.appointment_service import AppointmentService
 from app.services.child_pricing import pricing_starts_at, booking_completion_time
 from calendar import monthrange
 import math
@@ -19,7 +20,6 @@ from app.models.payouts import (
     TherapistSessionAllocation, TherapistSessionPayout, TherapistPayrollConfig,
     PatientProgramPricing, TherapistPaymentEarning, PayrollTaxSetting,
 )
-from app.services.payment_earning_service import sync_payment_earnings
 from app.models.payment_alerts import PaymentAlertDelivery, PaymentAlertEvent, PaymentAlertRule
 from app.services.payment_alerts import notification_data
 from app.models.report_sheets import (
@@ -77,6 +77,11 @@ def inclusive_gst(amount, rate):
         return 0.0, gross
     gst = money(gross * gst_rate / (100 + gst_rate))
     return gst, money(gross - gst)
+
+
+def equal_money_share(amount, count, index):
+    cents, remainder = divmod(round(amount * 100), count)
+    return (cents + (index < remainder)) / 100
 
 
 def tax_settings(db):
@@ -426,6 +431,22 @@ def dashboard(month: str | None = None, region_id: int | None = None, db: Sessio
     return payout_dashboard_data(db, month, regions, scoped_therapist)
 
 
+def session_earning_date():
+    payout = TherapistSessionPayout
+    return func.coalesce(
+        func.date(func.json_unquote(func.json_extract(payout.calculation_json, "$.earningDate"))),
+        payout.session_date,
+    )
+
+
+def finalized_payment_earning(db):
+    return db.query(TherapistMonthlyPayout.id).filter(
+        TherapistMonthlyPayout.id == TherapistPaymentEarning.monthly_payout_id,
+        TherapistMonthlyPayout.status.in_(("approved", "paid")),
+        TherapistMonthlyPayout.deleted_at.is_(None),
+    ).exists()
+
+
 def payout_report_regions(user, region_id):
     allowed_regions = getattr(user, "region_ids", None) or []
     if region_id is not None and allowed_regions and region_id not in allowed_regions:
@@ -452,17 +473,15 @@ def payout_dashboard_data(db, month, regions, scoped_therapist):
         TherapistPayrollConfig.deleted_at.is_(None)
     )
     sheets_q = db.query(TherapySheetAssignment).filter(TherapySheetAssignment.deleted_at.is_(None))
-    parent_program_ids = [p.id for p in program_rows if "parent" in str(p.program_name or "").lower()]
-    payouts_q = db.query(TherapistSessionPayout).join(PatientSlotBooking, PatientSlotBooking.id == TherapistSessionPayout.patient_slot_booking_id).filter(TherapistSessionPayout.session_date.between(month_start, month_end), TherapistSessionPayout.deleted_at.is_(None))
-    if parent_program_ids:
-        payouts_q = payouts_q.filter(~TherapistSessionPayout.program_id.in_(parent_program_ids))
+    payouts_q = db.query(TherapistSessionPayout).join(PatientSlotBooking, PatientSlotBooking.id == TherapistSessionPayout.patient_slot_booking_id).filter(session_earning_date().between(month_start, month_end), TherapistSessionPayout.deleted_at.is_(None))
     ledger_exists = db.query(TherapistPaymentEarning.id).filter(
         TherapistPaymentEarning.patient_slot_booking_id == TherapistSessionPayout.patient_slot_booking_id,
         TherapistPaymentEarning.therapist_id == TherapistSessionPayout.therapist_id,
         TherapistPaymentEarning.deleted_at.is_(None),
+        finalized_payment_earning(db),
     ).exists()
     payouts_q = payouts_q.filter(~ledger_exists)
-    earnings_q = db.query(TherapistPaymentEarning).filter(TherapistPaymentEarning.earning_date.between(month_start, month_end), TherapistPaymentEarning.deleted_at.is_(None))
+    earnings_q = db.query(TherapistPaymentEarning).filter(TherapistPaymentEarning.earning_date.between(month_start, month_end), TherapistPaymentEarning.deleted_at.is_(None), finalized_payment_earning(db))
     monthly_q = db.query(TherapistMonthlyPayout).filter(TherapistMonthlyPayout.payout_month == month_start, TherapistMonthlyPayout.deleted_at.is_(None))
     if scoped_therapist:
         sheets_q = sheets_q.filter(TherapySheetAssignment.therapist_id == scoped_therapist.id)
@@ -484,6 +503,7 @@ def payout_dashboard_data(db, month, regions, scoped_therapist):
     payout_booking_ids = [p.patient_slot_booking_id for p in payouts]
     payout_bookings = {booking.id: booking for booking in db.query(PatientSlotBooking).filter(PatientSlotBooking.id.in_(payout_booking_ids) if payout_booking_ids else False).all()}
     payout_groups = {}
+    crt_workspace_rows = {}
     for payout in payouts:
         booking = payout_bookings.get(payout.patient_slot_booking_id)
         session_key = f"group:{booking.group_program_booking_id}" if booking and booking.group_program_booking_id else f"booking:{payout.patient_slot_booking_id}"
@@ -495,6 +515,25 @@ def payout_dashboard_data(db, month, regions, scoped_therapist):
             item["status"] = "eligible"
         elif payout.eligibility_status == "pending_completion" and item["status"] != "eligible":
             item["status"] = "pending_completion"
+        if booking and booking.group_program_booking_id:
+            item["groupBookingId"] = booking.group_program_booking_id
+        if booking and booking.crt_program_booking_id:
+            item["crtBookingId"] = booking.crt_program_booking_id
+            crt_workspace_rows.setdefault(booking.crt_program_booking_id, {})[key] = item
+    for rows_by_key in crt_workspace_rows.values():
+        rows = sorted(rows_by_key.values(), key=lambda row: row["sessionId"])
+        booking_totals = {
+            field: max(row[field] for row in rows)
+            for field in ("eligibleAmount", "gstAmount", "amountAfterGst")
+        }
+        booking_totals["organizationAmount"] = money(
+            booking_totals["amountAfterGst"] - sum(row["therapistAmount"] for row in rows)
+        )
+        # The three segments share one booking charge. Keep each therapist's
+        # earning on their own row and put booking-level amounts on one row.
+        rows[0].update(booking_totals)
+        for row in rows[1:]:
+            row.update(dict.fromkeys(booking_totals, 0.0))
     for earning in payment_earnings:
         key = (f"payment:{earning.payment_id}", earning.therapist_id)
         payout_groups[key] = {"id": f"payment-{earning.id}", "sessionId": earning.patient_slot_booking_id, "date": earning.earning_date.isoformat(), "therapistId": earning.therapist_id, "programId": earning.program_id, "eligibleAmount": money(earning.received_amount), "gstAmount": money(earning.gst_amount), "amountAfterGst": money(earning.amount_after_gst), "therapistAmount": money(earning.therapist_amount), "organizationAmount": money(earning.organization_amount), "status": earning.status, "monthlyPayoutId": earning.monthly_payout_id}
@@ -517,7 +556,7 @@ def payout_dashboard_data(db, month, regions, scoped_therapist):
             session_dates[assignment.id] = booking.therapist_slot_mapping.slot_date.isoformat()
     session_payout_rows = [
         {
-            **{key: value for key, value in item.items() if key not in {"therapistId", "programId"}},
+            **{key: value for key, value in item.items() if key != "programId"},
             "therapistName": names.get(item["therapistId"], f"Therapist {item['therapistId']}"),
             "programName": program_names.get(item["programId"], "—"),
         }
@@ -857,29 +896,7 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
         is_vocational_report_row = "vocational" in str(programs.get(row.program_id, "") or "").lower()
         is_structured_report_row = any(value in str(programs.get(row.program_id, "") or "").lower() for value in ("crt", "structured"))
         gst, net_amount = inclusive_gst(received, 0 if is_vocational_report_row or is_structured_report_row else (config.gst_rate if config else 0))
-        collection_ratio = min(1.0, received / due) if due > 0 else 0.0
-        try:
-            calculation = json.loads(row.calculation_json or "{}")
-        except (TypeError, ValueError):
-            calculation = {}
-        stored_ratio = calculation.get("collectionRatio")
-        is_parent_payout_preview = (
-            calculation.get("method") == "parent_40_percent_pool"
-            and row.eligibility_status == "pending_completion"
-        )
-        if is_parent_payout_preview:
-            configured_pool_share = float(
-                config.therapist_pool_percentage
-                if config and config.therapist_pool_percentage is not None
-                else 0
-            )
-            therapist_payout = money(net_amount * 0.40 * configured_pool_share / 100)
-        elif stored_ratio is None:
-            therapist_payout = money(row.therapist_amount * collection_ratio)
-        elif float(stored_ratio or 0) > 0:
-            therapist_payout = money(row.therapist_amount * collection_ratio / float(stored_ratio))
-        else:
-            therapist_payout = 0.0
+        therapist_payout = money(row.therapist_amount) if row.eligibility_status == "eligible" else 0.0
         session_key = f"group:{booking.group_program_booking_id}" if booking and booking.group_program_booking_id else f"booking:{booking.id if booking else row.patient_slot_booking_id}"
         booking_payments = payments_by_booking.get(int(row.patient_slot_booking_id), [])
         report_patient_id = booking.patient_id if booking else (booking_payments[-1].patient_id if booking_payments else None)
@@ -889,6 +906,7 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
         TherapistPaymentEarning.earning_date.between(start, end),
         TherapistPaymentEarning.status == "eligible",
         TherapistPaymentEarning.deleted_at.is_(None),
+        finalized_payment_earning(db),
     )
     if therapist_id:
         payment_earning_query = payment_earning_query.filter(TherapistPaymentEarning.therapist_id == therapist_id)
@@ -942,6 +960,7 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
                 TherapistPaymentEarning.patient_slot_booking_id.in_(detailed_booking_ids),
                 TherapistPaymentEarning.therapist_id.in_(detailed_therapist_ids),
                 TherapistPaymentEarning.deleted_at.is_(None),
+                finalized_payment_earning(db),
             ).distinct().all()
         }
 
@@ -951,11 +970,7 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
             (item["bookingId"], item["therapistId"]), []
         ).append(item)
     for booking_key, items in detailed_by_booking_therapist.items():
-        uses_payment_ledger = booking_key in all_payment_earning_keys
-        is_parent_program = any(
-            "parent" in str(item["program"] or "").lower() for item in items
-        )
-        if not uses_payment_ledger and not is_parent_program:
+        if booking_key not in all_payment_earning_keys:
             continue
         selected_month_total = payment_earnings_by_booking_therapist.get(booking_key, 0.0)
         allocation_keys = list(range(len(items)))
@@ -980,7 +995,12 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
         if therapist_row and program_id:
             summary_by_therapist_program[(therapist_row.id, program_id)] = item
             if (therapist_row.id, program_id) in payment_activity_by_therapist_program:
-                item["therapistPayout"] = payment_earnings_by_therapist_program.get((therapist_row.id, program_id), 0.0)
+                item["therapistPayout"] = money(
+                    sum(row["therapistPayout"] for row in detailed
+                        if row["therapistId"] == therapist_row.id and row["program"] == item["program"]
+                        and (row["bookingId"], row["therapistId"]) not in payment_booking_therapists)
+                    + payment_earnings_by_therapist_program.get((therapist_row.id, program_id), 0.0)
+                )
     # Include older sessions paid in the selected month in Therapist Summary.
     for key, activity in payment_activity_by_therapist_program.items():
         if key in summary_by_therapist_program:
@@ -1002,7 +1022,7 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
     payroll = []
     payroll_therapist_ids = {item["therapistId"] for item in detailed} | set(payment_earnings_by_therapist)
     for tid in sorted(payroll_therapist_ids):
-        non_ledger_session_earnings = sum(item["therapistPayout"] for item in detailed if item["therapistId"] == tid and (item["bookingId"], tid) not in payment_booking_therapists and "parent" not in str(item["program"] or "").lower())
+        non_ledger_session_earnings = sum(item["therapistPayout"] for item in detailed if item["therapistId"] == tid and (item["bookingId"], tid) not in payment_booking_therapists)
         earnings = money(non_ledger_session_earnings + payment_earnings_by_therapist.get(tid, 0)); config = applicable_payroll_config(db, tid, end)
         if config and config.fixed_salary_only:
             earnings = 0.0
@@ -1013,7 +1033,7 @@ def billing_reports(month: str, region_id: int | None = None, therapist_id: int 
         pt = professional_tax_for(db, gross, start); tds = monthly_tds_for(db, gross)
         payroll.append({"therapistId": tid, "therapist": therapists[tid].name, "sessionEarnings": earnings, "baseSalary": base, "flatCommission": flat, "professionalTax": pt, "fixedSalaryOnly": bool(config.fixed_salary_only) if config else False, "gross": gross, "adjustments": adjustment, "afterTds": money(gross - tds), "afterPt": money(gross - tds - pt), "tds": tds, "netPay": money(gross - pt - tds + adjustment), "effectiveFrom": config.effective_from.isoformat() if config else None})
     totals = {field: money(sum(item[field] for item in detailed)) for field in ("amountDue", "amountReceived", "balance", "gst", "netAmount", "therapistPayout")}
-    totals["therapistPayout"] = money(sum(item["therapistPayout"] for item in detailed if (item["bookingId"], item["therapistId"]) not in payment_booking_therapists and "parent" not in str(item["program"] or "").lower()) + sum(payment_earnings_by_therapist.values()))
+    totals["therapistPayout"] = money(sum(item["therapistPayout"] for item in detailed if (item["bookingId"], item["therapistId"]) not in payment_booking_therapists) + sum(payment_earnings_by_therapist.values()))
     return {"data": {"month": month, "detailed": detailed, "children": summarize("child"), "therapists": therapist_summary, "payroll": payroll, "totals": totals}}
 
 
@@ -1028,7 +1048,20 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
     query = db.query(PatientSlotBooking).options(
         joinedload(PatientSlotBooking.patient_slot_booking_status_master), joinedload(PatientSlotBooking.patient_package).joinedload(PatientPackage.package),
         joinedload(PatientSlotBooking.therapist_slot_mapping).joinedload(TherapistSlotMapping.therapist), joinedload(PatientSlotBooking.program),
-    ).join(TherapistSlotMapping).join(Therapist).filter(TherapistSlotMapping.slot_date.between(start_date, end_date))
+    ).join(TherapistSlotMapping).join(Therapist)
+    session_in_range = TherapistSlotMapping.slot_date.between(start_date, end_date)
+    if AppointmentService._has_table(db, "parent_program_groups"):
+        parent_group_ends_in_range = text("""
+            EXISTS (
+                SELECT 1 FROM group_program_bookings booking
+                JOIN parent_program_groups pg ON pg.id = booking.parent_program_group_id
+                WHERE booking.id = patient_slot_booking.group_program_booking_id
+                  AND LEAST(pg.end_date, COALESCE(DATE(pg.completed_at), pg.end_date))
+                      BETWEEN :range_start AND :range_end
+            )
+        """).bindparams(range_start=start_date, range_end=end_date)
+        session_in_range = or_(session_in_range, parent_group_ends_in_range)
+    query = query.filter(session_in_range)
     if region_id:
         query = query.filter(Therapist.region_id == region_id)
     rows = [r for r in query.all() if completed(r) and r.program_id]
@@ -1115,9 +1148,9 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             group_patient_ids = {int(x.patient_id) for x in group_rows if x.patient_id}
             linked_parent_group_id = getattr(row.group_program_booking, "parent_program_group_id", None)
             if linked_parent_group_id:
-                parent_program_group = db.execute(text("SELECT id,start_date,end_date,status,pro_rata_amount,number_of_sessions FROM parent_program_groups WHERE id=:group_id"), {"group_id": linked_parent_group_id}).mappings().first()
+                parent_program_group = db.execute(text("SELECT id,start_date,end_date,status,completed_at,pro_rata_amount,number_of_sessions FROM parent_program_groups WHERE id=:group_id"), {"group_id": linked_parent_group_id}).mappings().first()
             if not parent_program_group:
-                candidates = db.execute(text("SELECT id,start_date,end_date,status,pro_rata_amount,number_of_sessions FROM parent_program_groups WHERE program_id=:program_id AND start_date<=:slot_date AND end_date>=:slot_date"), {"program_id": row.program_id, "slot_date": mapping.slot_date}).mappings().all()
+                candidates = db.execute(text("SELECT id,start_date,end_date,status,completed_at,pro_rata_amount,number_of_sessions FROM parent_program_groups WHERE program_id=:program_id AND start_date<=:slot_date AND end_date>=:slot_date"), {"program_id": row.program_id, "slot_date": mapping.slot_date}).mappings().all()
                 for candidate in candidates:
                     member_ids = {int(value[0]) for value in db.execute(text("SELECT patient_id FROM parent_program_group_members WHERE group_id=:group_id"), {"group_id": candidate["id"]}).all()}
                     if member_ids and member_ids == group_patient_ids:
@@ -1128,7 +1161,7 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             # Keep group_rows scoped to this exact session. The linked parent
             # program period may be historical; replacing current rows with
             # older matching-member sessions loses today's payment receipts.
-            group_therapist_ids = {x.therapist_slot_mapping.therapist_id for x in group_rows if x.therapist_slot_mapping}
+            group_therapist_ids = sorted({x.therapist_slot_mapping.therapist_id for x in group_rows if x.therapist_slot_mapping})
             therapist_count = max(1, len(group_therapist_ids))
             child_equivalent = len({x.patient_id for x in group_rows if x.patient_id}) / therapist_count
             eligible = money((row.amount or (package.price / package.total_sessions if package and package.total_sessions else 0)) * child_equivalent)
@@ -1161,7 +1194,7 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             patient_amounts = {}
             patient_receipts = {}
             for item in group_rows:
-                if not item.patient_id:
+                if not item.patient_id or (parent_program_group and not completed(item)):
                     continue
                 patient_amounts[item.patient_id] = max(patient_amounts.get(item.patient_id, 0.0), float(item.amount or 0))
                 patient_receipts[item.patient_id] = max(patient_receipts.get(item.patient_id, 0.0), float(item.paid_amount or 0) + float(item.package_covered_amount or 0))
@@ -1184,12 +1217,18 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
             eligible = money(session_amount)
         program_name = str(row.program.program_name if row.program else "").lower()
         is_structured_program = "crt" in program_name or "structured" in program_name
-        is_parent_program = "parent" in program_name
+        is_parent_program = bool(parent_program_group) or "parent" in program_name
         is_vocational_program = "vocational" in program_name
+        split_general_group = (
+            bool(row.group_program_booking_id)
+            and therapist_count > 1
+            and not is_parent_program
+            and AppointmentService._program_type(program_name) == "general"
+        )
         gst_rate = 0.0 if is_vocational_program or is_structured_program else float(config.gst_rate or 0)
         is_group_payout_row = True
         if row.group_program_booking_id:
-            therapist_group_rows = [item for item in group_rows if item.therapist_slot_mapping and item.therapist_slot_mapping.therapist_id == mapping.therapist_id]
+            therapist_group_rows = [item for item in group_rows if completed(item) and item.therapist_slot_mapping and item.therapist_slot_mapping.therapist_id == mapping.therapist_id]
             canonical_group_row_id = max(therapist_group_rows, key=lambda item: (item.therapist_slot_mapping.slot_date, item.id)).id if therapist_group_rows else row.id
             is_group_payout_row = row.id == canonical_group_row_id
         if is_parent_program and package and package.total_sessions:
@@ -1197,20 +1236,26 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
         elif config.payment_method == "package" and package and package.total_sessions:
             eligible = money(package.price / package.total_sessions / therapist_count)
         if row.group_program_booking_id and is_parent_program:
-            # Allocate the cash actually received for this child-priced
-            # session equally across its therapists. Partial collections earn
-            # proportionally and later payments are picked up by auto-sync.
-            eligible = money(session_amount * paid_ratio / therapist_count) if is_group_payout_row and session_amount > 0 else 0.0
+            eligible = money(session_amount / therapist_count) if is_group_payout_row else 0.0
+        elif is_vocational_program and not is_group_payout_row:
+            eligible = 0.0
+        if split_general_group:
+            eligible = gst = after_gst = 0.0
+            if is_group_payout_row:
+                total_gst, total_after_gst = inclusive_gst(session_amount, gst_rate)
+                share_index = group_therapist_ids.index(mapping.therapist_id)
+                gst = equal_money_share(total_gst, therapist_count, share_index)
+                after_gst = equal_money_share(total_after_gst, therapist_count, share_index)
+                eligible = money(gst + after_gst)
         else:
-            eligible = money(eligible * paid_ratio)
-        gst, after_gst = inclusive_gst(eligible, gst_rate)
+            gst, after_gst = inclusive_gst(eligible, gst_rate)
         duration_minutes = int(row.duration_minutes or 0)
         if is_structured_program:
             structured_rates = {
                 45: float(config.fixed_amount if config.fixed_amount is not None else 300),
                 30: float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 100),
             }
-            therapist_amount = money(structured_rates.get(duration_minutes, 0) * paid_ratio)
+            therapist_amount = money(structured_rates.get(duration_minutes, 0))
         elif is_parent_program:
             # Parent Programs first create a 40% therapist pool after GST.
             # Group collections have already been divided equally between the
@@ -1221,28 +1266,34 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
         elif is_vocational_program:
             # Vocational earnings are fixed at Rs 529 for the whole session.
             # Split that amount equally between every attending therapist.
-            therapist_amount = money(529 * paid_ratio / therapist_count)
+            therapist_amount = money(529 / therapist_count if is_group_payout_row else 0)
         elif config.payment_method == "package":
             therapist_amount = money(after_gst * float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 50) / 100)
         else:
             if config.fixed_amount is not None and config.payment_method in {"fixed", "completion"}:
-                therapist_amount = money(config.fixed_amount * paid_ratio)
+                therapist_amount = money(config.fixed_amount)
             else:
                 therapist_amount = money(after_gst * float(config.percentage or 0) / 100)
         if fixed_salary_only:
             therapist_amount = 0.0
-        status = "pending_payment" if session_received <= 0 or not is_group_payout_row else "eligible"
-        if is_parent_program and parent_program_group and str(parent_program_group.get("status") or "").upper() != "COMPLETED" and date.today() < parent_program_group["end_date"]:
-            status = "pending_completion"
-        if session_received > 0 and config.release_on_completion and not (row.group_program_booking_id and is_parent_program):
-            package_complete = bool(row.patient_package and (row.patient_package.sessions_remaining <= 0 or str(row.patient_package.status).lower() == "completed"))
-            status = "eligible" if package_complete else "pending_completion"
+        status = "eligible"
+        earning_date = mapping.slot_date
+        if is_parent_program and parent_program_group:
+            group_status = str(parent_program_group.get("status") or "").upper()
+            completed_at = parent_program_group.get("completed_at")
+            group_end = parent_program_group["end_date"]
+            release_date = min(completed_at.date(), group_end) if completed_at and group_status == "COMPLETED" else group_end
+            earning_date = max(earning_date, release_date)
+            if date.today() < earning_date and group_status != "COMPLETED":
+                status = "pending_completion"
+        if row.group_program_booking_id and (is_parent_program or is_vocational_program or split_general_group) and not is_group_payout_row:
+            therapist_amount = 0.0
         allocation = db.query(TherapistSessionAllocation).filter_by(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id).first()
         if not allocation:
             db.add(TherapistSessionAllocation(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id, child_equivalent=child_equivalent, allocation_percentage=100 / therapist_count))
         pool_allocation_percentage = (100 / therapist_count) if is_parent_program else None
         configured_pool_share = float(config.therapist_pool_percentage if config.therapist_pool_percentage is not None else 0) if is_parent_program else None
-        breakdown = {"method": "fixed_salary_only" if fixed_salary_only else "structured_duration_fixed" if is_structured_program else "parent_40_percent_pool" if is_parent_program else "vocational_fixed_529_split" if is_vocational_program else config.payment_method, "configId": config.id, "gstRate": gst_rate, "amountReceived": session_received, "collectionRatio": paid_ratio, "childEquivalent": child_equivalent, "therapistCount": therapist_count, "durationMinutes": duration_minutes, "fixedSessionAmount": 529 if is_vocational_program else None, "fixedSalaryOnly": fixed_salary_only, "organizationPercentage": 60 if is_parent_program else None, "therapistPoolPercentage": 40 if is_parent_program else config.therapist_pool_percentage, "therapistPoolAllocationPercentage": pool_allocation_percentage, "therapistConfiguredPoolSharePercentage": configured_pool_share, "groupSessionAmount": group_session_amount if row.group_program_booking_id else None, "gstAlreadyDeducted": not is_vocational_program}
+        breakdown = {"method": "fixed_salary_only" if fixed_salary_only else "structured_duration_fixed" if is_structured_program else "parent_40_percent_pool" if is_parent_program else "vocational_fixed_529_split" if is_vocational_program else config.payment_method, "configId": config.id, "gstRate": gst_rate, "amountReceived": session_received, "collectionRatio": paid_ratio, "earningDate": earning_date.isoformat(), "childEquivalent": child_equivalent, "therapistCount": therapist_count, "durationMinutes": duration_minutes, "fixedSessionAmount": 529 if is_vocational_program else None, "fixedSalaryOnly": fixed_salary_only, "organizationPercentage": 60 if is_parent_program else None, "therapistPoolPercentage": 40 if is_parent_program else config.therapist_pool_percentage, "therapistPoolAllocationPercentage": pool_allocation_percentage, "therapistConfiguredPoolSharePercentage": configured_pool_share, "groupSessionAmount": group_session_amount if row.group_program_booking_id else None, "gstAlreadyDeducted": not is_vocational_program}
         payout_values = {"program_id": row.program_id, "config_id": config.id, "session_date": mapping.slot_date, "eligible_amount": eligible, "gst_amount": gst, "amount_after_gst": after_gst, "therapist_percentage": configured_pool_share if is_parent_program else config.percentage, "therapist_amount": therapist_amount, "organization_amount": money(after_gst - therapist_amount), "calculation_json": json.dumps(breakdown), "eligibility_status": status}
         if existing_payout:
             for field, value in payout_values.items():
@@ -1251,7 +1302,7 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
                 month_end = existing_monthly.payout_month.replace(day=monthrange(existing_monthly.payout_month.year, existing_monthly.payout_month.month)[1])
                 month_rows = db.query(TherapistSessionPayout).filter_by(monthly_payout_id=existing_monthly.id).all()
                 payroll_config = applicable_payroll_config(db, existing_monthly.therapist_id, month_end)
-                session_earnings = money(sum(item.therapist_amount for item in month_rows))
+                session_earnings = money(sum(item.therapist_amount for item in month_rows if item.eligibility_status == "eligible"))
                 if payroll_config and payroll_config.fixed_salary_only:
                     session_earnings = 0.0
                 gross_before_tax = money(session_earnings + (payroll_config.base_salary if payroll_config and payroll_config.fixed_salary_only else 0))
@@ -1260,9 +1311,8 @@ def sync(start_date: date = Query(...), end_date: date = Query(...), region_id: 
         else:
             db.add(TherapistSessionPayout(patient_slot_booking_id=row.id, therapist_id=mapping.therapist_id, **payout_values))
             calculated += 1
-    payment_result = sync_payment_earnings(db, start_date, end_date, region_id)
     db.commit()
-    return {"data": {"sheetAssignmentsCreated": created_sheets, "payoutsCalculated": calculated, "payoutsReconciled": reconciled, "skipped": skipped, "paymentEarningsCreated": payment_result["created"], "paymentEarningsUpdated": payment_result["updated"], "paymentEarningsSkipped": payment_result["skipped"]}}
+    return {"data": {"sheetAssignmentsCreated": created_sheets, "payoutsCalculated": calculated, "payoutsReconciled": reconciled, "skipped": skipped, "paymentEarningsCreated": 0, "paymentEarningsUpdated": 0, "paymentEarningsSkipped": 0}}
 
 
 @router.post("/monthly/generate")
@@ -1272,24 +1322,23 @@ def generate_month(payload: dict, db: Session = Depends(get_db), user: User = De
     except ValueError:
         raise HTTPException(400, "month must use YYYY-MM")
     end = start.replace(day=monthrange(start.year, start.month)[1])
-    parent_program_ids = [row[0] for row in db.query(Program.id).filter(func.lower(Program.program_name).like("%parent%"), Program.deleted_at.is_(None)).all()]
     session_query = db.query(TherapistSessionPayout).filter(
-        TherapistSessionPayout.session_date.between(start, end),
+        session_earning_date().between(start, end),
         TherapistSessionPayout.eligibility_status == "eligible",
         TherapistSessionPayout.deleted_at.is_(None),
     )
-    if parent_program_ids:
-        session_query = session_query.filter(~TherapistSessionPayout.program_id.in_(parent_program_ids))
     monthly_ledger_exists = db.query(TherapistPaymentEarning.id).filter(
         TherapistPaymentEarning.patient_slot_booking_id == TherapistSessionPayout.patient_slot_booking_id,
         TherapistPaymentEarning.therapist_id == TherapistSessionPayout.therapist_id,
         TherapistPaymentEarning.deleted_at.is_(None),
+        finalized_payment_earning(db),
     ).exists()
     session_query = session_query.filter(~monthly_ledger_exists)
     payment_query = db.query(TherapistPaymentEarning).filter(
         TherapistPaymentEarning.earning_date.between(start, end),
         TherapistPaymentEarning.status == "eligible",
         TherapistPaymentEarning.deleted_at.is_(None),
+        finalized_payment_earning(db),
     )
     unassigned_sessions = session_query.filter(TherapistSessionPayout.monthly_payout_id.is_(None)).all()
     unassigned_payments = payment_query.filter(TherapistPaymentEarning.monthly_payout_id.is_(None)).all()
@@ -1303,9 +1352,18 @@ def generate_month(payload: dict, db: Session = Depends(get_db), user: User = De
         TherapistMonthlyPayout.payout_month == start, TherapistMonthlyPayout.status == "draft",
         TherapistMonthlyPayout.deleted_at.is_(None),
     ).all())
+    region_id = payload.get('region_id')
+    if region_id is not None and type(region_id) is not int:
+        raise HTTPException(422, 'region_id must be an integer')
+    regions = payout_report_regions(user, region_id)
+    if regions:
+        therapist_ids.intersection_update(row[0] for row in db.query(Therapist.id).filter(
+            Therapist.id.in_(therapist_ids), Therapist.region_id.in_(regions),
+        ).all())
     generated = 0
-    for therapist_id in therapist_ids:
-        monthly = db.query(TherapistMonthlyPayout).filter_by(therapist_id=therapist_id, payout_month=start).first()
+    for therapist_id in sorted(therapist_ids):
+        db.query(Therapist.id).filter(Therapist.id == therapist_id).with_for_update().first()
+        monthly = db.query(TherapistMonthlyPayout).filter_by(therapist_id=therapist_id, payout_month=start).with_for_update().first()
         if not monthly:
             monthly = TherapistMonthlyPayout(therapist_id=therapist_id, payout_month=start, gross_amount=0, payable_amount=0)
             db.add(monthly)

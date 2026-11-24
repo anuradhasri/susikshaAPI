@@ -2,6 +2,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, time, timezone, date
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import uuid4
 from urllib.parse import urlencode
 from app.services.payment_report_links import report_token
@@ -11,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 from app.core.database import SessionLocal
 from app.models.models import (Patient, Payment, PatientPackage, PatientSlotBooking, TherapistSlotMapping,
-    CrtProgramBooking, User, Role, Therapist, UserRole, UserRegionMapping, Notification, Region)
+    CrtProgramBooking, GroupProgramBooking, User, Role, Therapist, UserRole, UserRegionMapping, Notification, Region)
 from app.services.therapist_access import THERAPIST_ROLES
 from app.models.payouts import PatientProgramPricing
 from app.models.payment_alerts import PaymentAlertRule, PaymentAlertEvent, PaymentAlertDelivery, PaymentAlertLease
@@ -80,7 +81,9 @@ def financial_sessions(db, region_id):
     bookings = db.query(PatientSlotBooking).join(Patient).filter(Patient.region_id == region_id).options(
         joinedload(PatientSlotBooking.patient), joinedload(PatientSlotBooking.therapist_slot_mapping),
         joinedload(PatientSlotBooking.patient_slot_booking_status_master),
-        joinedload(PatientSlotBooking.crt_program_booking), joinedload(PatientSlotBooking.program)).all()
+        joinedload(PatientSlotBooking.crt_program_booking).joinedload(CrtProgramBooking.program),
+        joinedload(PatientSlotBooking.group_program_booking).joinedload(GroupProgramBooking.program),
+        joinedload(PatientSlotBooking.program)).all()
     groups = defaultdict(list)
     for booking in bookings:
         code = str(booking.patient_slot_booking_status_master.code if booking.patient_slot_booking_status_master else booking.status).upper()
@@ -97,15 +100,18 @@ def financial_sessions(db, region_id):
         if not mapping:
             continue
         source = parent or row
+        program_booking = parent or row.group_program_booking
         due = money(0 if source.fully_paid else source.due_amount)
         paid = money(source.paid_amount) + money(source.package_covered_amount)
         if key[0] == 'group':
             due = sum((money(0 if item.fully_paid else item.due_amount) for item, _ in items), Decimal('0.00'))
             paid = sum((money(item.paid_amount) + money(item.package_covered_amount) for item, _ in items), Decimal('0.00'))
         result.append({'key': ':'.join(map(str, key)), 'patient': row.patient,
-                       'program_id': row.program_id or (parent.program_id if parent else None),
+                       'program_id': row.program_id or (program_booking.program_id if program_booking else None),
+                       'program': row.program or (program_booking.program if program_booking else None),
                        'date': mapping.slot_date, 'completed': all(code == 'COMPLETED' for _, code in items),
-                       'is_package': bool(source.is_package_session),
+                       'is_package': bool(source.is_package_session or source.patient_package_id),
+                       'package_id': source.patient_package_id,
                        'due': due, 'paid': paid})
     return result
 
@@ -168,37 +174,100 @@ def candidates(db, rule, now, *, preview=False):
             events[f'package:{package.id}'] = {'title': f'Unpaid package reminder · {centre}',
                 'message': f'{child.first_name} {child.last_name}: {package.package.name}, started {package.start_date:%d/%m/%Y}; ₹{money(package.due_amount):,.2f} outstanding.',
                 'payload': {'patient_id': child.id, 'plan_type': 'package', 'start_date': str(package.start_date), 'amount': str(money(package.due_amount))}}
+        for row in sessions:
+            if not (row['is_package'] and row['completed'] and unpaid(row['due'], row['paid'], config)):
+                continue
+            if (today - row['date']).days < config['after_days'] or f"package:{row['package_id']}" in events:
+                continue
+            child = row['patient']
+            program_name = row['program'].program_name if row['program'] else 'Session'
+            events[f"package-session:{row['key']}"] = {
+                'title': f'Unpaid package session reminder — {centre}',
+                'message': f"{child.first_name} {child.last_name}: {program_name}, session {row['date']:%d/%m/%Y}; ₹{row['due']:,.2f} outstanding.",
+                'payload': {'patient_id': child.id, 'plan_type': 'package',
+                            'start_date': str(row['date']), 'amount': str(row['due'])},
+            }
     if 'fixed' in config['plan_types']:
+        scheduled = defaultdict(list)
+        for row in sessions:
+            if row['completed'] and not row['is_package'] and row['program_id'] is not None:
+                scheduled[row['patient'].id, row['program_id']].append(row)
+        covered = set()
+        fixed_groups = []
         plans = db.query(PatientProgramPricing).join(Patient).filter(Patient.region_id == rule.region_id,
             PatientProgramPricing.deleted_at.is_(None), PatientProgramPricing.is_active.is_(True),
             PatientProgramPricing.billing_type == 'per_session').options(joinedload(PatientProgramPricing.patient), joinedload(PatientProgramPricing.program)).all()
         for plan in plans:
             if selected_programs and plan.program_id not in selected_programs:
                 continue
-            rows = [row for row in sessions if not row['is_package'] and row['patient'].id == plan.patient_id and row['program_id'] == plan.program_id
-                    and row['date'] >= plan.effective_from and (not plan.effective_to or row['date'] <= plan.effective_to)]
+            rows = [row for row in scheduled[plan.patient_id, plan.program_id]
+                    if row['date'] >= plan.effective_from and (not plan.effective_to or row['date'] <= plan.effective_to)]
             if not rows:
                 continue
+            covered.update(row['key'] for row in rows)
+            fixed_groups.append((f'fixed:{plan.id}', plan.patient, plan.program.program_name, rows))
+        for (patient_id, program_id), rows in scheduled.items():
+            rows = [row for row in rows if row['key'] not in covered]
+            if rows:
+                program = rows[0]['program']
+                fixed_groups.append((f'fixed-bookings:{patient_id}:{program_id}', rows[0]['patient'],
+                                     program.program_name if program else 'Program', rows))
+        for key, child, program_name, rows in fixed_groups:
             start = min(row['date'] for row in rows)
             due = sum((row['due'] for row in rows), Decimal('0.00'))
             paid = sum((row['paid'] for row in rows), Decimal('0.00'))
             if (today - start).days < config['after_days'] or not unpaid(due, paid, config):
                 continue
-            child = plan.patient
-            events[f'fixed:{plan.id}'] = {'title': f'Unpaid fixed-plan reminder · {centre}',
-                'message': f'{child.first_name} {child.last_name}: {plan.program.program_name}, first session {start:%d/%m/%Y}; ₹{due:,.2f} outstanding.',
-                'payload': {'patient_id': child.id, 'plan_type': 'fixed', 'start_date': str(start), 'amount': str(due)}}
+            payload = {'patient_id': child.id, 'plan_type': 'fixed', 'start_date': str(start), 'amount': str(due)}
+            if key.startswith('fixed-bookings:'):
+                payload['session_keys'] = sorted(row['key'] for row in rows)
+            events[key] = {'title': f'Unpaid fixed-plan reminder · {centre}',
+                'message': f'{child.first_name} {child.last_name}: {program_name}, first session {start:%d/%m/%Y}; ₹{due:,.2f} outstanding.',
+                'payload': payload}
     return events
+
+
+def group_plan_reminders(events, centre):
+    by_child = defaultdict(dict)
+    for key, item in events.items():
+        by_child[item['payload']['patient_id']][key] = item
+    grouped = {}
+    for patient_id, items in by_child.items():
+        first = next(iter(items.values()))
+        child = first['message'].split(':', 1)[0]
+        sections = []
+        for label, purchases in (('Package balances', True), ('Session dues', False)):
+            lines = [item['message'].split(': ', 1)[-1] for key, item in sorted(items.items())
+                     if key.startswith('package:') == purchases]
+            if lines:
+                sections.append({'label': label, 'lines': lines})
+        grouped[f'plan-child:{patient_id}'] = {
+            'title': f'Unpaid plan reminder · {centre}',
+            'message': child + ':\n\n' + '\n\n'.join(
+                section['label'] + '\n' + '\n'.join(f'• {line}' for line in section['lines']) for section in sections),
+            'payload': {'patient_id': patient_id, 'child_name': child, 'sections': sections, 'items': items},
+        }
+    return grouped
 
 
 def stopped_reminder(db, rule, event):
     # Read balances independently of reminder filters. Leaving a rule is not proof of payment.
     kind, _, identifier = event.event_key.partition(':')
     balance = None
-    if identifier.isdigit() and kind == 'package':
+    if kind == 'plan-child':
+        results = [stopped_reminder(db, rule, SimpleNamespace(event_key=key, **item))
+                   for key, item in event.payload['items'].items()]
+        if all('amount' in item['payload'] for item in results):
+            balance = sum((money(item['payload']['amount']) for item in results), Decimal('0.00'))
+    elif identifier.isdigit() and kind == 'package':
         package = db.get(PatientPackage, int(identifier))
         if package and package.deleted_at is None:
             balance = money(0 if package.fully_paid else package.due_amount)
+    elif kind in ('fixed-bookings', 'package-session'):
+        keys = {identifier} if kind == 'package-session' else set(event.payload.get('session_keys', []))
+        rows = [row for row in financial_sessions(db, rule.region_id) if row['key'] in keys]
+        if keys and len(rows) == len(keys):
+            balance = sum((max(row['due'], Decimal('0.00')) for row in rows), Decimal('0.00'))
     elif identifier.isdigit() and kind in ('child', 'fixed'):
         rows = financial_sessions(db, rule.region_id)
         if kind == 'child':
@@ -206,7 +275,7 @@ def stopped_reminder(db, rule, event):
         else:
             plan = db.get(PatientProgramPricing, int(identifier))
             rows = [row for row in rows if plan and plan.deleted_at is None
-                    and not row['is_package'] and row['patient'].id == plan.patient_id
+                    and row['completed'] and not row['is_package'] and row['patient'].id == plan.patient_id
                     and row['program_id'] == plan.program_id and row['date'] >= plan.effective_from
                     and (not plan.effective_to or row['date'] <= plan.effective_to)]
         if rows:
@@ -231,6 +300,8 @@ def stopped_reminder(db, rule, event):
 
 def reconcile_rule(db, rule, now, preview=False):
     desired = candidates(db, rule, now, preview=preview)
+    if rule.kind == 'unpaid_plans':
+        desired = group_plan_reminders(desired, db.get(Region, rule.region_id).name)
     if preview:
         return list(desired.values())
     allowed = {user.id for user in eligible_users(db, rule.region_id)} & set(rule.recipients)
@@ -238,6 +309,13 @@ def reconcile_rule(db, rule, now, preview=False):
     # Cash summaries are historical snapshots; they do not become payment-due resolutions.
     if rule.kind != 'cash_summary':
         for key, event in existing.items():
+            if rule.kind == 'unpaid_plans' and not key.startswith('plan-child:') and f"plan-child:{event.payload.get('patient_id')}" in desired:
+                event.active = False
+                for delivery in db.query(PaymentAlertDelivery).filter_by(event_id=event.id):
+                    notice = db.get(Notification, delivery.notification_id)
+                    if notice and notice.deleted_at is None:
+                        notice.deleted_at = now.replace(tzinfo=None)
+                continue
             if (event.active or event.payload.get('reminder_stopped')) and key not in desired:
                 desired[key] = stopped_reminder(db, rule, event)
     for key, content in desired.items():

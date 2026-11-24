@@ -96,10 +96,10 @@ def settings(request: Request, region_id: int | None = None, db: Session = Depen
         'rules': [rules.get(kind, {'kind': kind, 'enabled': False, 'recipients': [], 'config': defaults(kind)}) for kind in KINDS]}}
 
 
-def validate(request, db, region_id, payload):
+def validate(request, db, region_id, payload, *, require_recipients=False):
     user, _ = access(request, db, region_id)
-    if payload.enabled and not payload.recipients:
-        raise HTTPException(422, 'Choose at least one recipient before enabling this alert.')
+    if require_recipients and not payload.recipients:
+        raise HTTPException(422, 'Select at least one staff member before saving this alert.')
     allowed = {user.id for user in eligible_users(db, region_id)}
     if not set(payload.recipients) <= allowed:
         raise HTTPException(422, 'Select active staff recipients with access to this centre.')
@@ -113,7 +113,7 @@ def validate(request, db, region_id, payload):
 
 @router.put('/{region_id}')
 def save(region_id: int, payload: RuleInput, request: Request, db: Session = Depends(get_db)):
-    user = validate(request, db, region_id, payload)
+    user = validate(request, db, region_id, payload, require_recipients=True)
     provision_payment_alerts(db)
     rule = db.query(PaymentAlertRule).filter_by(region_id=region_id, kind=payload.kind).first()
     if not rule:

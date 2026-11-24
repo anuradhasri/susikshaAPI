@@ -14,6 +14,23 @@ from app.api.routes import payment_alerts as routes
 
 
 class PaymentAlertTests(unittest.TestCase):
+    def test_provision_repairs_missing_notification_and_delivery_tables(self):
+        from sqlalchemy import inspect
+        from app.models.payment_alerts import PaymentAlertDelivery, provision_payment_alerts
+
+        rule_id = self.rule('unpaid_plans').id
+        self.db.rollback()
+        PaymentAlertDelivery.__table__.drop(self.fixture.engine)
+        Notification.__table__.drop(self.fixture.engine)
+
+        provision_payment_alerts(self.db)
+        provision_payment_alerts(self.db)
+
+        inspector = inspect(self.fixture.engine)
+        self.assertTrue(inspector.has_table('notifications'))
+        self.assertTrue(inspector.has_table('payment_alert_delivery'))
+        self.assertIsNotNone(self.db.get(PaymentAlertRule, rule_id))
+
     def test_application_route_order_selects_alert_handlers_before_generic_tables(self):
         from app.api.routes import routers
         from starlette.routing import Match
@@ -184,7 +201,9 @@ class PaymentAlertTests(unittest.TestCase):
         self.assertEqual(values[0]['payload']['amount'], '300.00')
 
     def test_fixed_first_session_package_start_and_payment_resolution(self):
-        booking = self.fixture.booking(1, 1)
+        booking = self.fixture.booking(1, 1, status=1)
+        other_booking = self.fixture.booking(2, 1, status=1)
+        other_booking.due_amount = 150
         booking.amount = 100; booking.due_amount = 100
         self.db.add_all([PatientProgramPricing(id=1, patient_id=1, program_id=1, billing_type='per_session', agreed_amount=100, effective_from=date(2026, 9, 1)),
             Package(id=1, name='General package', program_id=1, region_id=1, total_sessions=10, price=1000),
@@ -195,14 +214,57 @@ class PaymentAlertTests(unittest.TestCase):
         before = datetime(2026, 10, 13, 6, tzinfo=timezone.utc)
         boundary = datetime(2026, 10, 14, 6, tzinfo=timezone.utc)
         self.assertEqual(service.candidates(self.db, rule, before), {})
+        self.assertEqual(set(service.candidates(self.db, rule, boundary)), {'package:1'})
+        booking.status_id = 3
+        self.db.commit()
+        events = service.candidates(self.db, rule, boundary)
+        self.assertEqual(set(events), {'fixed:1', 'package:1'})
+        self.assertEqual(events['fixed:1']['payload']['amount'], '100.00')
+        package_session = self.fixture.booking(3, 1, patient_package_id=1, due_amount=80)
         self.assertEqual(set(service.candidates(self.db, rule, boundary)), {'fixed:1', 'package:1'})
+        preview = service.reconcile_rule(self.db, rule, boundary, preview=True)
+        self.assertEqual(len(preview), 1)
+        self.assertEqual([section['label'] for section in preview[0]['payload']['sections']],
+                         ['Package balances', 'Session dues'])
         service.reconcile_rule(self.db, rule, boundary)
-        self.assertEqual(self.db.query(Notification).count(), 2)
+        self.assertEqual(self.db.query(Notification).count(), 1)
+        self.assertIn('Session dues', self.db.query(Notification).one().message)
         booking.due_amount = 0; booking.paid_amount = 100
         package = self.db.get(PatientPackage, 1); package.due_amount = 0; package.paid_amount = 1000
         self.db.commit()
         service.reconcile_rule(self.db, rule, boundary)
+        events = service.candidates(self.db, rule, boundary)
+        self.assertEqual(set(events), {'package-session:slot:3'})
+        self.assertEqual(events['package-session:slot:3']['payload']['amount'], '80.00')
+        package_session.due_amount = 0
+        self.db.commit()
+        service.reconcile_rule(self.db, rule, boundary)
+        self.assertEqual(self.db.query(Notification).count(), 1)
         self.assertTrue(all(row.data['resolved'] for row in self.db.query(Notification).all()))
+
+    def test_unpaid_group_booking_qualifies_without_child_pricing_plan(self):
+        self.db.add(GroupProgramBooking(id=1, program_id=3, slot_id=1,
+                                        slot_date=date(2026, 10, 10), region_id=1))
+        self.db.commit()
+        booking = self.fixture.booking(1, 3, group_program_booking_id=1)
+        booking.program_id = None
+        booking.amount = 120
+        booking.due_amount = 120
+        self.db.commit()
+        rule = self.rule('unpaid_plans')
+        before = datetime(2026, 10, 13, 6, tzinfo=timezone.utc)
+        boundary = datetime(2026, 10, 14, 6, tzinfo=timezone.utc)
+        self.assertEqual(service.candidates(self.db, rule, before), {})
+        events = service.candidates(self.db, rule, boundary)
+        self.assertEqual(set(events), {'fixed-bookings:1:3'})
+        self.assertEqual(events['fixed-bookings:1:3']['payload']['amount'], '120.00')
+        service.reconcile_rule(self.db, rule, boundary)
+
+        booking.due_amount = 0
+        booking.paid_amount = 120
+        self.db.commit()
+        service.reconcile_rule(self.db, rule, boundary)
+        self.assertTrue(self.db.query(Notification).one().data['resolved'])
 
     def test_configuration_defaults_permissions_and_preview_sends_nothing(self):
         from app.api.routes import routers

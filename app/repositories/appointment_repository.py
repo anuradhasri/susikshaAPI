@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.models.models import (
     Appointment,
+    GroupProgramBooking,
     MASTER_LOOKUP_DATA,
     Package,
     Patient,
@@ -595,7 +596,7 @@ class AppointmentRepository:
                 PatientSlotBooking,
                 and_(
                     PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id,
-                    PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
+                    AppointmentRepository._calendar_participant_visible(),
                 )
             )
             .outerjoin(
@@ -721,7 +722,7 @@ class AppointmentRepository:
                 PatientSlotBooking,
                 and_(
                     PatientSlotBooking.therapist_slot_mapping_id == TherapistSlotMapping.id,
-                    PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
+                    AppointmentRepository._calendar_participant_visible(),
                 )
             )
             .outerjoin(
@@ -766,6 +767,16 @@ class AppointmentRepository:
         )
 
         return query.all()
+
+    @staticmethod
+    def _calendar_participant_visible():
+        return or_(
+            PatientSlotBooking.status_id.notin_(PATIENT_SLOT_BOOKING_CANCELLED_IDS),
+            and_(
+                PatientSlotBooking.status_id == PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+                PatientSlotBooking.group_program_booking.has(GroupProgramBooking.parent_program_group_id.isnot(None)),
+            ),
+        )
 
     @staticmethod
     def get_active_therapists_for_calendar(

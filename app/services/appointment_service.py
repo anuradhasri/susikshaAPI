@@ -2126,7 +2126,10 @@ class AppointmentService:
             if len(rows) == 1 and not rows[0].get("group_program_booking_id") and rows[0].get("program_type") not in {"vocational", "social", "parent_training", "peg"}:
                 passthrough.append(rows[0])
                 continue
-            primary = rows[0]
+            primary = next(
+                (row for row in rows if row.get("patient_slot_booking_status") != "UNPAID_CANCELLED"),
+                rows[0],
+            )
             participants = []
             for row in rows:
                 if not row.get("patient_id"):
@@ -3082,7 +3085,8 @@ class AppointmentService:
                     SELECT 1 FROM patient_slot_booking pending_child
                     LEFT JOIN patient_slot_booking_status_master pending_status ON pending_status.id=pending_child.status_id
                     WHERE pending_child.group_program_booking_id=gpb.id
-                      AND NOT (pending_child.status_id=:completed_status_id OR UPPER(COALESCE(pending_status.code, ''))='COMPLETED')
+                      AND NOT (pending_child.status_id IN (:completed_status_id, :unpaid_cancelled_status_id)
+                               OR UPPER(COALESCE(pending_status.code, '')) IN ('COMPLETED', 'UNPAID_CANCELLED'))
                 ) THEN gpb.id END) AS completed_sessions
             FROM parent_program_groups pg
             LEFT JOIN group_program_bookings gpb ON gpb.parent_program_group_id=pg.id
@@ -3091,6 +3095,7 @@ class AppointmentService:
         """), {
             "group_id": int(parent_group_id),
             "completed_status_id": AppointmentService.PATIENT_SLOT_BOOKING_COMPLETED_ID,
+            "unpaid_cancelled_status_id": AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
         }).mappings().first()
         if progress and int(progress["number_of_sessions"] or 0) > 0 and int(progress["completed_sessions"] or 0) >= int(progress["number_of_sessions"] or 0):
             db.execute(text("""
@@ -3145,6 +3150,16 @@ class AppointmentService:
                 patient_slot_booking = billable_sibling
         current_status = str(patient_slot_booking.status or "").upper()
         therapist_slot_mapping = patient_slot_booking.therapist_slot_mapping
+        is_absence = normalized_action == "cancel" and cancel_type == "not_attended"
+        if is_absence:
+            group_booking = patient_slot_booking.group_program_booking
+            if not group_booking or not group_booking.parent_program_group_id:
+                raise ValueError("Attendance is only available for Parent Programming")
+            if current_status == "COMPLETED":
+                raise ValueError("Attendance cannot be changed after completion")
+            if any(float(row.paid_amount or 0) > 0 or row.fully_paid
+                   for row in [patient_slot_booking, *sibling_slot_bookings]):
+                raise ValueError("Resolve the recorded payment before marking this child as not attended")
         plan_item = patient_slot_booking.patient_session_plan_item
         package = patient_slot_booking.patient_package
         same_package_completed_sibling = any(
@@ -3157,7 +3172,7 @@ class AppointmentService:
         if current_status in {"UNPAID_CANCELLED", "PAID_CANCELLED"}:
             raise ValueError("Slot booking already cancelled")
 
-        if normalized_action == "complete" and current_status == "COMPLETED":
+        if current_status == "COMPLETED":
             raise ValueError("Slot booking already completed")
 
         if normalized_action == "complete":
@@ -3191,16 +3206,6 @@ class AppointmentService:
                 patient_slot_booking,
                 target_status=patient_slot_booking.status,
             )
-            remaining_completed_package_sibling = any(
-                sibling.patient_package_id == patient_slot_booking.patient_package_id
-                and bool(sibling.is_package_session)
-                and str(sibling.status or "").upper() == "COMPLETED"
-                for sibling in sibling_slot_bookings
-            )
-            if package and patient_slot_booking.is_package_session and current_status == "COMPLETED" and not remaining_completed_package_sibling:
-                package.sessions_completed = max(0, (package.sessions_completed or 0) - 1)
-                package.sessions_remaining = (package.sessions_remaining or 0) + 1
-                AppointmentService._sync_patient_package_completion_status(package)
             if therapist_slot_mapping and not AppointmentRepository.has_active_patient_booking_for_mapping(
                 db,
                 therapist_slot_mapping.id,
@@ -3370,7 +3375,10 @@ class AppointmentService:
             sibling_slot_bookings,
         )
 
-        if normalized_action == "complete" and patient_slot_booking.group_program_booking_id:
+        if is_absence:
+            patient_slot_booking.due_amount = 0
+
+        if (normalized_action == "complete" or is_absence) and patient_slot_booking.group_program_booking_id:
             db.flush()
             AppointmentService._sync_parent_program_group_completion(
                 db,

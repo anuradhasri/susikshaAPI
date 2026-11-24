@@ -15,7 +15,7 @@ from app.schemas.schemas import (
 )
 from app.services.appointment_service import AppointmentService, SlotMasterService
 from app.repositories.appointment_repository import AppointmentRepository
-from app.models.models import Patient, PatientSlotBooking, Program, ProgramSegment, Therapist, TherapistSlotMapping, User
+from app.models.models import GroupProgramBooking, Patient, PatientSlotBooking, Program, ProgramSegment, Therapist, TherapistSlotMapping, User
 from app.models.payouts import ProgramPaymentConfig, TherapistPayrollConfig
 from app.utils.logger import setup_logging
 
@@ -75,15 +75,22 @@ def _parent_program_group_shape(db: Session, group_id: int) -> dict:
         ) THEN gpb.id END) AS used_sessions,
         COUNT(DISTINCT CASE WHEN EXISTS (
             SELECT 1 FROM patient_slot_booking completed_child
+            LEFT JOIN patient_slot_booking_status_master completed_status ON completed_status.id=completed_child.status_id
             WHERE completed_child.group_program_booking_id=gpb.id
+              AND (completed_child.status_id=3 OR UPPER(COALESCE(completed_status.code, ''))='COMPLETED')
         ) AND NOT EXISTS (
             SELECT 1 FROM patient_slot_booking pending_child
             LEFT JOIN patient_slot_booking_status_master child_status ON child_status.id=pending_child.status_id
             WHERE pending_child.group_program_booking_id=gpb.id
-              AND NOT (pending_child.status_id=3 OR UPPER(COALESCE(child_status.code, ''))='COMPLETED')
+              AND NOT (pending_child.status_id IN (:completed, :unpaid_cancelled)
+                       OR UPPER(COALESCE(child_status.code, '')) IN ('COMPLETED', 'UNPAID_CANCELLED'))
         ) THEN gpb.id END) AS completed_sessions
         FROM group_program_bookings gpb
-        WHERE gpb.parent_program_group_id=:group_id"""), {"group_id": group_id}).mappings().first()
+        WHERE gpb.parent_program_group_id=:group_id"""), {
+            "group_id": group_id,
+            "completed": AppointmentService.PATIENT_SLOT_BOOKING_COMPLETED_ID,
+            "unpaid_cancelled": AppointmentService.PATIENT_SLOT_BOOKING_UNPAID_CANCELLED_ID,
+        }).mappings().first()
     planned = int(group["number_of_sessions"] or 0)
     completed = min(planned, int(progress["completed_sessions"] or 0))
     shaped_group = dict(group)
@@ -753,7 +760,9 @@ async def book_slot(
                     ),
                     "use_package": bool(booking_create.use_package and allocation.get("is_primary", True)),
                     "crt_program_booking_id": crt_parent_by_patient.get(patient_id),
-                    "allow_shared_slot": bulk_booking,
+                    "allow_shared_slot": bulk_booking or (
+                        program_type == "general" and bool(booking_create.allocations)
+                    ),
                 })
                 booking = AppointmentService.book_slot(db, patient_booking_create, commit=not bulk_booking)
                 patient_slot_booking = booking["patient_slot_booking"]
@@ -933,6 +942,14 @@ async def update_slot_status(
         target_region_id=_user_region_ids(current_user)
     )
     await _require_calendar_write(current_user, db)
+
+    if payload.action == "cancel" and payload.cancel_type == "not_attended":
+        group_region = db.query(GroupProgramBooking.region_id).join(
+            PatientSlotBooking, PatientSlotBooking.group_program_booking_id == GroupProgramBooking.id,
+        ).filter(PatientSlotBooking.id == patient_slot_booking_id).first()
+        if not group_region or group_region.region_id is None:
+            raise HTTPException(400, "Parent Programming session region was not found")
+        await check_region_access(current_user=current_user, db=db, target_region_id=[group_region.region_id])
 
     try:
         response = AppointmentService.update_slot_status(

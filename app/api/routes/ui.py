@@ -894,7 +894,7 @@ def _ensure_rbac_tables(db: Session) -> None:
     db.commit()
 
 
-def _permission_shape(db: Session, user: User) -> dict:
+def _permission_shape(db: Session, user: User, region_ids: Optional[list[int]] = None) -> dict:
     rows = db.execute(text("""
         SELECT
             resource.code,
@@ -925,6 +925,11 @@ def _permission_shape(db: Session, user: User) -> dict:
         return {code: {'view': True, 'create': code == 'report.action.create_sheet', 'edit': False, 'delete': False}
                 for code in THERAPIST_RESOURCES}
     if {'_'.join(str(role).strip().lower().replace('-', ' ').split()) for role in roles} & CENTRAL_HEAD_ROLES:
+        assigned_regions = region_ids if region_ids is not None else _user_region_ids(db, user)
+        if len(set(assigned_regions)) > 1:
+            result['region.switch'] = {
+                'view': True, 'create': False, 'edit': True, 'delete': False,
+            }
         for code in ('menu.sheets', 'report.action.create_sheet'):
             result[code] = {
                 'create': False, 'edit': False, 'delete': False, **result.get(code, {}), 'view': True,
@@ -958,7 +963,7 @@ def _assessment_permission_shape(db: Session, user: User, permissions: Optional[
 
 def _user_shape(user: User, db: Session) -> dict:
     region_ids = _user_region_ids(db, user)
-    permissions = _permission_shape(db, user)
+    permissions = _permission_shape(db, user, region_ids)
     current_therapist = _current_therapist(db, user)
     therapist_specializations = []
     if current_therapist:
@@ -5748,6 +5753,9 @@ async def create_patient_transaction(
             plan_patient_id = slot_booking.patient_session_plan_item.patient_session_plan.patient_id
         if slot_booking.patient_id != patient_id and plan_patient_id != patient_id:
             raise HTTPException(status_code=400, detail="Slot booking does not belong to this child")
+        group_booking = slot_booking.group_program_booking
+        if group_booking and group_booking.parent_program_group_id and slot_booking.status == "UNPAID_CANCELLED":
+            raise HTTPException(status_code=409, detail="No payment is due for this unattended Parent Programming session")
         if getattr(slot_booking, "group_program_booking_id", None) and slot_booking.patient_id:
             group_siblings = (
                 db.query(PatientSlotBooking)
